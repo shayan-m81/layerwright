@@ -979,7 +979,7 @@
     $("pickerBtn").style.setProperty && to && $("pickerBtn").style.setProperty("--c", col(to.color));
     setHTML($("selChips"), sessions.map((s, i) => { const on = to === s; return '<button class="opt" role="option" style="--c:' + col(s.color) + '" data-act="assign" data-session="' + esc(s.id) + '" aria-pressed="' + on + '" title="Give the selection to ' + esc(s.name) + '">' +
       '<span class="avatar" style="--c:' + col(s.color) + ';width:24px;height:24px;border-radius:7px;font-size:9.5px">' + esc(initials(s.name)) + '</span><span class="meta"><b>' + esc(s.name) + (i === 0 && many ? ' <span class="pill new">Newest</span>' : "") + '</b><small>' + esc([sub2(s), short(s.workdir)].filter(Boolean).join(" · ")) + '</small></span>' +
-      (on ? '<span class="check">✓</span>' : "") + kickBtn(s) + '</button>'; }).join(""));
+      (on ? '<span class="check">✓</span>' : "") + '</button>'; }).join("")); // Remove lives on the Sessions tab: here a second click would remove the session
     $("selHint").textContent = !sessions.length ? "No session is connected. Start Claude Code or Codex in a project to send this."
       : !many ? "" : owner ? "Only " + owner.name + " can use it. Any other session has to ask you here first." : to ? "Goes to " + to.name + (to === sessions[0] ? ", the newest session" : "") + ". Pick another above." : "";
     $("selHint").style.display = $("selHint").textContent ? "flex" : "none";

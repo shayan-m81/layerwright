@@ -10,7 +10,7 @@ import { cursorBegin, cursorEnabled, cursorEnd, cursorGone, cursorsClear, isOver
 import { resultIds, setZoomEnabled, showResult, zoomAfter, zoomEnabled, zoomRequest, type Shown } from "./zoom.ts";
 import { NoteWatch, isNote, type NoteItem } from "./notes.ts";
 import { commitUndo, holdUndo, ownStep, releaseUndo } from "./undo.ts";
-import { byLayerwright, inRun, lookAtView, openPage, ownSelection, pageIsOwn, runEnded, runStarted, select, selectionIsOwn, show, userActed, wroteNodes } from "./own.ts";
+import { byLayerwright, inRun, lastRunEnd, lookAtView, openPage, ownSelection, pageIsOwn, runEnded, runStarted, select, selectionIsOwn, show, userActed, userWrote, wroteByRequest, wroteNodes } from "./own.ts";
 
 declare const __BUILD__: string;
 const BUILD = typeof __BUILD__ === "string" ? __BUILD__ : "dev";
@@ -273,21 +273,30 @@ function composeAction(session: string, kind: string, text: string, nodes: reado
 // Tasks written on the canvas (notes.ts): "@Checkout make this responsive" in a text layer (a note) or in an
 // annotation goes to that session. Only the user's own writing counts: notes are found as the user's text changes
 // arrive (a collaborator's, REMOTE, never task this user's sessions), annotations as the user writes them on the
-// selected layers. What Layerwright wrote (own.ts) and text inside components and instances is never a note.
+// selected layers. What Layerwright wrote (own.ts) and text inside components and instances is never a note; text the
+// user writes outside a request is theirs, also inside a frame Layerwright built (the frame a note is usually about).
 const texts = new Map<string, TextNode>(); // text layers the user wrote lately that may be notes
 /** Text changes seen while a request changed the document: whose they are is known when it ends (own.ts). */
 const later = new Set<BaseNode>();
 const IN_COMPONENT = new Set(["COMPONENT", "COMPONENT_SET", "INSTANCE"]);
-function noteText(n: BaseNode | null | undefined) {
-  if (!n || n.type !== "TEXT" || n.removed || isOverlayId(n.id) || byLayerwright(n)) return;
+function noteText(n: BaseNode | null | undefined, inRequest = false) {
+  if (!n || n.type !== "TEXT" || n.removed || isOverlayId(n.id) || (inRequest && byLayerwright(n))) return;
+  if (!inRequest) userWrote(n);
   for (let p = n.parent; p && p.type !== "PAGE"; p = p.parent) if (IN_COMPONENT.has(p.type)) return;
   texts.delete(n.id); texts.set(n.id, n);
   if (texts.size > 60) texts.delete(texts.keys().next().value!);
 }
 /** The request is over: the text changes seen meanwhile that it didn't make are the user's. */
+let annsAfter = 0; // the request whose annotations were last taken as its own (when it ended)
 function takeLater() {
-  for (const n of later) noteText(n);
+  for (const n of later) noteText(n, true);
   later.clear();
+  // Annotations a request wrote on the selected layers are its own: seen, so they never go out as notes.
+  if (lastRunEnd() <= annsAfter) return;
+  annsAfter = lastRunEnd();
+  for (const n of figma.currentPage.selection.slice(0, 20)) {
+    if ("annotations" in n) annSeen.set(n.id, new Set(n.annotations.map((a) => a.labelMarkdown ?? a.label ?? "")));
+  }
 }
 /** Annotations on a layer when this window first saw it: written before, maybe by someone else, so not sent. */
 const annSeen = new Map<string, Set<string>>();
@@ -314,14 +323,14 @@ const notes = new NoteWatch({
     const out: NoteItem[] = [];
     const sel = figma.currentPage.selection;
     for (const n of sel.slice(0, 20)) {
-      if (!("annotations" in n) || byLayerwright(n)) continue;
+      if (!("annotations" in n)) continue;
       const list = n.annotations.map((a) => a.labelMarkdown ?? a.label ?? "");
       const seen = annSeen.get(n.id);
       if (!seen) { annSeen.set(n.id, new Set(list)); if (annSeen.size > 500) annSeen.delete(annSeen.keys().next().value!); continue; }
       list.forEach((text, i) => { if (text.includes("@") && !seen.has(text)) out.push({ key: `${n.id}#${i}`, kind: "annotation", text, store: n }); });
     }
     for (const [id, t] of texts) {
-      if (t.removed || !isNote(t.characters) || byLayerwright(t)) { texts.delete(id); continue; }
+      if (t.removed || !isNote(t.characters) || wroteByRequest(t)) { texts.delete(id); continue; }
       out.push({ key: id, kind: "note", text: t.characters, store: t, editing: sel.some((n) => n.id === id) });
     }
     return out;

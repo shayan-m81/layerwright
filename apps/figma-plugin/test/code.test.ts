@@ -125,10 +125,21 @@ test("the session's answer under a note is an undo step of its own: it waits for
   assert.deepEqual(commits, ["commit with 0 overlays", "commit with 0 overlays"], "the request's step, then the answer's");
 });
 
-test("text Layerwright wrote, or text inside an instance, is never a note; selecting a text doesn't make it one", async () => {
+test("a note the user types inside a frame Layerwright built is theirs: it goes, about that frame", async () => {
+  skew += 1000;
+  const before = sentNotes().length;
   const built = frame("8:8", "Built", 0, 0, 300, 300);
   built.setPluginData("layerwright", JSON.stringify({ session: "s1", run: "r" }));
-  typed("@Checkout follow us on Twitter", built);
+  const note = typed("@Checkout make the background light green", built);
+  settle();
+  const sent = sentNotes().slice(before);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].action.note, note.id);
+  assert.deepEqual(sent[0].action.nodes.map((n: any) => n.id), ["8:8"], "about the built frame it's in");
+});
+
+test("text inside an instance is never a note; selecting a text doesn't make it one", async () => {
+  skew += 1000;
   const inst = new N("INSTANCE"); Object.assign(inst, { width: 100, height: 40 }); nodes.get("6:6").appendChild(inst);
   typed("@Checkout label", inst);
   const old = new T(); old.characters = "@Checkout written long ago"; nodes.get("6:6").appendChild(old);

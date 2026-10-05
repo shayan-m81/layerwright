@@ -21,6 +21,8 @@ let endedAt = 0;
 export function runStarted() { runs++; }
 export function runEnded() { runs = Math.max(0, runs - 1); endedAt = Date.now(); }
 /** A request is changing the document now, or just did. Requests that wait their turn, or only read, don't count. */
+/** When the last request that changed the document ended (0: none yet). */
+export function lastRunEnd() { return endedAt; }
 export function inRun() { return runs > 0 || Date.now() - endedAt < LATE_MS; }
 
 // ---------- the selection and the page ----------
@@ -99,6 +101,10 @@ const keep = (set: Set<string>, ids: Iterable<string>) => {
 };
 /** What a request changed and what it created: texts it wrote are Layerwright's, never notes. */
 export function wroteNodes(changed: Iterable<string>, created: Iterable<string> = []) { keep(wrote, changed); keep(made, created); }
+/** A request changed this very layer (and the user hasn't written in it since). */
+export function wroteByRequest(n: BaseNode): boolean { return wrote.has(n.id); }
+/** The user wrote in this layer outside any request: from now on its text is theirs. */
+export function userWrote(n: BaseNode) { wrote.delete(n.id); }
 /** Made or written by Layerwright: a request changed this layer, or created it or a layer it's in, or it is in a
  *  layer that carries the plugin data Layerwright puts on what it creates. (The user's own text in a layer a request
  *  only changed, a renamed frame say, stays theirs.) */

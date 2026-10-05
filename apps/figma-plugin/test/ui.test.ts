@@ -333,7 +333,7 @@ test("a session that never acknowledges a request (an older Layerwright) is poin
   } finally { Date.now = realNow; }
 });
 
-test("the session picker: the chosen session up top, every session in the menu, remove asks once more; work brings Activity forward", () => {
+test("the session picker: the chosen session up top, every session in the menu, no Remove in it; work brings Activity forward", () => {
   const ui = withSession();
   ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [{ id: "sa", name: "Checkout", color: "#7c3aed", client: "claude-code" }, { id: "sb", name: "Admin", color: "#0d99ff", client: "codex-mcp-client" }] }) });
   ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: "sa", asks: [] });
@@ -341,9 +341,11 @@ test("the session picker: the chosen session up top, every session in the menu, 
   assert.match(ui.els.selChips.innerHTML, /Checkout.*Admin.*Codex/s);
   ui.els.pickerBtn.onclick();
   assert.equal(ui.els.picker.dataset.open, "1");
-  ui.els.selChips.onclick({ target: { dataset: { act: "kick", session: "sb" } } });
-  assert.match(ui.els.selChips.innerHTML, /data-confirm="1">Remove\?/);
-  ui.els.selChips.onclick({ target: { dataset: { act: "kick", session: "sb" } } });
+  assert.doesNotMatch(ui.els.selChips.innerHTML, /data-act="kick"/, "no Remove inside a session you give the selection to: a second click there removed it");
+  // Remove is on the Sessions tab, and asks once more there.
+  ui.els.sessions.onclick({ target: { dataset: { act: "kick", session: "sb" } } });
+  assert.match(ui.els.sessions.innerHTML, /data-confirm="1">Remove\?/);
+  ui.els.sessions.onclick({ target: { dataset: { act: "kick", session: "sb" } } });
   assert.deepEqual(JSON.parse(ui.sockets[0].sent.at(-1)), { type: "kick", session: "sb" });
   ui.els.selChips.onclick({ target: { dataset: { act: "assign", session: "sb" } } });
   assert.equal(ui.els.picker.dataset.open, "", "choosing closes the menu");
