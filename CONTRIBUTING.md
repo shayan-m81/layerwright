@@ -11,7 +11,7 @@ npx playwright install chromium   # only if Google Chrome isn't installed (HTML 
 npm run typecheck && npm test && npm run build
 ```
 
-To try your checkout in Figma, run `npx tsx apps/mcp-server/src/cli.ts init` in a test project. Then import `~/.layerwright/figma-plugin/manifest.json` in Figma desktop (Plugins → Development → Import plugin from manifest…).
+To try your checkout in Figma, run `npx tsx apps/mcp-server/src/cli.ts init` in a test project. Then import `~/.layerwright/figma-plugin/manifest.json` in Figma desktop (Plugins → Development → Import plugin from manifest…). After a rebuild, `npx tsx apps/mcp-server/src/cli.ts plugin` refreshes that copy. Don't run `apps/figma-plugin/manifest.json` directly: it isn't paired with your computer, and the hub refuses it.
 
 ## Ground rules
 
