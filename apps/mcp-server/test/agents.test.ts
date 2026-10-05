@@ -2,7 +2,7 @@
 // the choice it offers, and the repository's own plugin staying in step with the skill and the package.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -94,6 +94,7 @@ test("init asks which agents get the plugin, installs it, pairs the plugin windo
   assert.equal(calls.length, 6, "both: the default when both are installed");
   assert.ok(pluginInstalled("claude") && pluginInstalled("codex"));
   assert.match(readFileSync(join(pluginHome(), "dist", "ui.html"), "utf8"), new RegExp(`const KEY = "${pluginKey()}"`), "the window carries this computer's key");
+  if (process.platform !== "win32") assert.equal(statSync(join(pluginHome(), "dist", "ui.html")).mode & 0o777, 0o600, "as private as the key file");
   const mcp = JSON.parse(readFileSync(join(dir, ".mcp.json"), "utf8"));
   assert.equal(mcp.mcpServers.layerwright, undefined, "the plugin provides the server now");
   assert.ok(mcp.mcpServers.other);
@@ -113,6 +114,29 @@ test("a user-level layerwright server next to the plugin would start twice: init
   assert.equal(calls.at(-1), "claude mcp remove layerwright --scope user");
   assert.ok(lines.some((l) => /✓ Removed the user-level "layerwright" server/.test(l)));
   writeFileSync(join(process.env.CLAUDE_CONFIG_DIR!, ".claude.json"), "{}");
+});
+
+test("the project's own server entry and skill copy go only when the user says so; with nobody to ask, init says what to remove", async () => {
+  const setUp = () => {
+    const dir = tmp();
+    writeFileSync(join(dir, ".mcp.json"), JSON.stringify({ mcpServers: { layerwright: { command: "npx" } } }));
+    mkdirSync(join(dir, ".claude", "skills", "figma-design"), { recursive: true });
+    writeFileSync(join(dir, ".claude", "skills", "figma-design", "SKILL.md"), "---\nname: figma-design\ndescription: x\n---\n");
+    writeFileSync(join(dir, ".claude", "skills", "figma-design", "notes.md"), "mine");
+    return dir;
+  };
+  const kept = (dir: string) => !!JSON.parse(readFileSync(join(dir, ".mcp.json"), "utf8")).mcpServers.layerwright && existsSync(join(dir, ".claude", "skills", "figma-design", "SKILL.md"));
+  const quiet = setUp(), lines: string[] = [];
+  assert.equal(await init({ dir: quiet, skipInstall: true, skipBrowserCheck: true, out: (s) => lines.push(s), exec: fakeCli().exec, agents: ["claude"] }), 0);
+  assert.ok(kept(quiet), "nothing deleted without asking");
+  assert.ok(lines.some((l) => /Remove the "layerwright" entry in .*\.mcp\.json and the skill copy/.test(l)));
+  const no = setUp();
+  await init({ dir: no, skipInstall: true, skipBrowserCheck: true, out: () => {}, exec: fakeCli().exec, agents: ["claude"], prompt: async () => "n" });
+  assert.ok(kept(no));
+  const yes = setUp();
+  await init({ dir: yes, skipInstall: true, skipBrowserCheck: true, out: () => {}, exec: fakeCli().exec, agents: ["claude"], prompt: async () => "y" });
+  assert.ok(!kept(yes));
+  assert.equal(readFileSync(join(yes, ".claude", "skills", "figma-design", "notes.md"), "utf8"), "mine", "only the skill file init wrote goes");
 });
 
 test("a Persian or Arabic digit is a choice too (۱ → Claude Code only)", async () => {
