@@ -1,7 +1,7 @@
 // figma_export_image: the picture the agent sees can also be written to disk, so it can be shown to the user.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -12,6 +12,14 @@ import { createServer } from "../src/server.ts";
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 async function connect(work: string) {
+  const call = await connectRaw(work);
+  return async (args: Record<string, unknown>) => {
+    const r: any = await call(args);
+    return { image: r.content.find((c: any) => c.type === "image"), info: JSON.parse(r.content.find((c: any) => c.type === "text").text) };
+  };
+}
+
+async function connectRaw(work: string) {
   const bridge: FigmaTransport = {
     connected: () => true,
     info: () => ({ type: "hello", fileName: "TEST", page: "Page 1" }),
@@ -24,10 +32,7 @@ async function connect(work: string) {
   const [a, b] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "1" });
   await Promise.all([server.connect(a), client.connect(b)]);
-  return async (args: Record<string, unknown>) => {
-    const r: any = await client.callTool({ name: "figma_export_image", arguments: { nodeId: "1:2", ...args } });
-    return { image: r.content.find((c: any) => c.type === "image"), info: JSON.parse(r.content.find((c: any) => c.type === "text").text) };
-  };
+  return (args: Record<string, unknown>) => client.callTool({ name: "figma_export_image", arguments: { nodeId: "1:2", ...args } });
 }
 
 test("without save the image is only returned, and the agent is told the user can't see it", async () => {
@@ -56,4 +61,20 @@ test("save: true writes .layerwright/exports/<node>.png; a folder or a file path
   const c = await call({ save: "out/hero.png" });
   assert.equal(c.info.file, join(work, "out", "hero.png"));
   assert.deepEqual(readFileSync(c.info.file), PNG);
+});
+
+test("save stays inside the project: an absolute path elsewhere, ../ or a link out of it is refused, and nothing is written", async () => {
+  const work = mkdtempSync(join(tmpdir(), "lw-export-"));
+  const outside = mkdtempSync(join(tmpdir(), "lw-outside-"));
+  symlinkSync(outside, join(work, "link"));
+  const r = await connectRaw(work);
+  for (const save of [join(outside, "x.png"), "../x.png", "a/../../x.png", "link/x.png", outside]) {
+    const res: any = await r({ save });
+    assert.ok(res.isError, save);
+    assert.match(JSON.parse(res.content[0].text).errors[0].message, /inside the project/);
+  }
+  assert.deepEqual(readdirSync(outside), []);
+  assert.equal(existsSync(join(work, "..", "x.png")), false);
+  const ok: any = await r({ save: join(work, "shots", "a.png") }); // absolute, but inside: fine
+  assert.ok(!ok.isError);
 });
