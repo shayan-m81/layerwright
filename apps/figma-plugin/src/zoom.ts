@@ -4,7 +4,8 @@
 //
 // The view is the user's: while they're working in Figma (they selected, changed or moved something a moment ago),
 // it never moves by itself. The result waits instead, and the window offers "Show the result" (showResult).
-import { cursorsRescale, setOwnView, userActiveAt } from "./cursor.ts";
+import { cursorsRescale } from "./cursor.ts";
+import { setOwnView, userActiveAt } from "./own.ts";
 
 let enabled = true;
 export function setZoomEnabled(on: boolean) { enabled = on; }

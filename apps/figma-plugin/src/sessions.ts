@@ -4,10 +4,12 @@
 //   With more than one session connected, a session gets the selection only if it is *its* selection: the user
 //   gave it to that session in the plugin window, approved the session's request there, or the session's own
 //   work selected it (a build, figma_select). A new selection by the user goes to the newest session until the
-//   user picks another one in the window. Anything else waits for the user's answer in the window.
-// - Conflicts. Every change is attributed to the session whose edit was running (or to the user). A session that
-//   edits a layer another session changed after this one last read it gets a CONFLICT error instead of silently
-//   overwriting that work.
+//   user picks another one in the window, also one they make while a session's edit runs. Anything else waits for
+//   the user's answer in the window.
+// - Conflicts. A change is attributed to the session whose edit was running when it touches what that edit works on
+//   (the layers it names, the layers it creates); any other change is the user's. A session that edits a layer
+//   another session changed after this one last read it gets a CONFLICT error instead of silently overwriting that
+//   work.
 // - One edit at a time. Edits from different sessions run one after another, never interleaved.
 import type { SessionInfo, StructuredError } from "@cde/core";
 
@@ -23,6 +25,8 @@ export interface DeskHost {
   post(msg: Record<string, unknown>): void;
   progress(label: string): void;
   nodeName(id: string): Promise<string | undefined>;
+  /** The selection Layerwright itself set (sorted ids), while it is still the selection (own.ts). */
+  ownSelection?(): string[] | null;
   now?(): number;
 }
 
@@ -37,6 +41,8 @@ export class SessionDesk {
   owner: { session: string; ids: string[] } | null = null;
   private expected: string[] | null = null;
   private mutator: string | null = null;
+  /** What the running edit works on, and the layers it created: only changes to these are its own. */
+  private touch = new Set<string>();
   private chain: Promise<unknown> = Promise.resolve();
   private changed = new Map<string, { by: string; at: number }>();
   private seen = new Map<string, Map<string, number>>();
@@ -76,10 +82,12 @@ export class SessionDesk {
 
   // ---------- selection ----------
 
-  onSelectionChange() {
+  /** `own`: Layerwright made this selection (own.ts). Any other is the user's, even while a session's edit runs. */
+  onSelectionChange(own = false) {
     const now = ids(this.host.selection());
     if (this.expected && sameIds(now, this.expected)) this.expected = null; // Layerwright's own selection, already attributed
-    else if (this.mutator) this.owner = { session: this.mutator, ids: now };
+    else if (own && this.mutator) this.owner = { session: this.mutator, ids: now };
+    else if (own) { /* Layerwright's, arriving late: the edit that made it took it when it ended (run) */ }
     else {
       // The user picked something new: it goes to the newest session (most likely the one they're talking to)
       // until they give it to another one in the window.
@@ -161,13 +169,17 @@ export class SessionDesk {
       if (session) await this.checkConflicts(session, method, params);
       const before = ids(this.host.selection());
       this.mutator = session?.id ?? null;
+      this.touch = new Set(targets(method, params));
       try { return await fn(); } finally {
         // Figma reports document and selection changes asynchronously: let them arrive while this session still
         // owns the slot, so they're attributed to it and not to the user.
         await new Promise((r) => setTimeout(r, this.flushMs));
         const after = ids(this.host.selection());
-        if (session && !sameIds(before, after)) { this.owner = { session: session.id, ids: after }; this.expected = after; this.publish(); }
+        // The selection is the session's only when its own request set it, not when the user picked something meanwhile.
+        const set = this.host.ownSelection?.();
+        if (session && !sameIds(before, after) && set && sameIds(set, after)) { this.owner = { session: session.id, ids: after }; this.expected = after; this.publish(); }
         this.mutator = null;
+        this.touch = new Set();
       }
     };
     const run = this.chain.then(go, go);
@@ -175,12 +187,15 @@ export class SessionDesk {
     return run;
   }
 
-  /** Figma's documentchange: remember who changed what. */
-  onDocumentChange(changes: { id?: string; origin?: string }[]) {
+  /** Figma's documentchange: remember who changed what. Figma can't tell this plugin's changes from the user's (both
+   *  are LOCAL), so a running edit is credited only with what it works on and what it creates; the rest is the user's. */
+  onDocumentChange(changes: { id?: string; origin?: string; type?: string }[]) {
     const at = this.now();
     for (const c of changes) {
       if (!c.id) continue;
-      this.changed.set(c.id, { by: c.origin === "REMOTE" ? "user" : this.mutator ?? "user", at });
+      const m = c.origin === "REMOTE" ? null : this.mutator;
+      if (m && c.type === "CREATE") this.touch.add(c.id);
+      this.changed.set(c.id, { by: m && this.touch.has(c.id) ? m : "user", at });
     }
     if (this.changed.size > 50_000) for (const k of [...this.changed.keys()].slice(0, 10_000)) this.changed.delete(k);
   }

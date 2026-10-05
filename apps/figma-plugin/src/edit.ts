@@ -5,6 +5,8 @@ import { annotate } from "./annotate.ts";
 import { progress } from "./progress.ts";
 import { ExecError, checkDestination, clearStyleLookups, findPage, fitSection, getComponent, loose, pageOf, setTextStyle, styleOf, tag, textStyleOf, toReaction, variableOf } from "./execute.ts";
 import { commitUndo } from "./undo.ts";
+import { isLeftover } from "./cursor.ts";
+import { openPage } from "./own.ts";
 
 export type NodeRef = string; // a node id, or "$n": the node produced by op n of this call
 
@@ -413,7 +415,7 @@ export async function editNodes(p: { ops: EditOp[]; approved?: boolean; meta?: {
           if (!o.start) throw new Error(`flow "${o.name}" needs a start node.`);
           const n = await resolve(o.start, results);
           if (!(n.parent?.type === "PAGE" || n.parent?.type === "SECTION")) throw new Error(`A flow starts at a top-level frame; "${n.name}" is inside "${n.parent?.name}".`);
-          if (pageOf(n)?.id !== page.id) await figma.setCurrentPageAsync(pageOf(n)!);
+          if (pageOf(n)?.id !== page.id) await openPage(pageOf(n)!);
           // One flow per start frame: replace a same-named flow or the one already starting there (e.g. Figma's "Flow 1").
           figma.currentPage.flowStartingPoints = [...figma.currentPage.flowStartingPoints.filter((f) => f.name !== o.name && f.nodeId !== n.id), { nodeId: n.id, name: o.name }];
           r = { op: i, kind: o.op, nodeId: n.id, note: `flow "${o.name}" starts at "${n.name}"` };
@@ -433,12 +435,14 @@ export async function editNodes(p: { ops: EditOp[]; approved?: boolean; meta?: {
   return { applied: results, failed, note: failed ? `Stopped at op ${failed.op}; ops before it were applied (one undo reverts them).` : "One undo reverts every op in this call." };
 }
 
-/** List (and with approved, remove) what Layerwright created in a session or run. */
+/** List (and with approved, remove) what Layerwright created in a session or run, and AI cursors a closed plugin
+ *  window left behind (never part of the design, whichever session drew them). */
 export async function cleanup(p: { session?: string; run?: string; nodeIds?: string[]; approved?: boolean }) {
   await figma.loadAllPagesAsync();
   const found: SceneNode[] = [];
   if (p.nodeIds?.length) for (const id of p.nodeIds) { const n = await figma.getNodeByIdAsync(id); if (n && !n.removed && n.type !== "PAGE" && n.type !== "DOCUMENT") found.push(n as SceneNode); }
   else for (const page of figma.root.children) {
+    for (const n of page.children) if (isLeftover(n)) found.push(n); // overlays are top-level, tagged with their own key
     for (const n of page.findAllWithCriteria({ pluginData: { keys: ["layerwright"] } }) as SceneNode[]) {
       let d: { session?: string; run?: string } = {};
       try { d = JSON.parse(n.getPluginData("layerwright")); } catch { continue; }

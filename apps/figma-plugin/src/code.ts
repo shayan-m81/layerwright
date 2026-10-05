@@ -5,10 +5,12 @@ import { executePlan, applyTransformations, ExecError, pageOf } from "./execute.
 import { editNodes, cleanup } from "./edit.ts";
 import { importTree, ensurePages, foundations } from "./import.ts";
 import { progress } from "./progress.ts";
-import { DeskError, SessionDesk } from "./sessions.ts";
-import { cursorAsk, cursorBegin, cursorBusy, cursorEnabled, cursorEnd, cursorGone, cursorsClear, userActed, isOverlayId, removeLeftovers, setCursorEnabled, shade } from "./cursor.ts";
-import { setZoomEnabled, showResult, zoomAfter, zoomEnabled, zoomRequest, type Shown } from "./zoom.ts";
+import { DeskError, MUTATING, SessionDesk, targets } from "./sessions.ts";
+import { cursorBegin, cursorEnabled, cursorEnd, cursorGone, cursorsClear, isOverlayId, removeLeftovers, setCursorEnabled, shade } from "./cursor.ts";
+import { resultIds, setZoomEnabled, showResult, zoomAfter, zoomEnabled, zoomRequest, type Shown } from "./zoom.ts";
 import { NoteWatch, isNote, type NoteItem } from "./notes.ts";
+import { commitUndo, holdUndo, ownStep, releaseUndo } from "./undo.ts";
+import { byLayerwright, inRun, lookAtView, openPage, ownSelection, pageIsOwn, runEnded, runStarted, select, selectionIsOwn, show, userActed, wroteNodes } from "./own.ts";
 
 declare const __BUILD__: string;
 const BUILD = typeof __BUILD__ === "string" ? __BUILD__ : "dev";
@@ -21,6 +23,7 @@ const desk = new SessionDesk({
   post: (msg) => figma.ui.postMessage(msg),
   progress: (label) => progress(label),
   nodeName: async (id) => (await figma.getNodeByIdAsync(id))?.name,
+  ownSelection,
 });
 
 // Several requests from the window can run at once (multitasking). A session's first open request works with the
@@ -42,10 +45,8 @@ function whoFor(session: SessionInfo | { id: string; name?: string; color?: stri
   return { id: `${session.id}~${task}`, name: `${s.name ?? "Claude"} · ${SHORT[t.kind] ?? "Task"}`, color: shade(s.color ?? "#7c3aed", (t.turn % 2 ? -1 : 1) * (38 + 14 * Math.floor(t.turn / 2))) };
 }
 
-// The user comes first: while a request runs, changes and selections are its own; any other is the user working in
-// Figma: the view stays where the user has it (zoom.ts), and the cursors carry on beside them (cursor.ts).
-let running = 0;
-const ours = () => running > 0;
+// The user comes first: what Layerwright did itself (the selection it set, the page it opened, the changes a request
+// made) is known (own.ts); anything else is the user working in Figma, and the view stays where they have it (zoom.ts).
 /** A result the view didn't glide to because the user was busy: the window offers "Show the result". */
 function offer(r: Shown, session?: string) { if (r.held?.length) figma.ui.postMessage({ type: "result-ready", ids: r.held.slice(0, 200), session }); }
 
@@ -87,8 +88,11 @@ async function handle(req: BridgeRequest): Promise<unknown> {
       return importTree(p);
     case "foundations":
       return foundations(p);
-    case "ensurePages":
-      return ensurePages(p.pages as string[]);
+    case "ensurePages": {
+      const r = await ensurePages(p.pages as string[]);
+      commitUndo(); // new pages are a step of their own, like any other change
+      return r;
+    }
     case "exportImage": {
       // A PNG/JPG of one node, capped so a huge frame doesn't produce a huge payload.
       const n = await figma.getNodeByIdAsync(p.nodeId);
@@ -103,10 +107,10 @@ async function handle(req: BridgeRequest): Promise<unknown> {
       // Selection only works on the current page: switch to the page of the first node, select what's on it.
       const all = (await Promise.all((p.nodeIds as string[]).map((id) => figma.getNodeByIdAsync(id)))).filter((n): n is SceneNode => !!n && "x" in n);
       const page = all.length ? pageOf(all[0]) : undefined;
-      if (page && page.id !== figma.currentPage.id) await figma.setCurrentPageAsync(page);
+      if (page) await openPage(page);
       const nodes = all.filter((n) => pageOf(n)?.id === figma.currentPage.id);
-      figma.currentPage.selection = nodes;
-      if (nodes.length) figma.viewport.scrollAndZoomIntoView(nodes);
+      select(nodes);
+      if (nodes.length) show(nodes);
       return { selected: nodes.length, page: figma.currentPage.name, skippedOnOtherPages: all.length - nodes.length || undefined };
     }
     default:
@@ -150,13 +154,12 @@ figma.ui.onmessage = async (msg: any) => {
   }
   if (msg?.type === "show-result" && Array.isArray(msg.ids)) { void showResult(msg.ids.filter((x: unknown) => typeof x === "string")); return; }
   if (msg?.type === "session-state" && typeof msg.session === "string") {
-    // The session asks the user something in its chat (or got the answer): Figma says so, the cursor waves.
-    const who = desk.sessions.find((x) => x.id === msg.session) ?? { id: msg.session };
+    // The session asks the user something in its chat: Figma says so (the window shows it too, until it's answered).
+    const who = desk.sessions.find((x) => x.id === msg.session);
     if (msg.waiting) {
-      const name = (who as SessionInfo).name ?? "Claude";
+      const name = who?.name ?? "Claude";
       figma.notify(msg.kind === "permission" ? `${name} needs your OK in Claude Code. Answer in the chat.` : `${name} asked you something in Claude Code. Answer in the chat.`, { timeout: 8000 });
     }
-    void cursorAsk(who, !!msg.waiting, typeof msg.kind === "string" ? msg.kind : undefined, typeof msg.text === "string" ? msg.text : undefined);
     return;
   }
   if (msg?.type === "set-mini") {
@@ -170,7 +173,9 @@ figma.ui.onmessage = async (msg: any) => {
     return;
   }
   if (msg?.type === "zoom-to") {
-    // A click on the picture of the selection: zoom to that layer (on its page), or to the whole selection.
+    // A click on the picture of the selection: zoom to that layer (on its page), or to the whole selection. The user
+    // asked for it: the view and the page are theirs.
+    userActed();
     const n = typeof msg.id === "string" ? await figma.getNodeByIdAsync(msg.id) : null;
     const node = n && "x" in n ? (n as SceneNode) : undefined;
     const page = node ? pageOf(node) : undefined;
@@ -187,15 +192,12 @@ figma.ui.onmessage = async (msg: any) => {
     return;
   }
   if (msg?.type === "session-activity" && typeof msg.session === "string") {
-    // A request from the window reached a session (its cursor comes to the layers) or was finished.
-    // Each request has its own cursor when the session already works on another one.
+    // A request from the window reached a session or was finished (the window shows how it goes). Each request has
+    // its own cursor, while its changes run, when the session already works on another one.
     const id = typeof msg.id === "string" ? msg.id : undefined;
     if (id) noteTask(id, msg.session, typeof msg.kind === "string" ? msg.kind : tasks.get(id)?.kind ?? "ask");
-    const session = desk.sessions.find((x) => x.id === msg.session) ?? { id: msg.session };
-    const who = whoFor(session, id);
     const busy = ["sending", "sent", "queued", "seen", "working"].includes(msg.status);
     if (typeof msg.status === "string") void zoomRequest(msg.session, msg.status, id).then((r) => offer(r, msg.session)).catch(() => {}); // done: show what it changed
-    void cursorBusy(who, busy, Array.isArray(msg.nodes) ? msg.nodes : [], typeof msg.kind === "string" ? msg.kind : undefined);
     if (!busy && id) tasks.delete(id);
     if (id && typeof msg.status === "string") void notes.finished(id, msg.status, typeof msg.message === "string" ? msg.message : undefined);
     return;
@@ -205,7 +207,8 @@ figma.ui.onmessage = async (msg: any) => {
   if (msg?.type === "assign-selection" && typeof msg.session === "string") { desk.assign(msg.session); return; }
   if (msg?.type === "answer-selection" && typeof msg.id === "string") { desk.answer(msg.id, !!msg.ok); return; }
   if (msg?.type === "show-selection") {
-    // "Show" on a request in the window: bring the selected layers into view.
+    // "Show" on a request in the window: bring the selected layers into view (the user asked: the view is theirs).
+    userActed();
     const sel = figma.currentPage.selection;
     if (sel.length) figma.viewport.scrollAndZoomIntoView(sel);
     return;
@@ -213,33 +216,49 @@ figma.ui.onmessage = async (msg: any) => {
   if (msg?.type !== "request") return;
   const req = msg.req as BridgeRequest;
   let res: BridgeResponse;
-  running++;
   try {
-    // The session's cursor goes where it works or looks, and thinks between steps (cursor.ts; undo.ts keeps it out
-    // of undo steps).
+    // Reads (and status checks) just answer: nothing is drawn on the canvas, nothing is written to the file.
+    // A request that changes the document is one undo step (undo.ts), and while it runs (own.ts) the text changes
+    // Figma reports wait until it's known which are its own. A change to the canvas brings the session's cursor
+    // (cursor.ts) for as long as it runs: the work starts at once while the cursor comes, and the cursor is erased
+    // before the step closes.
     // When a change lands, the view glides to it (a build always; anything else when it's off screen) while the
     // cursor clicks there (zoom.ts).
     // Work for a request from the window that the session named as its task is drawn with that request's cursor.
-    const who = whoFor(req.session, req.task);
-    const zoom = (r: unknown) => { void zoomAfter(req.session?.id, req.method, r, req.task).then((z) => offer(z, req.session?.id)).catch(() => {}); };
     const work = async () => {
-      if (!cursorEnabled() || req.method === "ping") { const r = await handle(req); zoom(r); return r; }
-      await cursorBegin(who, req.method, req.params).catch(() => {});
-      let r: unknown;
-      try { r = await handle(req); } catch (e) { await cursorEnd(who, req.method, undefined, false, req.params).catch(() => {}); throw e; }
-      zoom(r);
-      await cursorEnd(who, req.method, r, true, req.params).catch(() => {});
-      return r;
+      if (!MUTATING.has(req.method)) return handle(req);
+      holdUndo();
+      runStarted();
+      lookAtView();
+      try {
+        cursorBegin(whoFor(req.session, req.task), req.method, req.params);
+        let r: unknown;
+        try { r = await handle(req); } catch (e) { await cursorEnd(false, req.method); throw e; }
+        void zoomAfter(req.session?.id, req.method, r, req.task).then((z) => offer(z, req.session?.id)).catch(() => {});
+        await cursorEnd(true, req.method, r, req.params);
+        // What it made or changed is Layerwright's: never a note on the canvas, never the user's work.
+        wroteNodes([...targets(req.method, req.params), ...resultIds(req.method, r)], createdBy(req.method, r));
+        return r;
+      } finally {
+        cursorsClear(); // already erased, unless something went wrong on the way
+        releaseUndo(); // the step closes: the change and nothing of the cursor
+        runEnded();
+      }
     };
     res = { id: req.id, ok: true, result: await desk.run(req.method, req.params, req.session, work) };
   } catch (e) {
     const error = e instanceof ExecError || e instanceof DeskError ? e.detail : { type: "FIGMA_API_ERROR" as const, message: (e as Error)?.message ?? String(e) };
     res = { id: req.id, ok: false, error };
   }
-  // Its own changes and selections arrive a moment after it ends: they still count as its own.
-  setTimeout(() => { running--; }, 400);
   figma.ui.postMessage({ type: "response", res });
 };
+/** The layers a request created (builds, imports, and the edits that make new layers). */
+const MAKES = new Set(["duplicate", "group", "boolean", "componentize"]);
+function createdBy(method: string, r: any): string[] {
+  if (method === "executePlan" || method === "importTree") return resultIds(method, r);
+  if (method === "editNodes") return (r?.applied ?? []).filter((a: any) => MAKES.has(a?.kind) && typeof a?.nodeId === "string").map((a: any) => a.nodeId);
+  return [];
+}
 /** A request for one session about these layers, handed to the window to send (the window's actions, annotations). */
 function composeAction(session: string, kind: string, text: string, nodes: readonly SceneNode[], extra: { skills?: string[]; via?: "annotation" | "note"; note?: string } = {}): string {
   desk.assign(session);
@@ -252,13 +271,26 @@ function composeAction(session: string, kind: string, text: string, nodes: reado
 }
 
 // Tasks written on the canvas (notes.ts): "@Checkout make this responsive" in a text layer (a note) or in an
-// annotation goes to that session. Notes are found as text changes arrive; annotations on the selected layers.
-const texts = new Map<string, TextNode>(); // text layers written lately that may be notes
+// annotation goes to that session. Only the user's own writing counts: notes are found as the user's text changes
+// arrive (a collaborator's, REMOTE, never task this user's sessions), annotations as the user writes them on the
+// selected layers. What Layerwright wrote (own.ts) and text inside components and instances is never a note.
+const texts = new Map<string, TextNode>(); // text layers the user wrote lately that may be notes
+/** Text changes seen while a request changed the document: whose they are is known when it ends (own.ts). */
+const later = new Set<BaseNode>();
+const IN_COMPONENT = new Set(["COMPONENT", "COMPONENT_SET", "INSTANCE"]);
 function noteText(n: BaseNode | null | undefined) {
-  if (!n || n.type !== "TEXT" || n.removed || isOverlayId(n.id)) return;
+  if (!n || n.type !== "TEXT" || n.removed || isOverlayId(n.id) || byLayerwright(n)) return;
+  for (let p = n.parent; p && p.type !== "PAGE"; p = p.parent) if (IN_COMPONENT.has(p.type)) return;
   texts.delete(n.id); texts.set(n.id, n);
   if (texts.size > 60) texts.delete(texts.keys().next().value!);
 }
+/** The request is over: the text changes seen meanwhile that it didn't make are the user's. */
+function takeLater() {
+  for (const n of later) noteText(n);
+  later.clear();
+}
+/** Annotations on a layer when this window first saw it: written before, maybe by someone else, so not sent. */
+const annSeen = new Map<string, Set<string>>();
 const AREA = new Set(["FRAME", "COMPONENT", "COMPONENT_SET", "INSTANCE", "SECTION", "GROUP"]);
 const areaSize = (n: SceneNode) => { const r = n.absoluteBoundingBox; return r ? r.width * r.height : 0; };
 /** What a note is about: the frame it's in (or, on the canvas, the top-level layer under it), and inside that the
@@ -282,11 +314,14 @@ const notes = new NoteWatch({
     const out: NoteItem[] = [];
     const sel = figma.currentPage.selection;
     for (const n of sel.slice(0, 20)) {
-      noteText(n);
-      if ("annotations" in n) n.annotations.forEach((a, i) => { const text = a.labelMarkdown ?? a.label ?? ""; if (text.includes("@")) out.push({ key: `${n.id}#${i}`, kind: "annotation", text, store: n }); });
+      if (!("annotations" in n) || byLayerwright(n)) continue;
+      const list = n.annotations.map((a) => a.labelMarkdown ?? a.label ?? "");
+      const seen = annSeen.get(n.id);
+      if (!seen) { annSeen.set(n.id, new Set(list)); if (annSeen.size > 500) annSeen.delete(annSeen.keys().next().value!); continue; }
+      list.forEach((text, i) => { if (text.includes("@") && !seen.has(text)) out.push({ key: `${n.id}#${i}`, kind: "annotation", text, store: n }); });
     }
     for (const [id, t] of texts) {
-      if (t.removed || !isNote(t.characters)) { texts.delete(id); continue; }
+      if (t.removed || !isNote(t.characters) || byLayerwright(t)) { texts.delete(id); continue; }
       out.push({ key: id, kind: "note", text: t.characters, store: t, editing: sel.some((n) => n.id === id) });
     }
     return out;
@@ -300,33 +335,51 @@ const notes = new NoteWatch({
     texts.delete(it.key);
     return composeAction(session, "ask", text, [area], { via: "note", note: note.id });
   },
-  write: async (key, kind, was, text) => {
+  // The answer under a note (and what it remembers) is an undo step of its own, never part of a request's (undo.ts).
+  write: async (key, kind, was, text, mark) => {
     if (kind === "annotation") {
       const [id] = key.split("#");
       const n = (await figma.getNodeByIdAsync(id)) as (SceneNode & AnnotationsMixin) | null;
       if (!n || n.removed || !("annotations" in n)) return false;
-      const list = [...n.annotations], i = list.findIndex((a) => (a.labelMarkdown ?? a.label ?? "") === was);
-      if (i < 0) return false;
-      const a = list[i];
-      list[i] = { ...(a.labelMarkdown !== undefined ? { labelMarkdown: text } : { label: text }), ...(a.properties ? { properties: a.properties } : {}), ...(a.categoryId ? { categoryId: a.categoryId } : {}) };
-      n.annotations = list;
+      ownStep(() => {
+        const list = [...n.annotations], i = list.findIndex((a) => (a.labelMarkdown ?? a.label ?? "") === was);
+        if (n.removed || i < 0) return false;
+        const a = list[i];
+        list[i] = { ...(a.labelMarkdown !== undefined ? { labelMarkdown: text } : { label: text }), ...(a.properties ? { properties: a.properties } : {}), ...(a.categoryId ? { categoryId: a.categoryId } : {}) };
+        mark();
+        n.annotations = list;
+        annSeen.get(n.id)?.add(text);
+      });
       return true;
     }
     const t = await figma.getNodeByIdAsync(key);
     if (!t || t.removed || t.type !== "TEXT" || t.characters !== was || !text.startsWith(was)) return false;
     await Promise.all(t.getRangeAllFontNames(0, t.characters.length).map((f) => figma.loadFontAsync(f)));
-    t.insertCharacters(t.characters.length, text.slice(was.length));
+    ownStep(() => {
+      if (t.removed || t.characters !== was) return false; // the user changed it meanwhile: theirs stays
+      mark();
+      t.insertCharacters(t.characters.length, text.slice(was.length));
+    });
     return true;
   },
+  step: (fn) => ownStep(fn),
   notify: (m) => figma.notify(m, { timeout: 6000 }),
   asks: (list) => figma.ui.postMessage({ type: "note-asks", asks: list }),
   now: () => Date.now(),
 });
-setInterval(() => { try { notes.check(); } catch { /* a layer went away mid-look */ } }, 700);
+setInterval(() => { try { if (!inRun()) takeLater(); notes.check(); } catch { /* a layer went away mid-look */ } }, 700);
 
-figma.on("currentpagechange", () => { figma.ui.postMessage({ type: "hello", hello: hello() }); if (!ours()) userActed(); });
+figma.on("currentpagechange", () => { figma.ui.postMessage({ type: "hello", hello: hello() }); if (!pageIsOwn()) userActed(); });
 figma.on("close", () => cursorsClear());
-figma.on("selectionchange", () => { figma.ui.postMessage({ type: "selection", count: figma.currentPage.selection.length }); desk.onSelectionChange(); queueThumb(); if (!ours()) userActed(); });
+figma.on("selectionchange", () => {
+  // A selection Layerwright didn't make is the user's, also while a request runs: the view stays where they work, and
+  // it isn't credited to a session (sessions.ts).
+  const own = selectionIsOwn();
+  figma.ui.postMessage({ type: "selection", count: figma.currentPage.selection.length });
+  desk.onSelectionChange(own);
+  queueThumb();
+  if (!own) userActed();
+});
 
 // A small picture of the selection for the window, so the user sees what they are about to give a session.
 const REPO_URL = "https://github.com/shayan-m81/layerwright";
@@ -352,16 +405,28 @@ async function sendThumb() {
 // Watch for Design System changes (components, component sets, styles) so a stale scan can be flagged.
 let dsChanged = false;
 const watchingSince = new Date().toISOString();
-figma.loadAllPagesAsync().then(() => { removeLeftovers(); figma.on("documentchange", (e) => {
-  // The cursors' own drawing isn't a change to the design (and there's a lot of it): leave it out.
-  const changes = e.documentChanges.filter((c) => !isOverlayId((c as { id?: string }).id));
-  if (!changes.length) return;
-  if (!ours() && changes.some((c) => (c as { origin?: string }).origin !== "REMOTE")) userActed(); // the user is editing
-  desk.onDocumentChange(changes as { id?: string; origin?: string }[]);
-  if (!ours()) for (const c of changes) if (c.type === "CREATE" || (c.type === "PROPERTY_CHANGE" && c.properties.includes("characters"))) noteText(c.node as BaseNode);
-  if (dsChanged) return;
-  for (const c of changes) {
-    const t = (c as { node?: { type?: string } }).node?.type;
-    if (c.type.startsWith("STYLE_") || t === "COMPONENT" || t === "COMPONENT_SET") { dsChanged = true; return; }
-  }
-}); }).catch(() => { /* no watch: status just can't tell */ });
+figma.loadAllPagesAsync().then(() => {
+  // AI cursors a window that closed mid-request left behind go, as a step of their own (never part of a request's).
+  ownStep(() => removeLeftovers() > 0);
+  figma.on("documentchange", (e) => {
+    // The cursors' own drawing isn't a change to the design (and there's a lot of it): leave it out.
+    const changes = e.documentChanges.filter((c) => !isOverlayId(c.id));
+    if (!changes.length) return;
+    // This user's changes are LOCAL, and so are a request's own: while one runs, whose they are is told by the
+    // selection (selectionchange) and, for texts that may be notes, when it ends (takeLater).
+    const busy = inRun();
+    const local = changes.filter((c) => c.origin === "LOCAL");
+    if (!busy && local.length) userActed(); // the user is editing
+    desk.onDocumentChange(changes);
+    for (const c of local) {
+      if (c.type !== "CREATE" && !(c.type === "PROPERTY_CHANGE" && c.properties.includes("characters"))) continue;
+      const n = c.node as BaseNode;
+      if (busy) { if (later.size < 200) later.add(n); } else noteText(n);
+    }
+    if (dsChanged) return;
+    for (const c of changes) {
+      const t = (c as { node?: { type?: string } }).node?.type;
+      if (c.type.startsWith("STYLE_") || t === "COMPONENT" || t === "COMPONENT_SET") { dsChanged = true; return; }
+    }
+  });
+}).catch(() => { /* no watch: status just can't tell */ });

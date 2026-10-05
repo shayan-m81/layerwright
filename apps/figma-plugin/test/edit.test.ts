@@ -97,6 +97,27 @@ test("cleanup lists a session's nodes and removes them only with approval", asyn
   assert.equal((await cleanup({ session: "s9" })).nodes.length, 0);
 });
 
+test("cleanup also finds AI cursors a closed window left behind (not another user's live one); the design-system scan doesn't walk them", async () => {
+  const page = resetFigma();
+  const left = F().createFrame(); left.name = "✦ Claude (Layerwright cursor)";
+  left.setPluginData("layerwrightCursor", JSON.stringify({ user: "u:1", at: Date.now() })); // this user's
+  const live = F().createFrame();
+  live.setPluginData("layerwrightCursor", JSON.stringify({ user: "u:2", at: Date.now() })); // someone else's, drawing now
+  const listed = await cleanup({});
+  assert.deepEqual(listed.nodes.map((n: any) => n.name), ["✦ Claude (Layerwright cursor)"]);
+  await cleanup({ approved: true });
+  assert.equal(left.removed, true);
+  assert.equal(live.removed, false);
+  const tag = F().createText(); tag.textStyleId = "S:in-a-cursor"; live.appendChild(tag);
+  const asked: string[] = [];
+  const get = F().getStyleByIdAsync;
+  F().getStyleByIdAsync = async (id: string) => { asked.push(id); return get(id); };
+  const { scanDesignSystem } = await import("../src/scan.ts");
+  await scanDesignSystem({});
+  assert.ok(!asked.includes("S:in-a-cursor"), "the cursor's text isn't read as a layer of the design");
+  assert.ok(page.children.includes(live));
+});
+
 test("componentize gives cleanly stacked absolute layers Auto Layout; text fills the column, uneven layouts stay", async () => {
   const page = resetFigma();
   loaded.add("Inter::Regular");

@@ -18,19 +18,19 @@ function boot(o: { topLevel?: boolean } = {}) {
     close() { this.readyState = 3; queueMicrotask(() => this.onclose?.()); }
     open() { this.readyState = 1; this.onopen?.(); }
   }
-  const timers: (() => void)[] = [];
+  const timers: (() => void)[] = [], delays: number[] = [];
   const win: any = {
     document: { getElementById: el },
     WebSocket: FakeWS,
     parent: { postMessage: (m: any) => posted.push(m.pluginMessage) },
-    setTimeout: (fn: () => void) => { timers.push(fn); return timers.length; },
+    setTimeout: (fn: () => void, ms?: number) => { timers.push(fn); delays.push(ms ?? 0); return timers.length; },
     clearTimeout: () => {}, setInterval: () => 0, Date, Math, Number, String, JSON, Map,
   };
   win.window = win;
   if (o.topLevel) { win.parent = win; win.postMessage = () => {}; } // a page on its own, not inside Figma's plugin iframe
   runInNewContext(script, win);
   const fromPlugin = (msg: unknown) => win.onmessage({ data: { pluginMessage: msg } });
-  return { els, el, sockets, posted, timers, fromPlugin };
+  return { els, el, sockets, posted, timers, delays, fromPlugin };
 }
 
 test("UI states: connecting → connected (file, page, selection) → running op in plain words → friendly error", () => {
@@ -578,4 +578,41 @@ test("the session picker: newest first, the newest is picked by itself; a pick b
   ui.els.askInput.value = "hi";
   ui.els.askSend.onclick();
   assert.equal(ui.posted.filter((m: any) => m.type === "compose-action").at(-1).session, "s3");
+});
+
+test("a window that isn't paired: the hub says so; the window shows what to do and stops knocking every few seconds", () => {
+  const ui = boot();
+  ui.sockets[0].open();
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "rejected", message: "This Figma plugin isn't paired with Layerwright on this computer. Run npx layerwright plugin, then reopen the plugin." }) });
+  assert.equal(ui.els.status.textContent, "Not paired with Layerwright");
+  assert.equal(ui.els.error.style.display, "block");
+  assert.match(ui.els.errorText.textContent, /npx layerwright plugin/);
+  assert.equal(ui.posted.filter((m: any) => m.type === "request").length, 0, "never forwarded as a request");
+  const before = ui.delays.length;
+  ui.sockets[0].onclose({ code: 4003 });
+  assert.deepEqual(ui.delays.slice(before), [30000], "it tries again only every 30 s");
+  assert.equal(ui.sockets.length, 1);
+  assert.equal(ui.els.help.style.display, "none");
+});
+
+test("session colours from the hub go into the page only as #rrggbb colours", () => {
+  const ui = boot();
+  ui.sockets[0].open();
+  const bad = { id: "sx", name: "evil", color: 'red;background:url(https://x.test/a.png)"><img src=x>', client: "claude-code" };
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [bad] }) });
+  assert.doesNotMatch(ui.els.sessions.innerHTML + ui.els.avatars.innerHTML, /url\(|<img/);
+  assert.match(ui.els.sessions.innerHTML, /--c:#8b5cf6/);
+});
+
+test("between steps a session is thinking (in the window, not on the canvas); an @name that is no session's is a low-key card", () => {
+  const ui = boot();
+  ui.sockets[0].open();
+  const shop = { id: "sa", name: "shop", color: "#7c3aed", client: "claude-code" };
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [shop] }) });
+  ui.sockets[0].onmessage({ data: JSON.stringify({ id: "sa~r1", method: "editNodes", session: shop }) });
+  ui.fromPlugin({ type: "response", res: { id: "sa~r1", ok: true, result: { applied: [1] } } });
+  assert.match(ui.els.sessions.innerHTML, /pill busy">Thinking…/);
+  ui.fromPlugin({ type: "note-asks", asks: [{ key: "5:6", text: "followed you", name: "john_doe", quiet: true }] });
+  assert.match(ui.els.asks.innerHTML, /class="ask quiet".*@john_doe isn't a session/s);
+  assert.match(ui.els.asks.innerHTML, /data-act="note-send" data-key="5:6" data-session="sa">Send to shop/);
 });
