@@ -171,6 +171,13 @@
   .ask .primary { flex: 1; background: var(--c); border-color: var(--c); color: #fff; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ask .primary:hover { background: color-mix(in srgb, var(--c) 88%, #000); }
   .ask .note { margin-top: 8px; font-size: 10.5px; color: var(--fg2); }
+  .ask.quiet { padding: 8px 10px 8px 12px; background: var(--bg2); color: var(--fg2); font-size: 11px; }
+  .ask.quiet::before { opacity: .45; }
+  .ask.quiet .title { font-weight: 550; justify-content: space-between; }
+  .ask.quiet .x { border: 0; background: none; padding: 0 4px; color: var(--fg3); }
+  .ask.quiet .what { margin-top: 4px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ask.quiet .acts { margin-top: 6px; }
+  .ask.quiet .acts button { font-size: 10.5px; padding: 2px 8px; }
 
   /* ---------- a session asking the user something in its chat ---------- */
   #chatAsks:empty, #mChat:empty { display: none; }
@@ -723,6 +730,10 @@
   let skMenu = null;           // the @ menu: { which: "ask" | "m", q, items, i }
   let page = null;             // a skill's page: { id, file, files, skill, text, loading, error }
   const running = new Map(); // request id -> { method, started, session }
+  const lastStep = new Map(); // session id -> when its last change to the canvas ended: it is thinking for a while
+  const THINK_MS = 14000;
+  const thinking = (s) => Date.now() - (lastStep.get(s.id) || 0) < THINK_MS;
+  let rejected = null;       // the hub refused this window (not paired with this computer): { message }
   const asking = new Map();  // session id -> { kind, text, at }: it asked the user something in its chat
   let resultIds = null, resultTimer = null; // a result the view didn't glide to (the user was busy)
   const events = [];         // newest first: { ok, text, at }
@@ -730,6 +741,8 @@
   const firstSeen = new Map(); // key -> when it first appeared, so only new things animate in
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  // A session's colour goes into style attributes: only ever as a #rrggbb colour, whatever the hub sent.
+  const col = (c, d = "#8b5cf6") => /^#[0-9a-f]{6}$/i.test(String(c || "")) ? c : d;
   // Re-render only what changed: an unchanged list keeps its elements (and doesn't replay their animation).
   const setHTML = (el, html) => { if (el.innerHTML !== html) el.innerHTML = html; };
   const fresh = (key) => { if (!firstSeen.has(key)) firstSeen.set(key, Date.now()); return Date.now() - firstSeen.get(key) < 400 ? " enter" : ""; };
@@ -833,7 +846,7 @@
   }
   function render() {
     const open = isOpen();
-    const state = !open ? "disconnected" : running.size ? "running" : "connected";
+    const state = !open || rejected ? "disconnected" : running.size ? "running" : "connected";
     $("dot").dataset.state = state;
     $("hero").dataset.state = state;
     $("conn").dataset.state = state;
@@ -848,13 +861,18 @@
       $("status").textContent = sessions.length > 1 ? "Connected · " + sessions.length + " sessions" : "Connected to Claude Code";
       const sel = hello && hello.selection ? hello.selection : 0;
       $("detail").textContent = hello ? (hello.fileName + " · " + String(hello.page || "").trim() + (sel ? " · " + count(sel, "layer", "layers") + " selected" : "")) : "Ready";
+    } else if (rejected) {
+      $("status").textContent = "Not paired with Layerwright";
+      $("detail").textContent = "Run npx layerwright plugin, then reopen the plugin";
     } else {
       $("status").textContent = failures > 1 ? "Waiting for Claude Code" : "Connecting…";
       $("detail").textContent = "Looking on localhost:" + $("port").value;
     }
-    $("help").style.display = !open && failures >= 3 ? "block" : "none";
+    $("error").style.display = rejected ? "block" : $("error").style.display;
+    if (rejected) { $("errorText").textContent = rejected.message; $("errorTech").textContent = ""; }
+    $("help").style.display = !open && failures >= 3 && !rejected ? "block" : "none";
     if (state !== "running") $("progress").style.display = "none";
-    setHTML($("avatars"), sessions.slice(0, 4).map((s) => '<span class="avatar" style="--c:' + esc(s.color) + '" title="' + esc(s.name) + '">' + esc(initials(s.name)) + '</span>').join(""));
+    setHTML($("avatars"), sessions.slice(0, 4).map((s) => '<span class="avatar" style="--c:' + col(s.color) + '" title="' + esc(s.name) + '">' + esc(initials(s.name)) + '</span>').join(""));
     $("activityBadge").textContent = unseen > 9 ? "9+" : String(unseen);
     $("activityBadge").dataset.show = unseen && tab !== "activity" ? "1" : "";
     renderSessions();
@@ -865,20 +883,21 @@
 
   // ---------- sessions ----------
   const byId = (id) => sessions.find((s) => s.id === id);
-  const dotFor = (s) => '<span class="sdot" style="background:' + esc(s.color || "#999") + '" title="' + esc(s.name || "") + '"></span>';
+  const dotFor = (s) => '<span class="sdot" style="background:' + col(s.color, "#999999") + '" title="' + esc(s.name || "") + '"></span>';
   const initials = (name) => { const w = String(name || "?").split(/[^A-Za-z0-9؀-ۿ]+/).filter(Boolean); return ((w[0] || "?")[0] + (w[1] ? w[1][0] : (w[0] || "").slice(1, 2))).toUpperCase(); };
   const short = (p) => { const parts = String(p || "").split("/").filter(Boolean); return parts.length > 2 ? "…/" + parts.slice(-2).join("/") : String(p || ""); };
   const clientName = (c) => /claude/i.test(c || "") ? "Claude Code" : /codex/i.test(c || "") ? "Codex" : /cursor/i.test(c || "") ? "Cursor" : (c || "");
 
   const openFor = (s) => requests.filter((x) => x.session === s.id && ["sending", "sent", "queued", "seen", "working"].includes(x.status)).length;
   function sessionState(s) {
-    if (asking.has(s.id)) return '<span class="pill asking" style="--c:' + esc(s.color) + '">Answer in the chat</span>';
+    if (asking.has(s.id)) return '<span class="pill asking" style="--c:' + col(s.color) + '">Answer in the chat</span>';
     if (desk.asks.some((a) => a.session === s.id)) return '<span class="pill wait">Waiting for you</span>';
     const n = openFor(s);
     const r = [...running.values()].find((x) => x.session && x.session.id === s.id && !QUIET[x.method]);
     if (r) return '<span class="pill busy">' + esc(LABEL[r.method] || r.method) + (n > 1 ? " · " + n + " requests" : "") + "…</span>";
     if (n > 1) return '<span class="pill busy">On ' + n + ' requests…</span>';
     if (requests.some((x) => x.session === s.id && (x.status === "working" || x.status === "seen"))) return '<span class="pill busy">On your request…</span>';
+    if (thinking(s)) return '<span class="pill busy">Thinking…</span>';
     if (desk.owner === s.id && desk.count && sessions.length > 1) return '<span class="pill sel">Has your selection</span>';
     return '<span class="pill">Idle</span>';
   }
@@ -894,7 +913,7 @@
   };
   const CHEV = '<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
   const isBusy = (s) => [...running.values()].some((x) => x.session && x.session.id === s.id && !QUIET[x.method]) || requests.some((x) => x.session === s.id && (x.status === "working" || x.status === "seen"));
-  const stateText = (s) => asking.has(s.id) ? "asks you in the chat" : desk.asks.some((a) => a.session === s.id) ? "waiting for you" : openFor(s) > 1 ? "on " + openFor(s) + " requests" : isBusy(s) ? "working" : "idle";
+  const stateText = (s) => asking.has(s.id) ? "asks you in the chat" : desk.asks.some((a) => a.session === s.id) ? "waiting for you" : openFor(s) > 1 ? "on " + openFor(s) + " requests" : isBusy(s) ? "working" : thinking(s) ? "thinking" : "idle";
   // Remove a session from the shared Figma connection: press once to arm, again to remove.
   const kickBtn = (s) => '<span class="x" role="button" data-act="kick" data-session="' + esc(s.id) + '"' + (kickArmed === s.id ? ' data-confirm="1">Remove?' : ' title="Remove ' + esc(s.name) + ' from Figma">✕') + '</span>';
 
@@ -904,14 +923,14 @@
     $("noSessions").style.display = sessions.length ? "none" : "block";
     $("sessionCount").textContent = String(sessions.length);
     $("sessionCount").dataset.show = many ? "1" : "";
-    setHTML($("sessions"), sessions.map((s, i) => '<li class="' + fresh("s:" + s.id).trim() + '" style="--i:' + i + '"><span class="avatar" style="--c:' + esc(s.color) + '">' + esc(initials(s.name)) + '</span>' +
+    setHTML($("sessions"), sessions.map((s, i) => '<li class="' + fresh("s:" + s.id).trim() + '" style="--i:' + i + '"><span class="avatar" style="--c:' + col(s.color) + '">' + esc(initials(s.name)) + '</span>' +
       '<span class="who" title="' + esc(s.workdir || "") + '"><b>' + esc(s.name) + '</b><small>' + esc([clientName(s.client), short(s.workdir)].filter(Boolean).join(" · ")) + '</small></span>' + sessionState(s) + kickBtn(s) + '</li>').join(""));
 
     // A session asking the user something in its chat: say so first, and where to answer.
     const chat = [...asking.entries()].map(([id, a]) => {
       const s = byId(id) || (sessions.length === 1 ? sessions[0] : { name: "Claude", color: "#8b5cf6" });
       const head = a.kind === "permission" ? esc(s.name) + " needs your OK" : a.kind === "turn" ? esc(s.name) + " is waiting for you" : esc(s.name) + " asked you something";
-      return '<div class="chat-ask" style="--c:' + esc(s.color) + '"><span class="q">?</span><div class="body"><b>' + head + '</b>' +
+      return '<div class="chat-ask" style="--c:' + col(s.color) + '"><span class="q">?</span><div class="body"><b>' + head + '</b>' +
         (a.text ? '<div class="said">' + esc(a.text) + '</div>' : "") +
         '<div class="go">Answer in Claude Code, in its chat <span class="dots"><i></i><i></i><i></i></span></div></div></div>';
     });
@@ -919,16 +938,20 @@
 
     // Requests for the selection: the one thing that needs the user, so it comes first and stands out.
     // A note on the canvas named no session: the user picks one (or lets it go).
-    const notesHTML = noteAsks.map((n) => '<div class="ask" style="--c:#8b5cf6"><div class="title"><span class="avatar" style="--c:#8b5cf6;width:22px;height:22px;border-radius:6px;font-size:11px">@</span>' +
+    const notesHTML = noteAsks.map((n) => n.quiet ? '<div class="ask quiet" style="--c:#8b5cf6"><div class="title"><span>@' + esc(n.name) + ' isn\'t a session. A note for one?</span>' +
+      '<button class="x" data-act="note-dismiss" data-key="' + esc(n.key) + '" title="Not a note" aria-label="Not a note">×</button></div>' +
+      '<div class="what" dir="auto" title="' + esc(n.text) + '">' + esc(n.text) + '</div>' +
+      (sessions.length ? '<div class="acts" style="flex-wrap:wrap">' + sessions.map((s) => '<button data-act="note-send" data-key="' + esc(n.key) + '" data-session="' + esc(s.id) + '">Send to ' + esc(s.name) + '</button>').join("") + '</div>' : "") + '</div>'
+      : '<div class="ask" style="--c:#8b5cf6"><div class="title"><span class="avatar" style="--c:#8b5cf6;width:22px;height:22px;border-radius:6px;font-size:11px">@</span>' +
       '<span>A note asks @' + esc(n.name) + '</span></div>' +
       '<div class="what" dir="auto" title="' + esc(n.text) + '">' + esc(n.text) + '</div>' +
       '<div class="note">' + (sessions.length ? 'No session is called @' + esc(n.name) + '. Send it to:' : 'No session is connected. Start one, then pick it here.') + '</div>' +
-      '<div class="acts" style="flex-wrap:wrap">' + sessions.map((s) => '<button class="primary" style="flex:0 1 auto;max-width:100%;background:' + esc(s.color) + ';border-color:' + esc(s.color) + '" data-act="note-send" data-key="' + esc(n.key) + '" data-session="' + esc(s.id) + '">' + esc(s.name) + '</button>').join("") +
+      '<div class="acts" style="flex-wrap:wrap">' + sessions.map((s) => '<button class="primary" style="flex:0 1 auto;max-width:100%;background:' + col(s.color) + ';border-color:' + col(s.color) + '" data-act="note-send" data-key="' + esc(n.key) + '" data-session="' + esc(s.id) + '">' + esc(s.name) + '</button>').join("") +
       '<button data-act="note-dismiss" data-key="' + esc(n.key) + '">Let it go</button></div></div>').join("");
     setHTML($("asks"), notesHTML + desk.asks.map((a) => {
       const s = byId(a.session) || { name: "A session", color: "#8b5cf6" };
       const what = desk.count ? count(desk.count, "layer", "layers") + ": " + desk.names.join(", ") + (desk.count > desk.names.length ? ", …" : "") : "Nothing is selected. Select the layers you mean, then confirm.";
-      return '<div class="ask" style="--c:' + esc(s.color) + '"><div class="title"><span class="avatar" style="--c:' + esc(s.color) + ';width:22px;height:22px;border-radius:6px;font-size:9.5px">' + esc(initials(s.name)) + '</span>' +
+      return '<div class="ask" style="--c:' + col(s.color) + '"><div class="title"><span class="avatar" style="--c:' + col(s.color) + ';width:22px;height:22px;border-radius:6px;font-size:9.5px">' + esc(initials(s.name)) + '</span>' +
         '<span>' + esc(s.name) + ' wants to use your selection</span></div>' +
         '<div class="what" title="' + esc(what) + '">' + (desk.count ? layerTags() : '<span class="muted">' + esc(what) + '</span>') + '</div>' +
         '<div class="acts"><button class="primary" data-act="approve" data-id="' + esc(a.id) + '"' + (desk.count ? "" : " disabled") + '>Use for ' + esc(s.name) + '</button>' +
@@ -951,11 +974,11 @@
     $("toCount").textContent = many ? sessions.length + " sessions" : "";
     const sub2 = (s) => [clientName(s.client), stateText(s)].filter(Boolean).join(" · ");
     setHTML($("pickerBtn"), to
-      ? '<span class="avatar ring" data-live="' + (isBusy(to) ? 1 : 0) + '" style="--c:' + esc(to.color) + '">' + esc(initials(to.name)) + '</span><span class="meta"><b>' + esc(to.name) + '</b><small>' + esc(sub2(to)) + '</small></span>' + CHEV
+      ? '<span class="avatar ring" data-live="' + (isBusy(to) ? 1 : 0) + '" style="--c:' + col(to.color) + '">' + esc(initials(to.name)) + '</span><span class="meta"><b>' + esc(to.name) + '</b><small>' + esc(sub2(to)) + '</small></span>' + CHEV
       : '<span class="avatar" style="--c:#8b5cf6">?</span><span class="meta"><b>Choose a session</b><small>' + count(sessions.length, "session", "sessions") + ' connected</small></span>' + CHEV);
-    $("pickerBtn").style.setProperty && to && $("pickerBtn").style.setProperty("--c", to.color);
-    setHTML($("selChips"), sessions.map((s, i) => { const on = to === s; return '<button class="opt" role="option" style="--c:' + esc(s.color) + '" data-act="assign" data-session="' + esc(s.id) + '" aria-pressed="' + on + '" title="Give the selection to ' + esc(s.name) + '">' +
-      '<span class="avatar" style="--c:' + esc(s.color) + ';width:24px;height:24px;border-radius:7px;font-size:9.5px">' + esc(initials(s.name)) + '</span><span class="meta"><b>' + esc(s.name) + (i === 0 && many ? ' <span class="pill new">Newest</span>' : "") + '</b><small>' + esc([sub2(s), short(s.workdir)].filter(Boolean).join(" · ")) + '</small></span>' +
+    $("pickerBtn").style.setProperty && to && $("pickerBtn").style.setProperty("--c", col(to.color));
+    setHTML($("selChips"), sessions.map((s, i) => { const on = to === s; return '<button class="opt" role="option" style="--c:' + col(s.color) + '" data-act="assign" data-session="' + esc(s.id) + '" aria-pressed="' + on + '" title="Give the selection to ' + esc(s.name) + '">' +
+      '<span class="avatar" style="--c:' + col(s.color) + ';width:24px;height:24px;border-radius:7px;font-size:9.5px">' + esc(initials(s.name)) + '</span><span class="meta"><b>' + esc(s.name) + (i === 0 && many ? ' <span class="pill new">Newest</span>' : "") + '</b><small>' + esc([sub2(s), short(s.workdir)].filter(Boolean).join(" · ")) + '</small></span>' +
       (on ? '<span class="check">✓</span>' : "") + kickBtn(s) + '</button>'; }).join(""));
     $("selHint").textContent = !sessions.length ? "No session is connected. Start Claude Code or Codex in a project to send this."
       : !many ? "" : owner ? "Only " + owner.name + " can use it. Any other session has to ask you here first." : to ? "Goes to " + to.name + (to === sessions[0] ? ", the newest session" : "") + ". Pick another above." : "";
@@ -1012,16 +1035,16 @@
       : state === "connected" ? "<b>" + esc(hello ? String(hello.page || "").trim() || hello.fileName : "Connected") + "</b>" + (sessions.length > 1 ? " · " + sessions.length + " sessions" : "")
       : "<b>" + (failures > 1 ? "Waiting for Claude Code" : "Connecting…") + "</b>");
     $("mTo").style.display = sessions.length ? "inline-flex" : "none";
-    if (to) $("mTo").style.setProperty && $("mTo").style.setProperty("--c", to.color);
-    setHTML($("mTo"), to ? '<span class="avatar ring" data-live="' + (isBusy(to) ? 1 : 0) + '" style="--c:' + esc(to.color) + '">' + esc(initials(to.name)) + '</span><span class="n">' + esc(to.name) + '</span>' + CHEV
+    if (to) $("mTo").style.setProperty && $("mTo").style.setProperty("--c", col(to.color));
+    setHTML($("mTo"), to ? '<span class="avatar ring" data-live="' + (isBusy(to) ? 1 : 0) + '" style="--c:' + col(to.color) + '">' + esc(initials(to.name)) + '</span><span class="n">' + esc(to.name) + '</span>' + CHEV
       : '<span class="avatar" style="--c:#8b5cf6">?</span><span class="n">Choose</span>' + CHEV);
-    setHTML($("mMenu"), sessions.map((s) => { const on = to === s; return '<button class="opt" role="option" style="--c:' + esc(s.color) + '" data-act="assign" data-session="' + esc(s.id) + '" aria-pressed="' + on + '">' +
-      '<span class="avatar" style="--c:' + esc(s.color) + ';width:22px;height:22px;border-radius:7px;font-size:9px">' + esc(initials(s.name)) + '</span><span class="meta"><b>' + esc(s.name) + '</b><small>' + esc([clientName(s.client), stateText(s)].filter(Boolean).join(" · ")) + '</small></span>' +
+    setHTML($("mMenu"), sessions.map((s) => { const on = to === s; return '<button class="opt" role="option" style="--c:' + col(s.color) + '" data-act="assign" data-session="' + esc(s.id) + '" aria-pressed="' + on + '">' +
+      '<span class="avatar" style="--c:' + col(s.color) + ';width:22px;height:22px;border-radius:7px;font-size:9px">' + esc(initials(s.name)) + '</span><span class="meta"><b>' + esc(s.name) + '</b><small>' + esc([clientName(s.client), stateText(s)].filter(Boolean).join(" · ")) + '</small></span>' +
       (on ? '<span class="check">✓</span>' : "") + '</button>'; }).join(""));
     setHTML($("mChat"), [...asking.entries()].slice(0, 1).map(([id, a]) => { const s = byId(id) || (sessions.length === 1 ? sessions[0] : { name: "Claude", color: "#8b5cf6" });
-      return '<div class="m-ask" style="--c:' + esc(s.color) + '"><span><b>' + esc(s.name) + '</b> ' + (a.kind === "permission" ? "needs your OK" : "asks you") + ' in Claude Code' + (a.text ? ": " + esc(a.text) : "") + '</span><span class="dots" style="color:' + esc(s.color) + '"><i></i><i></i><i></i></span></div>'; }).join(""));
+      return '<div class="m-ask" style="--c:' + col(s.color) + '"><span><b>' + esc(s.name) + '</b> ' + (a.kind === "permission" ? "needs your OK" : "asks you") + ' in Claude Code' + (a.text ? ": " + esc(a.text) : "") + '</span><span class="dots" style="color:' + col(s.color) + '"><i></i><i></i><i></i></span></div>'; }).join(""));
     setHTML($("mAsks"), desk.asks.slice(0, 1).map((a) => { const s = byId(a.session) || { name: "A session", color: "#8b5cf6" };
-      return '<div class="m-ask" style="--c:' + esc(s.color) + '"><span><b>' + esc(s.name) + '</b> wants your selection</span><button class="mini primary" data-act="approve" data-id="' + esc(a.id) + '"' + (desk.count ? "" : " disabled") + '>Use</button><button class="mini" data-act="deny" data-id="' + esc(a.id) + '">Not now</button></div>'; }).join(""));
+      return '<div class="m-ask" style="--c:' + col(s.color) + '"><span><b>' + esc(s.name) + '</b> wants your selection</span><button class="mini primary" data-act="approve" data-id="' + esc(a.id) + '"' + (desk.count ? "" : " disabled") + '>Use</button><button class="mini" data-act="deny" data-id="' + esc(a.id) + '">Not now</button></div>'; }).join(""));
     const t = thumb;
     $("mThumb").dataset.empty = desk.count ? "" : "1";
     setHTML($("mThumb"), t && t.png ? '<img alt="" src="data:image/png;base64,' + t.png + '"><span class="zoomhint">' + ZOOM + '</span>'
@@ -1039,7 +1062,7 @@
       const pill = q.status === "done" ? "ok" : q.status === "failed" ? "bad" : q.status === "stopped" ? "off" : q.status === "queued" ? "wait" : "busy";
       setHTML($("mLast"), '<span class="pill ' + pill + '">' + esc(STATUS_TEXT[q.status] || q.status) + '</span><span class="tx" title="' + esc(q.message || "") + '">' +
         esc(q.message ? s.name + ": " + q.message : reqLabel(q) + " · " + s.name) + (openAll() > 1 ? " · +" + (openAll() - 1) + " more" : "") + '</span>' +
-        '<span class="track" style="--c:' + esc(s.color) + '"' + (q.status === "failed" ? ' data-bad="1"' : "") + '>' + [0, 1, 2, 3].map((k) => '<span data-on="' + (k < step ? 1 : 0) + '"' + (k === step - 1 && q.status !== "done" && q.status !== "failed" ? ' data-now="1"' : "") + '></span>').join("") + '</span>');
+        '<span class="track" style="--c:' + col(s.color) + '"' + (q.status === "failed" ? ' data-bad="1"' : "") + '>' + [0, 1, 2, 3].map((k) => '<span data-on="' + (k < step ? 1 : 0) + '"' + (k === step - 1 && q.status !== "done" && q.status !== "failed" ? ' data-now="1"' : "") + '></span>').join("") + '</span>');
     } else setHTML($("mLast"), "");
     fitMini();
   }
@@ -1065,7 +1088,7 @@
       const tip = silent ? s.name + " didn't answer: it may run an older Layerwright. Restart that session, or type /layer:inbox there after updating."
         : q.status === "queued" ? s.name + " gets it on its next Figma step, or type /layer:inbox there."
         : stale ? "No answer yet. If " + s.name + " is Codex or has no Layerwright plugin, type /layer:inbox there." : "";
-      return '<div class="req' + fresh("q:" + q.id) + '" style="--c:' + esc(s.color) + ';--i:' + i + '"><div class="top1"><span class="avatar" style="--c:' + esc(s.color) + ';width:24px;height:24px;border-radius:7px;font-size:9.5px">' + esc(initials(s.name)) + '</span>' +
+      return '<div class="req' + fresh("q:" + q.id) + '" style="--c:' + col(s.color) + ';--i:' + i + '"><div class="top1"><span class="avatar" style="--c:' + col(s.color) + ';width:24px;height:24px;border-radius:7px;font-size:9.5px">' + esc(initials(s.name)) + '</span>' +
         '<span class="what"><b>' + esc(reqLabel(q)) + ' · ' + esc(s.name) + '</b><small>' + esc(q.layers.join(", ") || "no layers") + (q.more ? " +" + q.more : "") + " · " + esc(ago(q.at)) + '</small></span>' +
         '<span class="pill ' + pill + '">' + esc(STATUS_TEXT[q.status] || q.status) + '</span>' +
         (FINISHED[q.status] ? '<button class="x" data-act="del-req" data-id="' + esc(q.id) + '" title="Remove from the list" aria-label="Remove">×</button>'
@@ -1101,7 +1124,7 @@
       stopArmed = null;
       q.status = "stopped"; q.message = "You stopped it";
       if (isOpen()) ws.send(JSON.stringify({ type: "action-stop", id: q.id }));
-      post({ type: "session-activity", id: q.id, session: q.session, status: "stopped", kind: q.kind }); // its cursor goes
+      post({ type: "session-activity", id: q.id, session: q.session, status: "stopped", kind: q.kind }); // the plugin lets it go
       const s = byId(q.session);
       toast("Stopped. " + (s ? s.name : "The session") + " stops working on it; what's already done stays (undo it in Figma if needed)", "ok");
       render(); return;
@@ -1420,13 +1443,26 @@
     try { sock = new WebSocket("ws://localhost:" + $("port").value); } catch (e) { failures++; render(); return retry(); }
     ws = sock;
     sock.onopen = () => { if (my !== gen) return sock.close(); failures = 0; if (hello) sock.send(JSON.stringify(withKey(hello))); render(); };
-    sock.onclose = () => { if (my !== gen) return; failures++; running.clear(); sessions = []; paired = null; post({ type: "sessions", sessions }); render(); retry(); };
+    sock.onclose = (e) => {
+      if (my !== gen) return;
+      failures++; running.clear(); sessions = []; paired = null; post({ type: "sessions", sessions });
+      if ((e && e.code === 4003) || rejected) {
+        // Not paired with this computer's Layerwright: knocking again every few seconds won't change that. Try again
+        // now and then (or when the port is changed), in case the user runs the command meanwhile.
+        rejected = rejected || { message: "This plugin window isn't paired with Layerwright on this computer. Run npx layerwright plugin, then reopen the plugin." };
+        render();
+        clearTimeout(timer); timer = setTimeout(connect, 30000);
+        return;
+      }
+      render(); retry();
+    };
     sock.onerror = () => {};
     sock.onmessage = (ev) => {
       if (my !== gen) return;
       let req; try { req = JSON.parse(ev.data); } catch { return; }
       if (req.type === "server-info") { server = req; renderServer(); return; }
-      if (req.type === "pairing") { paired = !!req.paired; render(); askSkills(); return; }
+      if (req.type === "rejected") { rejected = { message: typeof req.message === "string" && req.message ? req.message.slice(0, 400) : "This plugin window isn't paired with Layerwright on this computer." }; render(); return; }
+      if (req.type === "pairing") { rejected = null; paired = !!req.paired; render(); askSkills(); return; }
       if (req.type === "skills") { onSkills(req); return; }
       if (req.type === "skills-busy") { skillBusy = true; renderSkills(); return; }
       if (req.type === "skill-text") { onSkillText(req); return; }
@@ -1502,6 +1538,7 @@
     $("port").value = String(n);
     if (save) post({ type: "set-port", port: n });
     failures = 0;
+    rejected = null;
     const old = ws; ws = null;
     gen++; // invalidate the old socket's handlers before closing it
     try { old && old.close(); } catch (e) {}
@@ -1516,7 +1553,7 @@
     if (msg.type === "hello") { hello = msg.hello; $("build").textContent = hello.pluginBuild ? "plugin " + String(hello.pluginBuild).slice(0, 16).replace("T", " ") : ""; if (isOpen()) ws.send(JSON.stringify(withKey(hello))); render(); }
     if (msg.type === "selection") { if (hello) hello.selection = msg.count; if (thumb) thumb.loading = msg.count > 0; render(); }
     if (msg.type === "thumb") { thumb = msg.count ? { id: msg.id, name: msg.name, kind: msg.kind, w: msg.w, h: msg.h, png: msg.png } : null; render(); }
-    if (msg.type === "note-asks") { noteAsks = Array.isArray(msg.asks) ? msg.asks : []; if (noteAsks.length && !settings.mini && tab !== "home") setTab("home"); render(); }
+    if (msg.type === "note-asks") { noteAsks = Array.isArray(msg.asks) ? msg.asks : []; if (noteAsks.some((n) => !n.quiet) && !settings.mini && tab !== "home") setTab("home"); render(); }
     if (msg.type === "desk") { desk = { count: msg.count || 0, names: msg.names || [], owner: msg.owner || null, asks: msg.asks || [] }; render(); }
     if (msg.type === "settings") { settings.cursor = msg.cursor !== false; settings.zoom = msg.zoom !== false; renderSettings(); if (!!msg.mini !== settings.mini) setMini(!!msg.mini, false); }
     if (msg.type === "port") setPort(msg.port, false);
@@ -1566,12 +1603,13 @@
           $("errorTech").textContent = failed[0].error;
         } else if (msg.res.ok) $("error").style.display = "none";
         if (!QUIET[method]) events.unshift({ ok: !failed.length, text: summary(method, msg.res.result), at: Date.now(), took, session: r && r.session });
+        if (!QUIET[method] && r && r.session) lastStep.set(r.session.id, Date.now());
       }
       renderActivity();
       render();
     }
   };
-  setInterval(() => { if (running.size || requests.some((q) => q.status === "queued" || q.status === "sent" || q.status === "sending")) render(); }, 1000);
+  setInterval(() => { if (running.size || requests.some((q) => q.status === "queued" || q.status === "sent" || q.status === "sending") || sessions.some((x) => Date.now() - (lastStep.get(x.id) || 0) < THINK_MS + 1500)) render(); }, 1000);
   post({ type: "ui-ready" });
   renderActivity();
   // Only inside Figma: opened anywhere else (a browser, a preview), this page must not take the plugin's place.
