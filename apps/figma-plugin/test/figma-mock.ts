@@ -36,6 +36,14 @@ export class N {
   insertChild(i: number, c: any) { if (c.parent) c.parent.children = c.parent.children.filter((x: any) => x !== c); this.children.splice(i, 0, c); c.parent = this; }
   remove() { this.removed = true; if (this.parent) this.parent.children = this.parent.children.filter((x: any) => x !== this); }
   resize(w: number, h: number) { this.width = w; this.height = h; }
+  rotation = 0;
+  get absoluteBoundingBox() { let x = this.x, y = this.y; for (let p = this.parent; p && p.type !== "PAGE" && p.type !== "DOCUMENT"; p = p.parent) { x += p.x; y += p.y; } return { x, y, width: this.width, height: this.height }; }
+  // Like Figma: the Scale Tool scales the node and everything in it from its top-left; the factor must be >= 0.01.
+  rescale(s: number) {
+    if (!(s >= 0.01)) throw new Error("in rescale: The scale factor must be >= 0.01");
+    const scale = (n: any, top: boolean) => { if (!top) { n.x *= s; n.y *= s; } n.width *= s; n.height *= s; if (n.type === "TEXT") n.fontSize *= s; for (const c of n.children) scale(c, false); };
+    scale(this, true);
+  }
   async exportAsync(o?: { format?: string }) { if (o?.format === "SVG_STRING") return `<svg xmlns="http://www.w3.org/2000/svg" width="${this.width}" height="${this.height}"><path d="M0 0H${this.width}V${this.height}Z" fill="#000"/></svg>`; return new Uint8Array([0x89, 0x50]); }
   setBoundVariable(f: string, v: any) { this.boundVariables[f] = { type: "VARIABLE_ALIAS", id: v.id }; }
   findAllWithCriteria(q: any): any[] {
@@ -99,6 +107,12 @@ export class T extends N {
   constructor(id?: string) { super("TEXT", id); }
   get characters() { return this._c; }
   set characters(v: string) { if (!loaded.has(`${this.fontName.family}::${this.fontName.style}`)) throw new Error(`Cannot write to node with unloaded font "${this.fontName.family} ${this.fontName.style}"`); this._c = v; }
+  // Like Figma: inserting text needs the fonts of the text loaded, and the position must be inside it.
+  insertCharacters(start: number, chars: string) {
+    for (const f of this.getRangeAllFontNames()) if (!loaded.has(`${f.family}::${f.style}`)) throw new Error(`in insertCharacters: Cannot write to node with unloaded font "${f.family} ${f.style}"`);
+    if (start < 0 || start > this._c.length) throw new Error("in insertCharacters: start is out of range");
+    this._c = this._c.slice(0, start) + chars + this._c.slice(start);
+  }
   ranges: any[] = [];
   getRangeAllFontNames() { return [this.fontName, ...this.ranges.filter((r) => r.font).map((r) => r.font)]; }
   setRangeFontName(start: number, end: number, font: any) { if (!loaded.has(`${font.family}::${font.style}`)) throw new Error("range font not loaded"); this.ranges.push({ start, end, font }); }
@@ -130,13 +144,29 @@ export const styles = new Map<string, any>([
   ["S:cap", { id: "S:cap", type: "TEXT", fontName: { family: "Inter", style: "Regular" } }],
 ]);
 
+/** The plugin's side of Figma: what it showed and said (window messages, notifications, links opened, settings
+ *  saved), the event handlers it registered, and the window's size. */
+export const host = { posted: [] as any[], notified: [] as string[], opened: [] as string[], storage: new Map<string, unknown>(), handlers: new Map<string, ((e?: any) => void)[]>(), ui: { width: 0, height: 0 } };
+/** Fire a Figma event at the plugin (Figma sends them after the plugin's code yields). */
+export function emit(type: string, e?: any) { for (const fn of host.handlers.get(type) ?? []) fn(e); }
+const EVENTS = ["selectionchange", "currentpagechange", "close", "run", "drop", "documentchange", "stylechange", "textreview", "slidesviewchange", "canvasviewchange", "timerstart", "timerstop", "timerpause", "timerresume", "timeradjust", "timerdone"];
+/** The screen the canvas is shown on, in pixels: the viewport's bounds follow its centre and zoom. */
+export const SCREEN = { w: 2000, h: 1600 };
+
+/** Like Figma: a node made with figma.create… is added to the current page. */
+const onPage = <X extends N>(n: X): X => { (globalThis as any).figma.currentPage.appendChild(n); return n; };
+
 export function resetFigma() {
   nodes.clear(); loaded.clear(); seq = 0;
+  host.posted.length = 0; host.notified.length = 0; host.opened.length = 0; host.storage.clear(); host.handlers.clear();
+  let pagesLoaded = false;
+  let zoom = 1, center = { x: 500, y: 400 };
   const page = new N("PAGE", "0:1");
   page.name = "Page 1";
   const page2 = new N("PAGE", "0:2");
   page2.name = "Playground";
   const root = new N("DOCUMENT", "0:0");
+  root.name = "TEST";
   root.appendChild(page); root.appendChild(page2);
   new C("1:2", "Type=Primary, Size=Medium", { "Label#10:0": { type: "TEXT", defaultValue: "Button" }, "Show icon#10:1": { type: "BOOLEAN", defaultValue: false } }, ["Label"]);
   new C("1:3", "Type=Secondary, Size=Medium", { "Label#10:0": { type: "TEXT", defaultValue: "Button" } }, ["Label"]);
@@ -149,9 +179,33 @@ export function resetFigma() {
     mixed: MIXED,
     currentPage: Object.assign(page, { selection: [] }),
     root,
-    loadAllPagesAsync: async () => {},
+    fileKey: "file1",
+    currentUser: { id: "u:1", name: "Tester", photoUrl: null, color: "#0d99ff", sessionId: 1 },
+    loadAllPagesAsync: async () => { pagesLoaded = true; },
+    // Like Figma: only known events; with "documentAccess": "dynamic-page", documentchange needs loadAllPagesAsync first.
+    on: (type: string, fn: (e?: any) => void) => {
+      if (!EVENTS.includes(type)) throw new Error(`in on: Unknown event type "${type}"`);
+      if (type === "documentchange" && !pagesLoaded) throw new Error("in on: Cannot register documentchange handler in incremental mode. Call figma.loadAllPagesAsync() first.");
+      host.handlers.set(type, [...(host.handlers.get(type) ?? []), fn]);
+    },
+    // Like Figma: the window is at least 70 px wide.
+    showUI: (_html: string, o?: { width?: number; height?: number }) => { host.ui = { width: o?.width ?? 300, height: o?.height ?? 200 }; },
+    ui: {
+      postMessage: (m: any) => { host.posted.push(m); },
+      onmessage: undefined as ((m: any) => unknown) | undefined,
+      resize: (w: number, h: number) => { if (w < 70 || h < 0) throw new Error("in resize: the window must be at least 70 wide"); host.ui = { width: w, height: h }; },
+    },
+    // Like Figma: values are stored as copies (structured clone), per user, and read back asynchronously.
+    clientStorage: {
+      getAsync: async (k: string) => structuredClone(host.storage.get(k)),
+      setAsync: async (k: string, v: unknown) => { host.storage.set(k, structuredClone(v)); },
+    },
+    notify: (m: string) => { host.notified.push(m); return { cancel() {} }; },
+    openExternal: (url: string) => { host.opened.push(url); },
+    base64Encode: (b: Uint8Array) => Buffer.from(b).toString("base64"),
+    createPage: () => { const p = Object.assign(new N("PAGE"), { selection: [] }); p.name = "Page"; root.appendChild(p); return p; },
     setCurrentPageAsync: async (p: any) => { (globalThis as any).figma.currentPage = Object.assign(p, { selection: p.selection ?? [] }); },
-    createSection: () => { const s = new N("SECTION"); s.fills = []; return s; },
+    createSection: () => { const s = onPage(new N("SECTION")); s.fills = []; return s; },
     createComponentFromNode: (n: any) => {
       if (["COMPONENT", "COMPONENT_SET", "INSTANCE"].includes(n.type)) throw new Error(`cannot create a component from ${n.type}`);
       const c = new N("COMPONENT");
@@ -167,16 +221,24 @@ export function resetFigma() {
       for (const c of comps) set.appendChild(c);
       return set;
     },
-    viewport: { scrollAndZoomIntoView() {} },
+    // Like Figma: the bounds follow the centre and the zoom (read-only); the zoom must be a positive number.
+    viewport: {
+      get zoom() { return zoom; },
+      set zoom(z: number) { if (!(z > 0) || !Number.isFinite(z)) throw new Error("in set_zoom: zoom must be a positive number"); zoom = z; },
+      get center() { return { ...center }; },
+      set center(c: { x: number; y: number }) { center = { x: c.x, y: c.y }; },
+      get bounds() { return { x: center.x - SCREEN.w / 2 / zoom, y: center.y - SCREEN.h / 2 / zoom, width: SCREEN.w / zoom, height: SCREEN.h / zoom }; },
+      scrollAndZoomIntoView() {},
+    },
     commitUndo() {},
-    createFrame: () => { const f = new N("FRAME"); f.fills = [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }]; return f; },
-    createText: () => new T(),
-    createRectangle: () => new N("RECTANGLE"),
-    createEllipse: () => Object.assign(new N("ELLIPSE"), { arcData: { startingAngle: 0, endingAngle: 2 * Math.PI, innerRadius: 0 } }),
-    createPolygon: () => Object.assign(new N("POLYGON"), { pointCount: 3 }),
-    createStar: () => Object.assign(new N("STAR"), { pointCount: 5, innerRadius: 0.382 }),
+    createFrame: () => { const f = onPage(new N("FRAME")); f.fills = [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }]; return f; },
+    createText: () => onPage(new T()),
+    createRectangle: () => onPage(new N("RECTANGLE")),
+    createEllipse: () => Object.assign(onPage(new N("ELLIPSE")), { arcData: { startingAngle: 0, endingAngle: 2 * Math.PI, innerRadius: 0 } }),
+    createPolygon: () => Object.assign(onPage(new N("POLYGON")), { pointCount: 3 }),
+    createStar: () => Object.assign(onPage(new N("STAR")), { pointCount: 5, innerRadius: 0.382 }),
     // Like Figma: a line is created with a black stroke and its height must stay 0.
-    createLine: () => { const l = new N("LINE"); l.height = 0; l.strokes = [{ type: "SOLID", color: { r: 0, g: 0, b: 0 } }]; const resize = l.resize.bind(l); l.resize = (w: number, h: number) => { if (h !== 0) throw new Error("Line height must be 0"); resize(w, h); }; return l; },
+    createLine: () => { const l = onPage(new N("LINE")); l.height = 0; l.strokes = [{ type: "SOLID", color: { r: 0, g: 0, b: 0 } }]; const resize = l.resize.bind(l); l.resize = (w: number, h: number) => { if (h !== 0) throw new Error("Line height must be 0"); resize(w, h); }; return l; },
     // Like Figma: grouping moves the layers into a new node at the index; booleans need shapes or vectors.
     group: (ns: any[], parent: any, index?: number) => { if (!ns.length) throw new Error("group needs nodes"); const g = new N("GROUP"); parent.insertChild(index ?? parent.children.length, g); for (const n of ns) g.appendChild(n); return g; },
     ungroup: (g: any) => { const p = g.parent, at = p.children.indexOf(g), kids = [...g.children]; kids.forEach((k, j) => p.insertChild(at + j, k)); g.remove(); Object.defineProperty(g, "name", { get() { throw new Error(`in get_name: The node with id "${g.id}" does not exist`); } }); return kids; },
@@ -201,7 +263,7 @@ export function resetFigma() {
     },
     createNodeFromSvg: (svg: string) => {
       if (!/^\s*<svg[\s>]/.test(svg) || !/<\/svg>\s*$/.test(svg)) throw new Error("Invalid SVG");
-      const f = new N("FRAME"); f.fills = [];
+      const f = onPage(new N("FRAME")); f.fills = [];
       for (const m of svg.matchAll(/<(path|circle|rect)\b([^>]*)>/g)) {
         const v = new N("VECTOR"); v.fills = /fill="none"/.test(m[2]) ? [] : [{ type: "SOLID", color: { r: 0, g: 0, b: 0 } }];
         v.strokes = /stroke="/.test(m[2]) && !/stroke="none"/.test(m[2]) ? [{ type: "SOLID", color: { r: 0, g: 0, b: 0 } }] : [];
