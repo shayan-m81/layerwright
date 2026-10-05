@@ -525,6 +525,23 @@
   #mLast .track { flex: none; width: 46px; margin: 0; }
 
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+  /* The guide: what the window can do, tab by tab (the ? in the header; opens by itself the first time) */
+  .guide { position: absolute; inset: 0; z-index: 30; display: none; flex-direction: column; background: var(--bg); animation: enter .3s var(--ease) both; }
+  .guide[data-open="1"] { display: flex; }
+  .app[data-mini="1"] > .guide { display: none; }
+  .guide-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px 10px; border-bottom: 1px solid var(--line); }
+  .guide-top b { font-size: 13px; }
+  .guide-body { overflow-y: auto; padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+  .guide-body p { margin: 0; color: var(--fg2); line-height: 1.45; }
+  .guide-body h4 { margin: 2px 0 0; font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fg3); }
+  .guide-item { display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: start; background: var(--bg2); border-radius: var(--r); padding: 10px; }
+  .guide-item .gi { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; color: var(--brand2); background: color-mix(in srgb, var(--brand2) 12%, transparent); }
+  .guide-item b { display: block; font-size: 12px; margin-bottom: 2px; }
+  .guide-item span { color: var(--fg2); line-height: 1.45; }
+  .guide-item code, .guide-body code { font-size: 10.5px; padding: 1px 4px; border-radius: 4px; background: color-mix(in srgb, var(--fg) 7%, transparent); }
+  .guide-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+  .guide-actions button { flex: 1; min-width: 120px; padding: 8px 10px; border-radius: 9px; background: var(--bg2); font-weight: 600; }
+  .guide-actions button.primary { background: var(--brand); color: #fff; }
 </style>
 </head>
 <body>
@@ -553,6 +570,7 @@
       <div><b>Layerwright</b><span id="conn" class="conn" data-state="disconnected"><i></i><span id="connText">Connecting</span></span></div>
     </div>
     <div class="top-acts">
+    <button id="helpBtn" class="icon-btn" title="What's in this window" aria-label="Guide: what's in this window"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.6 9.2a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .8-1 1.5v.5"></path><path d="M12 17h.01"></path></svg></button>
     <button id="miniBtn" class="icon-btn" title="Compact window: the selection, the actions and the chat box" aria-label="Compact window"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg></button>
     <button id="star" class="star" title="Star Layerwright on GitHub">
       <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -695,6 +713,24 @@
       <footer><span id="version">Layerwright</span><span id="build"></span></footer>
     </section>
   </main>
+  <!-- The guide: what this window can do, tab by tab. Static text, no user data. -->
+  <section id="guide" class="guide" role="dialog" aria-label="Guide" aria-modal="true">
+    <div class="guide-top"><b>What you can do here</b><button id="guideClose" class="icon-btn" title="Close the guide" aria-label="Close the guide"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg></button></div>
+    <div class="guide-body">
+      <p>Layerwright connects this Figma file to the Claude Code, Codex and Cursor sessions on your computer. Ask a session in its chat to import a design, build a screen or change one, and it works here. You can also send it work from this window.</p>
+      <h4>The tabs</h4>
+      <div class="guide-item"><span class="gi" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"></path><path d="M5 9.5V21h14V9.5"></path></svg></span><div><b>Home</b><span>Your selection and who gets it. Select layers in Figma, pick a session under <i>Send to</i>, then press an action, or write your own request in the box. <i>Build in code</i> implements it with your components, <i>Polish design</i> critiques and fixes it, <i>Make component</i> turns it into a component, <i>Mobile version</i> builds a phone layout next to it. Click the picture to zoom to the layer.</span></div></div>
+      <div class="guide-item"><span class="gi" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"></path></svg></span><div><b>Activity</b><span>Your requests: progress, the session’s answer, and Stop. Below, <i>In Figma</i> lists what sessions built or changed, with a way to show each result.</span></div></div>
+      <div class="guide-item"><span class="gi" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L4.8 8.3l5-.7z"></path></svg></span><div><b>Skills</b><span>Guidance a session reads before a job: design critique, UX copy, accessibility, layout and more. Turn each one on or off, or add your own from a link or pasted text.</span></div></div>
+      <div class="guide-item"><span class="gi" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"></path><circle cx="16" cy="7" r="2"></circle><circle cx="10" cy="17" r="2"></circle></svg></span><div><b>Settings</b><span>The AI cursor (a session’s cursor while it changes the canvas), zooming to the result, starting Claude Code on its own, pairing with this computer, and the port.</span></div></div>
+      <div class="guide-item"><span class="gi" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 20a5.5 5.5 0 0 1 11 0"></path><path d="M16 4.6a3.2 3.2 0 0 1 0 6.3M20.5 20a5.5 5.5 0 0 0-3.4-5.1"></path></svg></span><div><b>Sessions</b><span>The sessions connected now, what each is doing, and how many requests it is on. Remove one with ✕ (it asks once more).</span></div></div>
+      <h4>More ways in</h4>
+      <div class="guide-item"><span class="gi" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3"></path><path d="M9 20h6"></path><path d="M12 4v16"></path></svg></span><div><b>Notes on the canvas</b><span>Type a text layer that starts with <code>@</code> and a session’s name on the frame it’s about, for example <code>@Checkout make this responsive</code>, or <code>@claude</code> when one session is connected. It goes once you stop typing, and the answer appears under it.</span></div></div>
+      <div class="guide-item"><span class="gi" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6"></path><path d="M20 10h-6V4"></path><path d="M14 10l7-7M3 21l7-7"></path></svg></span><div><b>Compact window</b><span>The arrows button next to Star shrinks this window to the selection, the actions and the chat box.</span></div></div>
+      <div class="guide-item"><span class="gi" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-5-6-5"></path><path d="M12 19h8"></path></svg></span><div><b>In your agent</b><span><code>/layer:help</code> in Claude Code or Codex lists every command. Something not working? Run <code>npx layerwright doctor</code> in your project.</span></div></div>
+      <div class="guide-actions"><button id="guideReadme">Full guide on GitHub</button><button id="guideOk" class="primary">Got it</button></div>
+    </div>
+  </section>
   <!-- A skill's own page (from the Skills tab) -->
   <section id="skillPage" class="skpage" role="dialog" aria-label="Skill">
     <div class="sp-head">
@@ -720,7 +756,7 @@
   let desk = { count: 0, names: [], owner: null, asks: [] }; // from the plugin: who has the selection, who is waiting
   let noteAsks = [];          // from the plugin: notes on the canvas whose @name isn't a session { key, text, name }
   let thumb = null;            // from the plugin: a small picture of the selection { name, kind, w, h, png? }
-  let settings = { cursor: true, zoom: true, mini: false };
+  let settings = { cursor: true, zoom: true, mini: false, guideSeen: true };
   let miniH = 0;               // the compact window's height, as last asked of Figma
   let paired = null;           // from the hub: may this window send requests into sessions?
   let tab = "home", tabIndex = 0, unseen = 0;
@@ -744,7 +780,13 @@
   // A session's colour goes into style attributes: only ever as a #rrggbb colour, whatever the hub sent.
   const col = (c, d = "#8b5cf6") => /^#[0-9a-f]{6}$/i.test(String(c || "")) ? c : d;
   // Re-render only what changed: an unchanged list keeps its elements (and doesn't replay their animation).
-  const setHTML = (el, html) => { if (el.innerHTML !== html) el.innerHTML = html; };
+  // Unchanged markup is left alone: compared with what was set last, since the browser writes some of it back
+  // differently (SVG's <circle/> reads back as <circle></circle>) and a rewrite would replay animations (the
+  // selection's picture blinked on every redraw).
+  const setHTML = (el, html) => {
+    if (el.__html === html && el.innerHTML === el.__ser) return;
+    el.innerHTML = html; el.__html = html; el.__ser = el.innerHTML;
+  };
   const fresh = (key) => { if (!firstSeen.has(key)) firstSeen.set(key, Date.now()); return Date.now() - firstSeen.get(key) < 400 ? " enter" : ""; };
   const post = (m) => parent.postMessage({ pluginMessage: m }, "*");
   const withKey = (h) => Object.assign({}, h, { key: KEY });
@@ -1015,6 +1057,15 @@
     if (save) post({ type: "set-mini", on: !!on });
     render();
   }
+  // The guide (? in the header): opens by itself the first time the window runs; closing it remembers that.
+  function setGuide(open) {
+    $("guide").dataset.open = open ? "1" : "";
+    if (!open && !settings.guideSeen) { settings.guideSeen = true; post({ type: "guide-seen" }); }
+  }
+  $("helpBtn").onclick = () => setGuide($("guide").dataset.open !== "1");
+  $("guideClose").onclick = () => setGuide(false);
+  $("guideOk").onclick = () => setGuide(false);
+  $("guideReadme").onclick = () => post({ type: "open-url", url: "https://github.com/shayan-m81/layerwright#readme" });
   $("miniBtn").onclick = () => setMini(true, true);
   $("maxBtn").onclick = () => setMini(false, true);
   $("mTo").onclick = () => { $("mMenu").dataset.open = $("mMenu").dataset.open === "1" ? "" : "1"; fitMini(); };
@@ -1555,7 +1606,12 @@
     if (msg.type === "thumb") { thumb = msg.count ? { id: msg.id, name: msg.name, kind: msg.kind, w: msg.w, h: msg.h, png: msg.png } : null; render(); }
     if (msg.type === "note-asks") { noteAsks = Array.isArray(msg.asks) ? msg.asks : []; if (noteAsks.some((n) => !n.quiet) && !settings.mini && tab !== "home") setTab("home"); render(); }
     if (msg.type === "desk") { desk = { count: msg.count || 0, names: msg.names || [], owner: msg.owner || null, asks: msg.asks || [] }; render(); }
-    if (msg.type === "settings") { settings.cursor = msg.cursor !== false; settings.zoom = msg.zoom !== false; renderSettings(); if (!!msg.mini !== settings.mini) setMini(!!msg.mini, false); }
+    if (msg.type === "settings") {
+      settings.cursor = msg.cursor !== false; settings.zoom = msg.zoom !== false; renderSettings();
+      if (!!msg.mini !== settings.mini) setMini(!!msg.mini, false);
+      settings.guideSeen = msg.guideSeen !== false;
+      if (!settings.guideSeen && !settings.mini) setGuide(true); // the first time: what this window can do
+    }
     if (msg.type === "port") setPort(msg.port, false);
     if (msg.type === "action-error") toast(msg.message || "Couldn't send that", "bad");
     if (msg.type === "result-ready" && Array.isArray(msg.ids) && msg.ids.length) {

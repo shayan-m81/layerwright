@@ -132,7 +132,8 @@ figma.ui.onmessage = async (msg: any) => {
     const mini = (await figma.clientStorage.getAsync("compact").catch(() => undefined)) === true;
     const zoom = await figma.clientStorage.getAsync("zoomResult").catch(() => undefined);
     if (typeof zoom === "boolean") setZoomEnabled(zoom);
-    figma.ui.postMessage({ type: "settings", cursor: cursorEnabled(), zoom: zoomEnabled(), mini });
+    const guideSeen = (await figma.clientStorage.getAsync("guideSeen").catch(() => undefined)) === true;
+    figma.ui.postMessage({ type: "settings", cursor: cursorEnabled(), zoom: zoomEnabled(), mini, guideSeen });
     void sendThumb();
     return;
   }
@@ -140,6 +141,7 @@ figma.ui.onmessage = async (msg: any) => {
   // A link in a skill's page (its source, a reference): only https, opened in the browser.
   if (msg?.type === "open-url" && typeof msg.url === "string" && /^https:\/\/[^\s]+$/.test(msg.url) && msg.url.length < 2000) { figma.openExternal(msg.url); return; }
   if (msg?.type === "set-cursor") { setCursorEnabled(!!msg.on); await figma.clientStorage.setAsync("aiCursor", !!msg.on); return; }
+  if (msg?.type === "guide-seen") { await figma.clientStorage.setAsync("guideSeen", true); return; }
   if (msg?.type === "set-zoom") { setZoomEnabled(!!msg.on); await figma.clientStorage.setAsync("zoomResult", !!msg.on); return; }
   if (msg?.type === "compose-action" && typeof msg.session === "string") {
     // A request from the window ("Build this in code", or the user's own words) for one session, about the

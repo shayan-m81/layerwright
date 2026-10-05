@@ -33,6 +33,7 @@ All notable changes to this project are documented here. The format follows
 - Asking in the chat: when a session asks the user something (a question, `AskUserQuestion`, a permission prompt, or it stops with a request from the window still open), the Figma window says so ("Checkout asked you something · Answer in Claude Code", with the question) and Figma shows a notice. The plugin's chat hooks (`layerwright hook-event`, on PreToolUse/PostToolUse of AskUserQuestion, Notification and Stop) tell the session's server, which tells the window.
 - Multitasking: several requests from the window run at once. Every Figma tool takes `requestId`; a session works on extra requests in background subagents, and each request gets its own cursor ("Checkout · Mobile", in a nearby shade). The window shows how many requests a session is on, and "Show the result" zooms to each one's result.
 - The AI cursor shows what really happens: the text it types ("typing “Pay now”"), the frame it builds and how far along it is ("building “Hero” · 2/5") and the request from the window it works on. It drag-selects the layer it changes, shows Figma's corner handles, leans into its moves with its name tag trailing, presses with a double ripple, and types its tag out.
+- A guide in the plugin window: the ? in the header explains what each tab does (Home, Activity, Skills, Settings, Sessions), the four actions, notes on the canvas, compact mode, `/layer:help` and `doctor`, with a link to the full README. It opens by itself the first time.
 
 ### Security
 - The shared Figma connection accepts only Layerwright's own processes and your paired plugin window: browser connections are refused before they open, sessions present the per-computer key, and an unpaired window is told to run `npx layerwright plugin` instead of receiving your sessions' requests. `doctor` and `hub status` no longer give out the pairing key, and only known message types reach the plugin window.
@@ -47,6 +48,7 @@ All notable changes to this project are documented here. The format follows
 - A plugin window from 0.2.x no longer shows "undefined failed" banners from messages it doesn't know.
 - An empty "Page 1" is reused again for the first new page, and `figma_cleanup` also removes AI cursors a closed plugin window left behind (opening the plugin no longer removes another user's live cursor).
 - The ✕ that removes a session is no longer inside the button that gives it the selection, where a second click removed the session.
+- The picture of the selection no longer blinks every second while a request waits (the window rewrote it on every redraw).
 
 ### Changed
 - The cursors work beside the user: when the user selects, edits or moves the view, they carry on, and the view never zooms by itself meanwhile (the window offers "Show the result" instead). A selection or an edit you make while a session works stays yours: it isn't credited to that session and never causes a false CONFLICT for another one. Outlines are thin edges, so a click on the layer under them reaches it, and the cursors' own drawing isn't counted as changes to the design.

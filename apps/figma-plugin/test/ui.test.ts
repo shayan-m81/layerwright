@@ -618,3 +618,40 @@ test("between steps a session is thinking (in the window, not on the canvas); an
   assert.match(ui.els.asks.innerHTML, /class="ask quiet".*@john_doe isn't a session/s);
   assert.match(ui.els.asks.innerHTML, /data-act="note-send" data-key="5:6" data-session="sa">Send to shop/);
 });
+
+test("the selection's picture isn't rewritten on every redraw (the browser reads SVG back differently: it blinked)", () => {
+  const ui = boot();
+  ui.fromPlugin({ type: "hello", hello: { type: "hello", fileName: "TEST", page: "Designs", selection: 1 } });
+  ui.sockets[0].open();
+  // Like a browser: self-closing SVG elements read back with a closing tag.
+  const thumb = ui.el("thumb");
+  let stored = "", writes = 0;
+  Object.defineProperty(thumb, "innerHTML", { get: () => stored, set: (v: string) => { writes++; stored = v.replace(/<(\w+)([^<>]*)\/>/g, "<$1$2></$1>"); } });
+  ui.fromPlugin({ type: "desk", count: 1, names: ["Note"], owner: null, asks: [] });
+  writes = 0;
+  ui.fromPlugin({ type: "thumb", count: 1, id: "1:2", name: "Note", kind: "TEXT", w: 180, h: 30, png: "iVBORw0KGgo=" });
+  assert.equal(writes, 1);
+  for (let i = 0; i < 5; i++) ui.fromPlugin({ type: "desk", count: 1, names: ["Note"], owner: null, asks: [] }); // redraws
+  assert.equal(writes, 1, "drawn once, left alone after");
+  ui.fromPlugin({ type: "thumb", count: 1, id: "1:3", name: "Other", kind: "FRAME", w: 100, h: 40, png: "iVBORw0KGgp=" });
+  assert.equal(writes, 2, "a new picture is drawn");
+});
+
+test("the guide: opens by itself the first time, closing it is remembered; the ? opens it again; the README link opens in the browser", () => {
+  const ui = boot();
+  ui.fromPlugin({ type: "settings", cursor: true, zoom: true, mini: false, guideSeen: false });
+  assert.equal(ui.els.guide.dataset.open, "1", "first run: the guide is open");
+  ui.els.guideOk.onclick();
+  assert.equal(ui.els.guide.dataset.open, "");
+  assert.ok(ui.posted.some((m) => m.type === "guide-seen"), "and the plugin remembers it");
+  const seen = ui.posted.filter((m) => m.type === "guide-seen").length;
+  ui.els.helpBtn.onclick();
+  assert.equal(ui.els.guide.dataset.open, "1", "the ? opens it");
+  ui.els.guideClose.onclick();
+  assert.equal(ui.posted.filter((m) => m.type === "guide-seen").length, seen, "remembered once");
+  ui.els.guideReadme.onclick();
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.posted.at(-1))), { type: "open-url", url: "https://github.com/shayan-m81/layerwright#readme" });
+  const later = boot();
+  later.fromPlugin({ type: "settings", cursor: true, zoom: true, mini: false, guideSeen: true });
+  assert.notEqual(later.el("guide").dataset.open, "1", "seen before: it stays closed");
+});
