@@ -196,7 +196,14 @@ export async function scanDesignSystem(opts: { includeLibraries?: boolean; maxIn
   // A library text style reached by id may not report its font; a layer using it does.
   const sampleFont = new Map<string, FontName>();
   const known = new Set([...styles.map((x) => x.id), ...variables.map((v) => v.id)]);
-  const layers = figma.root.findAllWithCriteria({ types: ["TEXT", "FRAME", "RECTANGLE", "ELLIPSE", "VECTOR", "COMPONENT", "INSTANCE"] });
+  // Page by page, top-level layer by top-level layer, so the AI cursor's layers (always top-level) aren't walked.
+  const types: ("TEXT" | "FRAME" | "RECTANGLE" | "ELLIPSE" | "VECTOR" | "COMPONENT" | "INSTANCE")[] = ["TEXT", "FRAME", "RECTANGLE", "ELLIPSE", "VECTOR", "COMPONENT", "INSTANCE"];
+  const layers: ReturnType<typeof figma.root.findAllWithCriteria<typeof types>> = [];
+  for (const page of figma.root.children) for (const top of page.children) {
+    if (isOverlay(top)) continue;
+    if ((types as string[]).includes(top.type)) layers.push(top as (typeof layers)[number]);
+    if ("findAllWithCriteria" in top) for (const n of top.findAllWithCriteria({ types })) layers.push(n);
+  }
   const sample = (n: TextNode) => {
     if (typeof n.textStyleId !== "string" || !n.textStyleId || sampleFont.has(n.textStyleId)) return;
     try {
