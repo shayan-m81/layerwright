@@ -5,6 +5,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- Removing a session in the plugin window: the ✕ shared a style with Activity's 18 px ×, so "Remove?" overflowed the row and the window edge. It is a real button now, sized to its label, and once pressed it reads **Remove** in place of the session's state. A double-click no longer removes a session (the confirming press must come a moment after the first), and the session list no longer redraws under the pointer while it's pressed, which lost clicks while a session was working.
+- The plugin window said "Connected to Claude Code" while no session was connected (only the hub was), so requests had nowhere to go. It now says **Connected · no session** with what to do, and names the session's own app (Claude Code, Codex, Cursor) when there is one.
+
+### Added
+- Sessions removed in the plugin window stay listed there, faded, as **Removed**, with how they come back, until they join again or close. A removed session that joins again (its agent's next `figma_status`) tells the user so.
+- `doctor` and `figma_status` name any session on this computer still running Layerwright 0.x, which can't share Figma with 1.x, with its folder and the fix.
+- `~/.layerwright/hub.log` lines carry the local time, and each hub start logs its version and pid.
+
+### Changed
+- The request watcher (Monitor) is no longer started silently: the agent tells the user in one line that it's watching the Layerwright window for their requests.
+
 ## [1.0.0] - 2026-10-05
 
 ### Added

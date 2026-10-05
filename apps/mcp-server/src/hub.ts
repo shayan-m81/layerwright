@@ -37,7 +37,7 @@ const str = (v: unknown, max: number) => (typeof v === "string" ? v.slice(0, max
 /** Distinct, readable on light and dark Figma themes. */
 export const SESSION_COLORS = ["#7c3aed", "#0d99ff", "#14ae5c", "#f24822", "#e8a200", "#e83e8c", "#00a3a3", "#8b5e3c"];
 
-interface Client { ws: WebSocket; info: SessionInfo; pending: Set<string> }
+interface Client { ws: WebSocket; info: SessionInfo; pending: Set<string>; pid?: number }
 
 export interface HubOptions {
   version?: string;
@@ -63,6 +63,8 @@ export class Hub {
   /** The plugin window presented this computer's pairing key: its requests may go into sessions. */
   private paired = false;
   private clients = new Map<string, Client>();
+  /** Sessions the user removed in the window, shown there (faded) until they join again or an hour passes. */
+  private removed = new Map<string, { info: SessionInfo; at: number; pid?: number }>();
   /** Requests from the Figma window, whichever session has them, so any session can pick them up (/layer:inbox). */
   private requests = new Map<string, { action: FigmaAction; session: string; status: string; at: number; touched: number }>();
   private seq = 0;
@@ -103,15 +105,38 @@ export class Hub {
 
   status() {
     return { type: "doctor", hub: true, protocol: HUB_PROTOCOL, version: this.version, port: this.port, pluginConnected: this.pluginOpen(), pluginPaired: this.pluginOpen() && this.paired, hello: this.hello,
-      sessions: [...this.clients.values()].map((c) => ({ name: c.info.name, client: c.info.client, workdir: c.info.workdir, version: c.info.version })) };
+      sessions: [...this.clients.values()].map((c) => ({ name: c.info.name, client: c.info.client, workdir: c.info.workdir, version: c.info.version })),
+      removed: this.removedList().map((r) => ({ name: r.name, workdir: r.workdir, at: r.at })) };
   }
 
   sessions(): SessionInfo[] { return [...this.clients.values()].map((c) => c.info); }
+
+  /** While removed sessions are listed, notice the ones that closed (or timed out) and update the window. */
+  private removedTimer?: NodeJS.Timeout;
+  private watchRemoved() {
+    if (this.removedTimer) return;
+    this.removedTimer = setInterval(() => {
+      const before = this.removed.size;
+      this.removedList();
+      if (this.removed.size !== before) this.sendSessions();
+      if (!this.removed.size) { clearInterval(this.removedTimer); this.removedTimer = undefined; }
+    }, 15_000);
+    this.removedTimer.unref?.();
+  }
+
+  /** Removed in the window and not back yet, newest first. */
+  removedList(): (Pick<SessionInfo, "id" | "name" | "color" | "client" | "workdir"> & { at: number })[] {
+    const cutoff = Date.now() - 60 * 60_000;
+    for (const [id, r] of this.removed) if (r.at < cutoff || (r.pid && !alive(r.pid))) this.removed.delete(id); // a closed session isn't coming back
+    return [...this.removed.values()].sort((a, b) => b.at - a.at)
+      .map(({ info, at }) => ({ id: info.id, name: info.name, color: info.color, client: info.client, workdir: info.workdir, at }));
+  }
 
   close(reason = "stopped", code = 4001) {
     if (this.stopping) return;
     this.stopping = true;
     clearTimeout(this.idle);
+    clearInterval(this.removedTimer);
     for (const c of this.clients.values()) c.ws.close(code, reason);
     this.plugin?.close();
     this.wss?.close();
@@ -206,7 +231,12 @@ export class Hub {
     if (msg?.type === "kick" && typeof msg.session === "string") {
       // "Remove" in the window: that session is let go and doesn't come back by itself (figma_status rejoins).
       const c = this.clients.get(msg.session);
-      if (c && this.paired) { this.log(`session ${c.info.name} removed from the Figma window`); c.ws.close(CLOSE_KICKED, "removed in the Figma window"); }
+      if (c && this.paired) {
+        this.log(`session ${c.info.name} removed from the Figma window`);
+        this.removed.set(c.info.id, { info: c.info, at: Date.now(), pid: c.pid });
+        this.watchRemoved();
+        c.ws.close(CLOSE_KICKED, "removed in the Figma window");
+      }
       return;
     }
     if (msg?.type === "progress") {
@@ -291,7 +321,7 @@ export class Hub {
   }
 
   /** Sessions only go to a plugin that understands them; an older plugin would take them for requests. */
-  private sendSessions() { this.toModern({ type: "sessions", sessions: this.sessions() }); }
+  private sendSessions() { this.toModern({ type: "sessions", sessions: this.sessions(), removed: this.removedList() }); }
 
   // ---------- sessions ----------
 
@@ -323,8 +353,9 @@ export class Hub {
           ws.close();
           return;
         }
-        c = { ws, pending: new Set(), info: this.register(msg) };
+        c = { ws, pending: new Set(), info: this.register(msg), pid: Number.isInteger(msg.pid) && msg.pid > 0 ? msg.pid : undefined };
         this.clients.set(c.info.id, c);
+        if (this.removed.delete(c.info.id)) this.log(`session ${c.info.name} joined again after it was removed`);
         clearTimeout(this.idle);
         this.log(`session ${c.info.name} connected (${this.clients.size} now)`);
         this.toClient(c, { type: "welcome", session: c.info, protocol: HUB_PROTOCOL, version: this.version, plugin: { connected: this.pluginOpen(), hello: this.hello }, sessions: this.clients.size });
@@ -471,6 +502,11 @@ export class Hub {
     this.close(reason, code);
     this.o.onExit?.(reason);
   }
+}
+
+/** Is that process still running? (Sessions run as the same user as the hub, so a signal-0 check is allowed.) */
+function alive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
 /** A session title as the plugin window can show it: one line, at most 40 characters. */

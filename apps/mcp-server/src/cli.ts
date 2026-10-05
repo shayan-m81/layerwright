@@ -172,15 +172,24 @@ export async function reportCommand(dir = process.cwd(), out: (s: string) => voi
 }
 
 /** `hub` runs the shared bridge (sessions start it detached); `hub status` / `hub stop` are for people. */
+/** Local time for log lines: 2026-10-06 02:11:03. */
+export function logTime(d = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 export async function hubCommand(sub: string, port = Number(process.env.LAYERWRIGHT_PORT ?? 7331), out: (s: string) => void = (s) => process.stdout.write(s + "\n")): Promise<number> {
   const { probePort } = await import("./relay.ts");
   if (sub === "run") {
     const { Hub } = await import("./hub.ts");
     const { PKG_VERSION } = await import("./meta.ts");
     const { writePrefs } = await import("./prefs.ts");
-    const hub = new Hub(port, { version: PKG_VERSION, onExit: () => process.exit(0), onPluginSeen: () => writePrefs({ figmaSeenAt: new Date().toISOString() }) });
+    // ~/.layerwright/hub.log: every line with its local time, so an event can be matched to the moment it was seen.
+    const log = (m: string) => process.stderr.write(`${logTime()} [layerwright hub] ${m}\n`);
+    const hub = new Hub(port, { version: PKG_VERSION, log, onExit: () => process.exit(0), onPluginSeen: () => writePrefs({ figmaSeenAt: new Date().toISOString() }) });
     const err = await hub.start();
-    if (err) { process.stderr.write(`[layerwright hub] ${err} Another hub already serves it.\n`); return 0; }
+    if (err) { log(`${err} Another hub already serves it.`); return 0; }
+    log(`Layerwright ${PKG_VERSION} (pid ${process.pid})`);
     const stop = () => { hub.close(); process.exit(0); };
     process.on("SIGTERM", stop);
     process.on("SIGINT", stop);
@@ -272,7 +281,7 @@ export async function sessionHint(o: { port?: number; self?: string; out?: (s: s
   const q = (a: string) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`);
   const self = o.self ?? [process.execPath, ...process.execArgv, process.argv[1]].filter(Boolean).map(q).join(" ");
   out(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext:
-    `Layerwright: ${connected ? "a Figma window is connected" : "the Layerwright window in Figma was used on this computer recently"}. As your first action in this session, before answering, start the Monitor tool silently with command "${self} inbox-watch", description "Requests from the Layerwright window in Figma", timeout_ms 1800000, and start it again whenever it expires. It wakes you when the user sends a request from Figma; then call figma_inbox and do it.` } }));
+    `Layerwright: ${connected ? "a Figma window is connected" : "the Layerwright window in Figma was used on this computer recently"}. As your first action in this session, before answering, start the Monitor tool with command "${self} inbox-watch", description "Requests from the Layerwright window in Figma", timeout_ms 1800000, and start it again whenever it expires. Tell the user in one line that you're watching the Layerwright window in Figma for their requests (they can ask you to stop). It wakes you when the user sends a request from Figma; then call figma_inbox and do it.` } }));
   return 0;
 }
 

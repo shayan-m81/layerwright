@@ -19,7 +19,9 @@ function boot(o: { topLevel?: boolean } = {}) {
     open() { this.readyState = 1; this.onopen?.(); }
   }
   const timers: (() => void)[] = [], delays: number[] = [];
+  const listeners: Record<string, ((ev?: unknown) => void)[]> = {};
   const win: any = {
+    addEventListener: (type: string, fn: (ev?: unknown) => void) => { (listeners[type] ??= []).push(fn); },
     document: { getElementById: el },
     WebSocket: FakeWS,
     parent: { postMessage: (m: any) => posted.push(m.pluginMessage) },
@@ -30,7 +32,8 @@ function boot(o: { topLevel?: boolean } = {}) {
   if (o.topLevel) { win.parent = win; win.postMessage = () => {}; } // a page on its own, not inside Figma's plugin iframe
   runInNewContext(script, win);
   const fromPlugin = (msg: unknown) => win.onmessage({ data: { pluginMessage: msg } });
-  return { els, el, sockets, posted, timers, delays, fromPlugin };
+  const fire = (type: string, ev?: unknown) => { for (const fn of listeners[type] ?? []) fn(ev); };
+  return { els, el, sockets, posted, timers, delays, fromPlugin, fire };
 }
 
 test("UI states: connecting → connected (file, page, selection) → running op in plain words → friendly error", () => {
@@ -38,6 +41,8 @@ test("UI states: connecting → connected (file, page, selection) → running op
   assert.equal(ui.els.dot.dataset.state, "disconnected");
   ui.fromPlugin({ type: "hello", hello: { type: "hello", fileName: "TEST", page: "Designs", selection: 2, pluginBuild: "2026-09-29T12:00:00.000Z" } });
   ui.sockets[0].open();
+  assert.equal(ui.els.status.textContent, "Connected · no session", "the hub alone isn't a session to send to");
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [{ id: "sa", name: "shop", color: "#7c3aed", client: "claude-code" }] }) });
   assert.equal(ui.els.status.textContent, "Connected to Claude Code");
   assert.equal(ui.els.detail.textContent, "TEST · Designs · 2 layers selected");
   ui.sockets[0].onmessage({ data: JSON.stringify({ id: "r1", method: "executePlan" }) });
@@ -78,7 +83,7 @@ test("changing the port leaves exactly one live socket (stale onclose no longer 
   assert.equal(ui.timers.length, 0, "no retry was scheduled by the stale socket");
   assert.ok(ui.posted.some((m) => m.type === "set-port" && m.port === 7336));
   ui.sockets[1].open();
-  assert.equal(ui.els.status.textContent, "Connected to Claude Code");
+  assert.equal(ui.els.status.textContent, "Connected · no session");
 });
 
 test("a saved port from clientStorage is applied without re-saving; bad ports are rejected", () => {
@@ -343,10 +348,20 @@ test("the session picker: the chosen session up top, every session in the menu, 
   assert.equal(ui.els.picker.dataset.open, "1");
   assert.doesNotMatch(ui.els.selChips.innerHTML, /data-act="kick"/, "no Remove inside a session you give the selection to: a second click there removed it");
   // Remove is on the Sessions tab, and asks once more there.
-  ui.els.sessions.onclick({ target: { dataset: { act: "kick", session: "sb" } } });
-  assert.match(ui.els.sessions.innerHTML, /data-confirm="1">Remove\?/);
-  ui.els.sessions.onclick({ target: { dataset: { act: "kick", session: "sb" } } });
-  assert.deepEqual(JSON.parse(ui.sockets[0].sent.at(-1)), { type: "kick", session: "sb" });
+  const now = Date.now;
+  try {
+    let t = now();
+    Date.now = () => t;
+    ui.els.sessions.onclick({ target: { dataset: { act: "kick", session: "sb" } } });
+    assert.match(ui.els.sessions.innerHTML, /<li[^>]*data-confirm="1"><span class="avatar"[^>]*>A.*<button type="button" class="kick" data-act="kick" data-session="sb" data-confirm="1"[^>]*>Remove<\/button>/s, "armed: a real button reading Remove, and its row marked so the state pill makes room");
+    t += 150; // the second click of a double-click
+    ui.els.sessions.onclick({ target: { dataset: { act: "kick", session: "sb" } } });
+    assert.ok(!ui.sockets[0].sent.some((m: string) => JSON.parse(m).type === "kick"), "a double-click doesn't remove");
+    assert.match(ui.els.sessions.innerHTML, />Remove<\/button>/, "still asking");
+    t += 600;
+    ui.els.sessions.onclick({ target: { dataset: { act: "kick", session: "sb" } } });
+    assert.deepEqual(JSON.parse(ui.sockets[0].sent.at(-1)), { type: "kick", session: "sb" });
+  } finally { Date.now = now; }
   ui.els.selChips.onclick({ target: { dataset: { act: "assign", session: "sb" } } });
   assert.equal(ui.els.picker.dataset.open, "", "choosing closes the menu");
   ui.sockets[0].onmessage({ data: JSON.stringify({ id: "sa~r1", method: "editNodes", session: { id: "sa", name: "Checkout" } }) });
@@ -654,4 +669,52 @@ test("the guide: opens by itself the first time, closing it is remembered; the ?
   const later = boot();
   later.fromPlugin({ type: "settings", cursor: true, zoom: true, mini: false, guideSeen: true });
   assert.notEqual(later.el("guide").dataset.open, "1", "seen before: it stays closed");
+});
+
+test("the remove button has its own style: Activity's 18px × rule never squeezes it, and armed it takes the pill's place", () => {
+  const css = readFileSync(new URL("../src/ui.html", import.meta.url), "utf8").match(/<style>([\s\S]*?)<\/style>/)![1];
+  assert.match(css, /\.kick \{[^}]*min-width: 24px[^}]*white-space: nowrap/);
+  assert.doesNotMatch(css, /\.kick \{[^}]*[^-]width: \d/, "no fixed width: it fits its label");
+  assert.match(css, /#sessions li\[data-confirm="1"\] \.pill \{ display: none; \}/);
+  assert.doesNotMatch(css, /#sessions li:hover \.x/, "the session list no longer uses .x");
+});
+
+test("a press on the session list holds its redraws until the click lands (a redraw under the pointer lost the click)", () => {
+  const ui = withSession();
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [{ id: "sa", name: "Checkout", color: "#7c3aed", client: "claude-code" }, { id: "sb", name: "Admin", color: "#0d99ff" }] }) });
+  const before = ui.els.sessions.innerHTML;
+  ui.els.sessions.onpointerdown();
+  ui.sockets[0].onmessage({ data: JSON.stringify({ id: "sb~r1", method: "editNodes", session: { id: "sb", name: "Admin" } }) }); // work starts: the list would redraw
+  assert.equal(ui.els.sessions.innerHTML, before, "not redrawn while pressed");
+  const pending = ui.timers.length;
+  ui.fire("pointerup");
+  assert.equal(ui.timers.length, pending + 1, "released: one redraw scheduled after the click");
+  ui.timers.at(-1)!();
+  assert.match(ui.els.sessions.innerHTML, /Admin.*Editing layers/s, "and then it catches up");
+});
+
+test("with no session the window says so; a session removed here stays listed, faded, with how it comes back", () => {
+  const ui = boot();
+  ui.fromPlugin({ type: "hello", hello: { type: "hello", fileName: "TEST", page: "Designs", selection: 0 } });
+  ui.sockets[0].open();
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [] }) });
+  assert.equal(ui.els.status.textContent, "Connected · no session");
+  assert.equal(ui.els.connText.textContent, "No session");
+  assert.equal(ui.els.detail.textContent, "Start Claude Code or Codex in a project");
+  assert.equal(ui.els.dot.dataset.state, "idle", "not the green of a working connection");
+  assert.equal(ui.els.conn.dataset.state, "idle");
+  assert.equal(ui.els.noSessions.style.display, "block");
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [], removed: [{ id: "sa", name: "gift-mvp", color: "#7c3aed", client: "claude-code", workdir: "/Users/me/gift-mvp", at: 1 }] }) });
+  assert.equal(ui.els.detail.textContent, "You removed gift-mvp");
+  assert.match(ui.els.detail.title, /joins again the next time you ask it for Figma work/);
+  assert.equal(ui.els.sessionsBox.style.display, "block");
+  assert.equal(ui.els.noSessions.style.display, "none");
+  assert.match(ui.els.sessions.innerHTML, /<li class="gone"[^>]*>.*gift-mvp.*Rejoins when you ask it for Figma.*pill off">Removed/s);
+  assert.doesNotMatch(ui.els.sessions.innerHTML, /data-act="kick"/, "nothing to remove twice");
+  // It joins again: listed as a session, not as removed.
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [{ id: "sa", name: "gift-mvp", color: "#7c3aed", client: "claude-code" }], removed: [{ id: "sa", name: "gift-mvp", at: 1 }] }) });
+  assert.doesNotMatch(ui.els.sessions.innerHTML, /class="gone"/);
+  assert.equal(ui.els.status.textContent, "Connected to Claude Code");
+  assert.equal(ui.els.dot.dataset.state, "connected");
+  assert.equal(ui.els.detail.title, "", "the hint goes with the state");
 });

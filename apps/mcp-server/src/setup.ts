@@ -329,7 +329,7 @@ export function probe(port: number, timeoutMs = 1500): Promise<{ ok: true; statu
   });
 }
 
-export async function doctor(o: { dir?: string; port?: number; out?: Out; skipBrowserCheck?: boolean } = {}): Promise<number> {
+export async function doctor(o: { dir?: string; port?: number; out?: Out; skipBrowserCheck?: boolean; olderServers?: () => import("./others.ts").OlderServer[] } = {}): Promise<number> {
   const out = o.out ?? stdout;
   const dir = resolve(o.dir ?? process.cwd());
   let problems = 0;
@@ -381,6 +381,14 @@ export async function doctor(o: { dir?: string; port?: number; out?: Out; skipBr
       if (installed && running !== installed) failWith(`the open plugin window runs an older build (${running ?? "before build stamps"}) than the installed one (${installed})`, "close the Layerwright plugin in Figma and run it again (or turn on Plugins → Development → Hot reload plugin)");
     }
     else failWith("Figma plugin is not connected", `open Figma desktop, run the plugin (Plugins → Development), and make sure its port is ${port}`);
+  }
+  {
+    // A session still on 0.x owns the port alone and never joins the hub: it can't reach Figma while this one runs.
+    const { findOlderServers } = await import("./others.ts");
+    for (const s of (o.olderServers ?? findOlderServers)()) {
+      failWith(`${s.workdir ? `the session in ${s.workdir}` : `a session (pid ${s.pid})`} runs Layerwright ${s.version}, a single-session server that can't share Figma with this version (it never connects while a hub holds the port)`,
+        `in that project change "layerwright@${s.version}" to "layerwright@${PKG_VERSION}" in .mcp.json (or run npx ${PKG_NAME}@latest init there), then reconnect it with /mcp; a leftover process can be ended with: kill ${s.pid}`);
+    }
   }
 
   if (!o.skipBrowserCheck) {
