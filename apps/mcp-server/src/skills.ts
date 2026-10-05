@@ -6,7 +6,10 @@
 //   from). Nothing Layerwright installs or updates touches that folder, so they stay.
 // The agent sees the enabled ones in figma_status and reads one with layerwright_skills; the plugin window lists them
 // all (the Skills tab), turns them on and off, and adds new ones from a link or pasted text.
+import { lookup as dnsLookup } from "node:dns";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { get as httpsGet } from "node:https";
+import { isIP } from "node:net";
 import { join, relative, resolve, sep } from "node:path";
 import { layerwrightHome, skillLibrarySource } from "./meta.ts";
 
@@ -26,7 +29,7 @@ interface Catalog { categories: { id: string; name: string }[]; skills: CatalogE
 interface State { disabled: string[]; added: Record<string, { source: string; addedAt: string; category?: string }> }
 
 export const CATEGORIES_YOURS = { id: "yours", name: "Yours" };
-const MAX_FILE = 512 * 1024, MAX_TOTAL = 2 * 1024 * 1024, MAX_FILES = 40;
+const MAX_FILE = 512 * 1024, MAX_TOTAL = 2 * 1024 * 1024, MAX_FILES = 40, MAX_TREE = 16 * 1024 * 1024;
 
 /** A skill's front matter (name, description), YAML's simple forms: `key: value`, quoted, or a folded/literal block. */
 export function frontMatter(md: string): Record<string, string> {
@@ -71,13 +74,88 @@ function filesOf(dir: string): string[] {
 /** Where a skill comes from, as files to fetch: a GitHub folder, file or repository, any .md link, or a page that
  *  links to one (a skills directory such as aiuxplayground.com/skills/<name>). */
 export interface Fetched { name?: string; source: string; files: { path: string; text: string }[] }
-type Fetcher = (url: string) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
+/** GET a link; `max`: the most bytes of body it may have. */
+type Fetcher = (url: string, max?: number) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
+
+/** An IPv6 address as its eight 16-bit groups (a trailing dotted IPv4 part becomes the last two). */
+function groups6(ip: string): number[] | undefined {
+  let s = ip.replace(/^\[|\]$/g, "").split("%")[0];
+  const v4 = /^(.*:)(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(s);
+  if (v4) { const [a, b, c, d] = v4.slice(2).map(Number); s = `${v4[1]}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`; }
+  const [head, tail, more] = s.split("::");
+  if (more !== undefined) return undefined;
+  const h = head ? head.split(":") : [], t = tail === undefined ? undefined : tail ? tail.split(":") : [];
+  const parts = t ? [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill("0"), ...t] : h;
+  return parts.length === 8 ? parts.map((p) => parseInt(p, 16) || 0) : undefined;
+}
+
+/** An address a skill link must never reach: this computer, the local network, link-local and other addresses that
+ *  aren't on the public internet, in IPv4 or any IPv6 form (mapped ::ffff:…, NAT64, unique local, link-local). */
+export function privateAddress(ip: string): boolean {
+  const v = isIP(ip.replace(/^\[|\]$/g, "").split("%")[0]);
+  if (v === 4) {
+    const [a, b, c] = ip.split(".").map(Number);
+    return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168) || (a === 192 && b === 0 && (c === 0 || c === 2)) || (a === 198 && (b === 18 || b === 19)) || (a === 198 && b === 51 && c === 100) || (a === 203 && b === 0 && c === 113);
+  }
+  if (v !== 6) return true; // not an address at all
+  const g = groups6(ip);
+  if (!g) return true;
+  const v4 = (hi: number, lo: number) => privateAddress(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
+  if (g.slice(0, 5).every((x) => x === 0) && (g[5] === 0xffff || g[5] === 0)) return g[5] === 0 && g[6] === 0 && g[7] <= 1 ? true : v4(g[6], g[7]); // ::, ::1, ::ffff:v4, ::v4
+  if (g[0] === 0x64 && g[1] === 0xff9b) return v4(g[6], g[7]); // NAT64
+  if (g[0] === 0x2002) return v4(g[1], g[2]); // 6to4
+  return (g[0] & 0xfe00) === 0xfc00 || (g[0] & 0xffc0) === 0xfe80 || (g[0] & 0xffc0) === 0xfec0 || (g[0] & 0xff00) === 0xff00 || (g[0] === 0x2001 && g[1] === 0xdb8) || (g[0] === 0x2001 && g[1] === 0);
+}
+
+/** A link's host that is private by its name or its address (DNS names are checked once resolved: safeGet). */
+function privateHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/\.$/, "");
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal")) return true;
+  return isIP(h.replace(/^\[|\]$/g, "")) ? privateAddress(h) : false;
+}
+
+/** GET over https without ever reaching a private address: the host is resolved once and connected to at that
+ *  address (checked in the lookup, so the name can't point elsewhere a moment later), redirects are followed by hand
+ *  (at most 3, each checked the same way), and the body is read only up to `max` bytes. */
+export function safeGet(url: string, max = MAX_TOTAL, hops = 0): Promise<{ ok: boolean; status: number; text(): Promise<string> }> {
+  return new Promise((done, fail) => {
+    const u = new URL(url);
+    if (u.protocol !== "https:") return fail(new Error("Only https links."));
+    if (privateHost(u.hostname)) return fail(new Error("Only public links."));
+    const guarded = (host: string, opts: any, cb: (...a: any[]) => void) => dnsLookup(host, opts, (err: any, address: any, family?: number) => {
+      if (err) return cb(err);
+      const all: string[] = Array.isArray(address) ? address.map((x: { address: string }) => x.address) : [address];
+      if (all.some(privateAddress)) return cb(Object.assign(new Error("Only public links."), { code: "EPRIVATE" }));
+      cb(null, address, family);
+    });
+    const req = httpsGet(u, { headers: { "user-agent": "layerwright" }, lookup: guarded as any, signal: AbortSignal.timeout(15_000) }, (res) => {
+      const status = res.statusCode ?? 0;
+      if (status >= 300 && status < 400 && res.headers.location) {
+        res.resume();
+        if (hops >= 3) return fail(new Error(`${url} redirects too many times.`));
+        return safeGet(new URL(res.headers.location, u).href, max, hops + 1).then(done, fail);
+      }
+      if (status < 200 || status >= 300) { res.resume(); return done({ ok: false, status, text: async () => "" }); }
+      const chunks: Buffer[] = [];
+      let size = 0;
+      res.on("data", (c: Buffer) => {
+        size += c.length;
+        if (size > max) { res.destroy(); fail(new Error(`${url} is too big for a skill.`)); return; }
+        chunks.push(c);
+      });
+      res.on("end", () => { const body = Buffer.concat(chunks).toString("utf8"); done({ ok: true, status, text: async () => body }); });
+      res.on("error", fail);
+    });
+    req.on("error", (e) => fail(e.message === "Only public links." ? e : new Error(`Couldn't fetch ${url}: ${e.message}`)));
+  });
+}
 
 export class SkillStore {
   constructor(private o: { library?: string; home?: string; fetch?: Fetcher } = {}) {}
   private get library() { return this.o.library ?? skillLibrarySource(); }
   private get home() { return this.o.home ?? join(layerwrightHome(), "skills"); }
-  private get fetcher(): Fetcher { return this.o.fetch ?? ((u) => fetch(u, { signal: AbortSignal.timeout(15_000), headers: { "user-agent": "layerwright" } })); }
+  private get fetcher(): Fetcher { return this.o.fetch ?? safeGet; }
 
   catalog(): Catalog {
     try { return JSON.parse(readFileSync(join(this.library, "catalog.json"), "utf8")) as Catalog; } catch { return { categories: [], skills: [] }; }
@@ -181,8 +259,8 @@ export class SkillStore {
   private async getText(url: string): Promise<string> {
     const u = new URL(url);
     if (u.protocol !== "https:") throw new Error("Only https links.");
-    if (/^(localhost|127\.|0\.|10\.|192\.168\.|169\.254\.|\[?::1\]?$)/i.test(u.hostname) || u.hostname.endsWith(".local")) throw new Error("Only public links.");
-    const r = await this.fetcher(url);
+    if (privateHost(u.hostname)) throw new Error("Only public links.");
+    const r = await this.fetcher(url, MAX_TOTAL);
     if (!r.ok) throw new Error(`${url} answered ${r.status}.`);
     const t = await r.text();
     if (t.length > MAX_TOTAL) throw new Error(`${url} is too big for a skill.`);
@@ -232,7 +310,7 @@ export class SkillStore {
   }
 
   private async tree(owner: string, repo: string, ref: string): Promise<string[]> {
-    const r = await this.fetcher(`https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`);
+    const r = await this.fetcher(`https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`, MAX_TREE);
     if (!r.ok) throw new Error(`GitHub didn't list ${owner}/${repo} (${r.status}${r.status === 403 ? ": its rate limit, try again later or link to the SKILL.md file" : ""}).`);
     const d = JSON.parse(await r.text()) as { tree?: { path: string; type: string }[] };
     return (d.tree ?? []).filter((t) => t.type === "blob").map((t) => t.path);
