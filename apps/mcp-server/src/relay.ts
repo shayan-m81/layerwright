@@ -8,8 +8,8 @@ import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import type { BridgeHello, BridgeMethod, FigmaAction, FigmaActionStatus, SessionInfo } from "@cde/core";
 import { BridgeError, WsBridge, type FigmaTransport } from "./bridge.ts";
-import { HUB_PROTOCOL } from "./hub.ts";
-import { FROM_SOURCE, REPO_ROOT } from "./meta.ts";
+import { CLOSE_KICKED, CLOSE_REPLACED, HUB_PROTOCOL } from "./hub.ts";
+import { FROM_SOURCE, REPO_ROOT, pluginKey } from "./meta.ts";
 import { currentTask } from "./task.ts";
 
 type Probe = { kind: "hub"; status: any } | { kind: "legacy"; status: any } | { kind: "free" } | { kind: "unknown"; reason: string };
@@ -38,7 +38,9 @@ export function spawnHub(port: number) {
   const args = FROM_SOURCE
     ? ["--import", "tsx", resolve(REPO_ROOT!, "apps/mcp-server/src/cli.ts"), "hub", "--port", String(port)]
     : [fileURLToPath(import.meta.url), "hub", "--port", String(port)]; // the published bundle: this file is dist/cli.js
-  const child = spawn(process.execPath, args, { detached: true, stdio: ["ignore", log, log], env: { ...process.env, LAYERWRIGHT_HUB: "1" }, cwd: home });
+  // From a checkout, `--import tsx` is found from the working folder: the checkout's own node_modules. No console
+  // window on Windows (closing it would kill the hub).
+  const child = spawn(process.execPath, args, { detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, LAYERWRIGHT_HUB: "1" }, cwd: FROM_SOURCE ? REPO_ROOT : home });
   child.unref();
 }
 
@@ -50,6 +52,8 @@ export interface RelayOptions {
   startHub?: (port: number) => void | Promise<void>;
   /** Tests: allow ports outside the plugin's 7331–7340 so they never meet a real session. */
   anyPort?: boolean;
+  /** The pairing key this session presents to the hub (default: ~/.layerwright/key, made if missing). */
+  key?: () => string | undefined;
 }
 
 interface Pending { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout; method: string; timeoutMs: number; started: number }
@@ -65,6 +69,8 @@ export class RelayBridge implements FigmaTransport {
   private rejected = false;
   private client?: string;
   private title?: string;
+  /** An older hub gave the port to a newer Layerwright: until then the newer session starts the hub, not this one. */
+  private noSpawnUntil = 0;
   lastProgress?: { label: string; done?: number; total?: number; at: number };
   startError?: string;
   /** This session as the hub named it (shown in the plugin window). */
@@ -87,15 +93,16 @@ export class RelayBridge implements FigmaTransport {
       this.log(this.startError);
       return;
     }
+    this.startError ??= "Layerwright is still connecting to Figma; try again in a moment.";
     await this.attempt();
   }
 
   private async attempt(): Promise<void> {
     if (this.closed) return;
     let p = await probePort(this.port);
-    if (p.kind === "free" || p.kind === "unknown") {
+    if (p.kind === "free" && Date.now() >= this.noSpawnUntil) {
       try { await (this.o.startHub ?? spawnHub)(this.port); } catch (e) { this.log(`couldn't start the hub: ${(e as Error).message}`); }
-      for (let i = 0; i < 30 && (p.kind === "free" || p.kind === "unknown"); i++) {
+      for (let i = 0; i < 30 && p.kind === "free"; i++) {
         await new Promise((r) => setTimeout(r, 150));
         p = await probePort(this.port, 800);
       }
@@ -105,12 +112,24 @@ export class RelayBridge implements FigmaTransport {
       this.log(this.startError);
       return this.retry(3000);
     }
-    if (p.kind !== "hub") {
-      this.startError = `Couldn't reach or start the Layerwright hub on port ${this.port}. Run: npx layerwright doctor`;
+    if (p.kind === "unknown") {
+      // Something that isn't Layerwright holds the port: a hub started now would only fail to take it.
+      this.startError = `Port ${this.port} is held by another program that isn't Layerwright (${p.reason}), so Figma can't reach this session. Close that program, or set LAYERWRIGHT_PORT to another port from 7331–7340 (and the same port in the plugin window). Run: npx layerwright doctor`;
       this.log(this.startError);
-      return this.retry(3000);
+      return this.retry(10_000);
+    }
+    if (p.kind !== "hub") {
+      this.startError = Date.now() < this.noSpawnUntil
+        ? "The shared Figma connection is moving to a newer Layerwright; this session joins it in a moment."
+        : `Couldn't start the Layerwright hub on port ${this.port} (its log: ~/.layerwright/hub.log). Run: npx layerwright doctor`;
+      this.log(this.startError);
+      return this.retry(Date.now() < this.noSpawnUntil ? 1000 : 3000);
     }
     await this.join();
+  }
+
+  private key(): string | undefined {
+    try { return (this.o.key ?? (() => pluginKey(true)))(); } catch { return undefined; }
   }
 
   private join(): Promise<void> {
@@ -119,7 +138,10 @@ export class RelayBridge implements FigmaTransport {
       let settled = false;
       const settle = () => { if (!settled) { settled = true; done(); } };
       const t = setTimeout(() => { ws.terminate(); }, 3000);
-      ws.on("open", () => ws.send(JSON.stringify({ type: "hello", protocol: HUB_PROTOCOL, version: this.version, workdir: this.o.workdir ?? process.cwd(), client: this.client, title: this.title, pid: process.pid })));
+      // A reconnect asks for this session's id, colour and name back (the hub gives them when nobody else has them).
+      const was = this.session;
+      ws.on("open", () => ws.send(JSON.stringify({ type: "hello", protocol: HUB_PROTOCOL, version: this.version, workdir: this.o.workdir ?? process.cwd(), client: this.client, title: this.title, pid: process.pid, key: this.key(),
+        resume: was?.id, color: was?.color, name: was && !was.titled ? was.name : undefined })));
       ws.on("message", (raw) => {
         let msg: any;
         try { msg = JSON.parse(String(raw)); } catch { return; }
@@ -140,11 +162,14 @@ export class RelayBridge implements FigmaTransport {
       ws.on("error", () => {});
       ws.on("close", (code) => {
         clearTimeout(t);
-        if (this.ws === ws) this.dropped();
+        const joined = this.ws === ws;
+        if (joined) this.dropped();
         settle();
         // Removed in the Figma window: stay away until this session asks again (figma_status → rejoin).
-        if (code === 4002) { this.kicked = true; this.startError = "This session was removed in the Layerwright window in Figma. Call figma_status to join again."; return; }
-        if (!this.closed) this.retry(this.rejected ? 10_000 : this.ws ? 300 : 1500);
+        if (code === CLOSE_KICKED) { this.kicked = true; this.startError = "This session was removed in the Layerwright window in Figma. Call figma_status to join again."; return; }
+        if (code === CLOSE_REPLACED) this.noSpawnUntil = Date.now() + 15_000;
+        // A hub that was there a moment ago: back quickly. Refused: not before a while.
+        if (!this.closed) this.retry(this.rejected ? 10_000 : joined ? 300 : 1500);
         this.rejected = false;
       });
     });
@@ -269,6 +294,7 @@ export class RelayBridge implements FigmaTransport {
     const p = this.pending.get(id);
     if (!p) return;
     this.pending.delete(id);
+    this.send({ type: "cancel", id }); // the hub stops waiting for it too (a late answer is dropped there)
     const took = Math.round((Date.now() - p.started) / 1000);
     const last = this.lastProgress && Date.now() - this.lastProgress.at < 5 * 60_000 ? ` Its last progress was "${this.lastProgress.label}".` : "";
     p.reject(new BridgeError({ type: "TIMEOUT", message: `Figma did not answer "${p.method}" after ${took}s without progress.${last} The operation may still be running; inspect before retrying.` }));

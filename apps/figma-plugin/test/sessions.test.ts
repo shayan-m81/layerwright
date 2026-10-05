@@ -13,11 +13,15 @@ function setup() {
   let clock = 1000;
   const posted: any[] = [];
   const progress: string[] = [];
-  const desk = new SessionDesk({ selection: () => sel, post: (m) => posted.push(m), progress: (l) => progress.push(l), nodeName: async (id) => `Layer ${id}`, now: () => clock });
+  let own: string[] | null = null; // the selection Layerwright itself set (own.ts)
+  const desk = new SessionDesk({ selection: () => sel, post: (m) => posted.push(m), progress: (l) => progress.push(l), nodeName: async (id) => `Layer ${id}`, now: () => clock,
+    ownSelection: () => (own && own.join() === sel.map((n) => n.id).sort().join() ? own : null) });
   desk.flushMs = 0;
   const select = (...ids: string[]) => { sel = ids.map((id) => ({ id, name: `Layer ${id}` })); desk.onSelectionChange(); };
   const lastDesk = () => posted.filter((m) => m.type === "desk").at(-1);
-  return { desk, select, posted, progress, lastDesk, tick: (ms: number) => { clock += ms; }, setSel: (ids: string[]) => { sel = ids.map((id) => ({ id, name: id })); } };
+  /** Layerwright's own work selects these layers. */
+  const ownSelect = (...ids: string[]) => { sel = ids.map((id) => ({ id, name: id })); own = [...ids].sort(); desk.onSelectionChange(true); };
+  return { desk, select, ownSelect, posted, progress, lastDesk, tick: (ms: number) => { clock += ms; }, setSel: (ids: string[]) => { sel = ids.map((id) => ({ id, name: id })); } };
 }
 
 test("alone, a session uses the selection as before, with no question asked", async () => {
@@ -80,7 +84,7 @@ test("giving the selection to a session in advance means it never has to ask; a 
 test("what a session's own work selects is that session's; another session can't take it without asking", async () => {
   const t = setup();
   t.desk.setSessions([A, B]);
-  await t.desk.run("executePlan", {}, A, async () => { t.setSel(["9:1"]); t.desk.onSelectionChange(); return {}; });
+  await t.desk.run("executePlan", {}, A, async () => { t.ownSelect("9:1"); return {}; });
   assert.equal(t.lastDesk().owner, "sa");
   await t.desk.claimSelection(A); // no question: A built and selected it
   const status = t.desk.pingInfo(B, [{ id: "9:1", name: "Screen", type: "FRAME" }]);
@@ -88,6 +92,30 @@ test("what a session's own work selects is that session's; another session can't
   assert.equal(status.selectionOwner, "shop");
   assert.match(status.selectionNote!, /isn't this session's/);
   assert.deepEqual(t.desk.pingInfo(A, [{ id: "9:1", name: "Screen", type: "FRAME" }]).selectionOwner, "this session");
+});
+
+test("a selection the user makes while a session's edit runs is the user's, not that session's", async () => {
+  const t = setup();
+  t.desk.setSessions([A, { ...B, connectedAt: 5 }]);
+  await t.desk.run("editNodes", { ops: [{ op: "rename", node: "1:1", name: "x" }] }, A, async () => { t.select("3:3"); return {}; });
+  assert.equal(t.lastDesk().owner, "sb", "it goes to the newest session, as any selection of the user's");
+  await assert.rejects(Promise.race([t.desk.claimSelection(A), new Promise((_r, no) => setTimeout(() => no(new Error("asked")), 20))]), /asked/, "A has to ask for it");
+  t.desk.answer(t.lastDesk().asks[0].id, false);
+});
+
+test("the user's own edits while a session's edit runs aren't credited to that session: no false CONFLICT for another session", async () => {
+  const t = setup();
+  t.desk.setSessions([A, B]);
+  t.tick(10);
+  // A renames 1:1; meanwhile the user edits 5:5 (Figma reports both as LOCAL).
+  await t.desk.run("editNodes", { ops: [{ op: "rename", node: "1:1", name: "x" }] }, A, async () => {
+    t.desk.onDocumentChange([{ id: "1:1", origin: "LOCAL", type: "PROPERTY_CHANGE" }, { id: "5:5", origin: "LOCAL", type: "PROPERTY_CHANGE" }, { id: "9:9", origin: "LOCAL", type: "CREATE" }]);
+    return {};
+  });
+  t.tick(10);
+  await t.desk.run("editNodes", { ops: [{ op: "set", node: "5:5", text: "Hi" }] }, B, async () => ({}));
+  await assert.rejects(t.desk.run("editNodes", { ops: [{ op: "rename", node: "1:1", name: "y" }] }, B, async () => ({})), (e: any) => e.detail.type === "CONFLICT", "what A really changed still guards against B");
+  await assert.rejects(t.desk.run("editNodes", { ops: [{ op: "delete", node: "9:9" }] }, B, async () => ({})), (e: any) => e.detail.type === "CONFLICT", "and what A created");
 });
 
 test("editing a layer another session changed after this one read it is refused; reading it again clears that", async () => {

@@ -18,19 +18,19 @@ function boot(o: { topLevel?: boolean } = {}) {
     close() { this.readyState = 3; queueMicrotask(() => this.onclose?.()); }
     open() { this.readyState = 1; this.onopen?.(); }
   }
-  const timers: (() => void)[] = [];
+  const timers: (() => void)[] = [], delays: number[] = [];
   const win: any = {
     document: { getElementById: el },
     WebSocket: FakeWS,
     parent: { postMessage: (m: any) => posted.push(m.pluginMessage) },
-    setTimeout: (fn: () => void) => { timers.push(fn); return timers.length; },
+    setTimeout: (fn: () => void, ms?: number) => { timers.push(fn); delays.push(ms ?? 0); return timers.length; },
     clearTimeout: () => {}, setInterval: () => 0, Date, Math, Number, String, JSON, Map,
   };
   win.window = win;
   if (o.topLevel) { win.parent = win; win.postMessage = () => {}; } // a page on its own, not inside Figma's plugin iframe
   runInNewContext(script, win);
   const fromPlugin = (msg: unknown) => win.onmessage({ data: { pluginMessage: msg } });
-  return { els, el, sockets, posted, timers, fromPlugin };
+  return { els, el, sockets, posted, timers, delays, fromPlugin };
 }
 
 test("UI states: connecting → connected (file, page, selection) → running op in plain words → friendly error", () => {
@@ -333,7 +333,7 @@ test("a session that never acknowledges a request (an older Layerwright) is poin
   } finally { Date.now = realNow; }
 });
 
-test("the session picker: the chosen session up top, every session in the menu, remove asks once more; work brings Activity forward", () => {
+test("the session picker: the chosen session up top, every session in the menu, no Remove in it; work brings Activity forward", () => {
   const ui = withSession();
   ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [{ id: "sa", name: "Checkout", color: "#7c3aed", client: "claude-code" }, { id: "sb", name: "Admin", color: "#0d99ff", client: "codex-mcp-client" }] }) });
   ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: "sa", asks: [] });
@@ -341,9 +341,11 @@ test("the session picker: the chosen session up top, every session in the menu, 
   assert.match(ui.els.selChips.innerHTML, /Checkout.*Admin.*Codex/s);
   ui.els.pickerBtn.onclick();
   assert.equal(ui.els.picker.dataset.open, "1");
-  ui.els.selChips.onclick({ target: { dataset: { act: "kick", session: "sb" } } });
-  assert.match(ui.els.selChips.innerHTML, /data-confirm="1">Remove\?/);
-  ui.els.selChips.onclick({ target: { dataset: { act: "kick", session: "sb" } } });
+  assert.doesNotMatch(ui.els.selChips.innerHTML, /data-act="kick"/, "no Remove inside a session you give the selection to: a second click there removed it");
+  // Remove is on the Sessions tab, and asks once more there.
+  ui.els.sessions.onclick({ target: { dataset: { act: "kick", session: "sb" } } });
+  assert.match(ui.els.sessions.innerHTML, /data-confirm="1">Remove\?/);
+  ui.els.sessions.onclick({ target: { dataset: { act: "kick", session: "sb" } } });
   assert.deepEqual(JSON.parse(ui.sockets[0].sent.at(-1)), { type: "kick", session: "sb" });
   ui.els.selChips.onclick({ target: { dataset: { act: "assign", session: "sb" } } });
   assert.equal(ui.els.picker.dataset.open, "", "choosing closes the menu");
@@ -578,4 +580,78 @@ test("the session picker: newest first, the newest is picked by itself; a pick b
   ui.els.askInput.value = "hi";
   ui.els.askSend.onclick();
   assert.equal(ui.posted.filter((m: any) => m.type === "compose-action").at(-1).session, "s3");
+});
+
+test("a window that isn't paired: the hub says so; the window shows what to do and stops knocking every few seconds", () => {
+  const ui = boot();
+  ui.sockets[0].open();
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "rejected", message: "This Figma plugin isn't paired with Layerwright on this computer. Run npx layerwright plugin, then reopen the plugin." }) });
+  assert.equal(ui.els.status.textContent, "Not paired with Layerwright");
+  assert.equal(ui.els.error.style.display, "block");
+  assert.match(ui.els.errorText.textContent, /npx layerwright plugin/);
+  assert.equal(ui.posted.filter((m: any) => m.type === "request").length, 0, "never forwarded as a request");
+  const before = ui.delays.length;
+  ui.sockets[0].onclose({ code: 4003 });
+  assert.deepEqual(ui.delays.slice(before), [30000], "it tries again only every 30 s");
+  assert.equal(ui.sockets.length, 1);
+  assert.equal(ui.els.help.style.display, "none");
+});
+
+test("session colours from the hub go into the page only as #rrggbb colours", () => {
+  const ui = boot();
+  ui.sockets[0].open();
+  const bad = { id: "sx", name: "evil", color: 'red;background:url(https://x.test/a.png)"><img src=x>', client: "claude-code" };
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [bad] }) });
+  assert.doesNotMatch(ui.els.sessions.innerHTML + ui.els.avatars.innerHTML, /url\(|<img/);
+  assert.match(ui.els.sessions.innerHTML, /--c:#8b5cf6/);
+});
+
+test("between steps a session is thinking (in the window, not on the canvas); an @name that is no session's is a low-key card", () => {
+  const ui = boot();
+  ui.sockets[0].open();
+  const shop = { id: "sa", name: "shop", color: "#7c3aed", client: "claude-code" };
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [shop] }) });
+  ui.sockets[0].onmessage({ data: JSON.stringify({ id: "sa~r1", method: "editNodes", session: shop }) });
+  ui.fromPlugin({ type: "response", res: { id: "sa~r1", ok: true, result: { applied: [1] } } });
+  assert.match(ui.els.sessions.innerHTML, /pill busy">Thinking…/);
+  ui.fromPlugin({ type: "note-asks", asks: [{ key: "5:6", text: "followed you", name: "john_doe", quiet: true }] });
+  assert.match(ui.els.asks.innerHTML, /class="ask quiet".*@john_doe isn't a session/s);
+  assert.match(ui.els.asks.innerHTML, /data-act="note-send" data-key="5:6" data-session="sa">Send to shop/);
+});
+
+test("the selection's picture isn't rewritten on every redraw (the browser reads SVG back differently: it blinked)", () => {
+  const ui = boot();
+  ui.fromPlugin({ type: "hello", hello: { type: "hello", fileName: "TEST", page: "Designs", selection: 1 } });
+  ui.sockets[0].open();
+  // Like a browser: self-closing SVG elements read back with a closing tag.
+  const thumb = ui.el("thumb");
+  let stored = "", writes = 0;
+  Object.defineProperty(thumb, "innerHTML", { get: () => stored, set: (v: string) => { writes++; stored = v.replace(/<(\w+)([^<>]*)\/>/g, "<$1$2></$1>"); } });
+  ui.fromPlugin({ type: "desk", count: 1, names: ["Note"], owner: null, asks: [] });
+  writes = 0;
+  ui.fromPlugin({ type: "thumb", count: 1, id: "1:2", name: "Note", kind: "TEXT", w: 180, h: 30, png: "iVBORw0KGgo=" });
+  assert.equal(writes, 1);
+  for (let i = 0; i < 5; i++) ui.fromPlugin({ type: "desk", count: 1, names: ["Note"], owner: null, asks: [] }); // redraws
+  assert.equal(writes, 1, "drawn once, left alone after");
+  ui.fromPlugin({ type: "thumb", count: 1, id: "1:3", name: "Other", kind: "FRAME", w: 100, h: 40, png: "iVBORw0KGgp=" });
+  assert.equal(writes, 2, "a new picture is drawn");
+});
+
+test("the guide: opens by itself the first time, closing it is remembered; the ? opens it again; the README link opens in the browser", () => {
+  const ui = boot();
+  ui.fromPlugin({ type: "settings", cursor: true, zoom: true, mini: false, guideSeen: false });
+  assert.equal(ui.els.guide.dataset.open, "1", "first run: the guide is open");
+  ui.els.guideOk.onclick();
+  assert.equal(ui.els.guide.dataset.open, "");
+  assert.ok(ui.posted.some((m) => m.type === "guide-seen"), "and the plugin remembers it");
+  const seen = ui.posted.filter((m) => m.type === "guide-seen").length;
+  ui.els.helpBtn.onclick();
+  assert.equal(ui.els.guide.dataset.open, "1", "the ? opens it");
+  ui.els.guideClose.onclick();
+  assert.equal(ui.posted.filter((m) => m.type === "guide-seen").length, seen, "remembered once");
+  ui.els.guideReadme.onclick();
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.posted.at(-1))), { type: "open-url", url: "https://github.com/shayan-m81/layerwright#readme" });
+  const later = boot();
+  later.fromPlugin({ type: "settings", cursor: true, zoom: true, mini: false, guideSeen: true });
+  assert.notEqual(later.el("guide").dataset.open, "1", "seen before: it stays closed");
 });

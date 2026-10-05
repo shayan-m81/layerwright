@@ -2,7 +2,7 @@
 // the choice it offers, and the repository's own plugin staying in step with the skill and the package.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,22 +43,29 @@ function fakeCli() {
 }
 
 test("the marketplace: both catalogues, the plugin with its commands and skill, the server entry for this install", () => {
-  const dir = buildMarketplace({ command: "npx", args: ["-y", "layerwright@9.9.9"], env: { LAYERWRIGHT_PORT: "7336" } }, tmp());
+  const dir = buildMarketplace({ command: "npx", args: ["-y", "--prefer-offline", "layerwright@9.9.9"], env: { LAYERWRIGHT_PORT: "7336" } }, tmp());
   const p = join(dir, "plugins", "layer");
   assert.equal(JSON.parse(readFileSync(join(dir, ".claude-plugin", "marketplace.json"), "utf8")).plugins[0].source, "./plugins/layer");
   assert.deepEqual(JSON.parse(readFileSync(join(dir, ".agents", "plugins", "marketplace.json"), "utf8")).plugins[0].source, { source: "local", path: "./plugins/layer" });
   const mcp = JSON.parse(readFileSync(join(p, ".mcp.json"), "utf8")).mcpServers.layerwright;
-  assert.deepEqual(mcp, { command: "npx", args: ["-y", "layerwright@9.9.9"], env: { LAYERWRIGHT_PORT: "7336", LAYERWRIGHT_WORKDIR: "${CLAUDE_PROJECT_DIR}" } });
+  assert.deepEqual(mcp, { command: "npx", args: ["-y", "--prefer-offline", "layerwright@9.9.9"], env: { LAYERWRIGHT_PORT: "7336", LAYERWRIGHT_WORKDIR: "${CLAUDE_PROJECT_DIR}" } });
   const codex = JSON.parse(readFileSync(join(p, ".codex-plugin", "plugin.json"), "utf8"));
-  assert.deepEqual(codex.mcpServers.layerwright, { command: "npx", args: ["-y", "layerwright@9.9.9"], env: { LAYERWRIGHT_PORT: "7336" } });
+  assert.deepEqual(codex.mcpServers.layerwright, { command: "npx", args: ["-y", "--prefer-offline", "layerwright@9.9.9"], env: { LAYERWRIGHT_PORT: "7336" } });
   assert.equal(codex.skills, "./skills/");
   // The monitor runs the same Layerwright: inbox-watch wakes the session when a request comes from Figma.
-  assert.deepEqual(JSON.parse(readFileSync(join(p, "monitors", "monitors.json"), "utf8"))[0].command, "npx -y layerwright@9.9.9 inbox-watch");
-  assert.equal(JSON.parse(readFileSync(join(p, "hooks", "hooks.json"), "utf8")).hooks.SessionStart[0].hooks[0].command, "npx -y layerwright@9.9.9 session-hint");
+  assert.deepEqual(JSON.parse(readFileSync(join(p, "monitors", "monitors.json"), "utf8"))[0].command, "npx -y --prefer-offline layerwright@9.9.9 inbox-watch");
+  assert.equal(JSON.parse(readFileSync(join(p, "hooks", "hooks.json"), "utf8")).hooks.SessionStart[0].hooks[0].command, "npx -y --prefer-offline layerwright@9.9.9 session-hint");
   const hooks = JSON.parse(readFileSync(join(p, "hooks", "hooks.json"), "utf8")).hooks;
-  assert.equal(hooks.Stop[0].hooks[0].command, "npx -y layerwright@9.9.9 hook-event", "the chat hooks: when the session waits for the user, Figma says so");
+  assert.equal(hooks.Stop[0].hooks[0].command, "npx -y --prefer-offline layerwright@9.9.9 hook-event", "the chat hooks: when the session waits for the user, Figma says so");
   assert.equal(hooks.PreToolUse[0].matcher, "AskUserQuestion");
   for (const s of ["help", "connect", "import", "design", "edit", "code", "check", "components", "prototype", "shot", "inbox", "doctor", "report", "figma-design"]) assert.ok(existsSync(join(p, "skills", s, "SKILL.md")), s);
+});
+
+test("on Windows the agents' CLIs run through cmd.exe: a path with spaces stays one argument", async () => {
+  const { winCommandLine } = await import("../src/agents.ts");
+  assert.equal(winCommandLine("claude", ["plugin", "marketplace", "add", "C:\\Users\\First Last\\.layerwright\\agents", "--scope", "user"]),
+    'claude plugin marketplace add "C:\\Users\\First Last\\.layerwright\\agents" --scope user');
+  assert.equal(winCommandLine("claude", ["C:\\My Dir\\", 'say "hi"', "a&b"]), 'claude "C:\\My Dir\\\\" "say \\"hi\\"" "a&b"');
 });
 
 test("installing: marketplace then plugin, through each agent's own CLI; a failing step says which and why", () => {
@@ -87,6 +94,7 @@ test("init asks which agents get the plugin, installs it, pairs the plugin windo
   assert.equal(calls.length, 6, "both: the default when both are installed");
   assert.ok(pluginInstalled("claude") && pluginInstalled("codex"));
   assert.match(readFileSync(join(pluginHome(), "dist", "ui.html"), "utf8"), new RegExp(`const KEY = "${pluginKey()}"`), "the window carries this computer's key");
+  if (process.platform !== "win32") assert.equal(statSync(join(pluginHome(), "dist", "ui.html")).mode & 0o777, 0o600, "as private as the key file");
   const mcp = JSON.parse(readFileSync(join(dir, ".mcp.json"), "utf8"));
   assert.equal(mcp.mcpServers.layerwright, undefined, "the plugin provides the server now");
   assert.ok(mcp.mcpServers.other);
@@ -106,6 +114,29 @@ test("a user-level layerwright server next to the plugin would start twice: init
   assert.equal(calls.at(-1), "claude mcp remove layerwright --scope user");
   assert.ok(lines.some((l) => /✓ Removed the user-level "layerwright" server/.test(l)));
   writeFileSync(join(process.env.CLAUDE_CONFIG_DIR!, ".claude.json"), "{}");
+});
+
+test("the project's own server entry and skill copy go only when the user says so; with nobody to ask, init says what to remove", async () => {
+  const setUp = () => {
+    const dir = tmp();
+    writeFileSync(join(dir, ".mcp.json"), JSON.stringify({ mcpServers: { layerwright: { command: "npx" } } }));
+    mkdirSync(join(dir, ".claude", "skills", "figma-design"), { recursive: true });
+    writeFileSync(join(dir, ".claude", "skills", "figma-design", "SKILL.md"), "---\nname: figma-design\ndescription: x\n---\n");
+    writeFileSync(join(dir, ".claude", "skills", "figma-design", "notes.md"), "mine");
+    return dir;
+  };
+  const kept = (dir: string) => !!JSON.parse(readFileSync(join(dir, ".mcp.json"), "utf8")).mcpServers.layerwright && existsSync(join(dir, ".claude", "skills", "figma-design", "SKILL.md"));
+  const quiet = setUp(), lines: string[] = [];
+  assert.equal(await init({ dir: quiet, skipInstall: true, skipBrowserCheck: true, out: (s) => lines.push(s), exec: fakeCli().exec, agents: ["claude"] }), 0);
+  assert.ok(kept(quiet), "nothing deleted without asking");
+  assert.ok(lines.some((l) => /Remove the "layerwright" entry in .*\.mcp\.json and the skill copy/.test(l)));
+  const no = setUp();
+  await init({ dir: no, skipInstall: true, skipBrowserCheck: true, out: () => {}, exec: fakeCli().exec, agents: ["claude"], prompt: async () => "n" });
+  assert.ok(kept(no));
+  const yes = setUp();
+  await init({ dir: yes, skipInstall: true, skipBrowserCheck: true, out: () => {}, exec: fakeCli().exec, agents: ["claude"], prompt: async () => "y" });
+  assert.ok(!kept(yes));
+  assert.equal(readFileSync(join(yes, ".claude", "skills", "figma-design", "notes.md"), "utf8"), "mine", "only the skill file init wrote goes");
 });
 
 test("a Persian or Arabic digit is a choice too (۱ → Claude Code only)", async () => {

@@ -1,11 +1,11 @@
 // `init` (one-command setup for a project) and `doctor` (diagnose a broken setup).
-import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import WebSocket from "ws";
 import { BIN, CLI_FILE, DEFAULT_PORT, FROM_SOURCE, IN_NPX_CACHE, KEY_PLACEHOLDER, MIN_NODE, PKG_NAME, PKG_VERSION, PORT_RANGE, REPO_ROOT, pluginHome, pluginKey, pluginSource, portAllowed, skillSource } from "./meta.ts";
-import { AGENTS, AGENT_NAMES, PLUGIN_ID, buildMarketplace, detectAgents, installAgent, onPath, pluginInstalled, type Agent, type Runner } from "./agents.ts";
+import { AGENTS, AGENT_NAMES, PLUGIN_ID, buildMarketplace, detectAgents, installAgent, onPath, pluginInstalled, run as runAgentCli, type Agent, type Runner } from "./agents.ts";
 
 type Out = (s: string) => void;
 const stdout: Out = (s) => process.stdout.write(s + "\n");
@@ -33,10 +33,11 @@ export function selfCommand(sub: string): string {
   return `node "${file}" ${sub}`;
 }
 
-/** The MCP server entry Claude Code should run for this install. */
+/** The MCP server entry Claude Code should run for this install: this exact version, from npx's cache when it has it
+ *  (an exact version never changes, so there's nothing to ask the registry; the plugin's hooks run it too). */
 export function serverEntry() {
   if (FROM_SOURCE) return { command: "npx", args: ["tsx", join(REPO_ROOT!, "apps/mcp-server/src/cli.ts")] };
-  return { command: "npx", args: ["-y", `${PKG_NAME}@${PKG_VERSION}`] };
+  return { command: "npx", args: ["-y", "--prefer-offline", `${PKG_NAME}@${PKG_VERSION}`] };
 }
 
 export interface InitOptions { dir?: string; port?: number; skipInstall?: boolean; skipBrowserCheck?: boolean; out?: Out;
@@ -56,7 +57,11 @@ export function installPluginFiles(src = pluginSource()): string {
   cpSync(join(src, "manifest.json"), join(home, "manifest.json"));
   cpSync(join(src, "dist"), join(home, "dist"), { recursive: true });
   const ui = join(home, "dist", "ui.html");
-  if (existsSync(ui)) writeFileSync(ui, readFileSync(ui, "utf8").split(KEY_PLACEHOLDER).join(pluginKey(true)!));
+  if (existsSync(ui)) {
+    // It carries the key now: as private as the key file itself.
+    writeFileSync(ui, readFileSync(ui, "utf8").split(KEY_PLACEHOLDER).join(pluginKey(true)!), { mode: 0o600 });
+    chmodSync(ui, 0o600);
+  }
   return home;
 }
 
@@ -124,6 +129,14 @@ async function chooseAgents(o: InitOptions, out: Out): Promise<Agent[]> {
   return pick.filter((a) => found.includes(a));
 }
 
+/** Who answers a yes/no question: the user at a terminal (tests answer for them), or nobody (CI, piped): then init
+ *  only says what to do. */
+function asker(o: InitOptions): ((question: string) => Promise<string>) | undefined {
+  const interactive = !!o.prompt || (process.stdin.isTTY && process.stdout.isTTY && !process.env.CI && !process.env.NODE_TEST_CONTEXT);
+  if (!interactive) return undefined;
+  return o.prompt ?? (async (q: string) => { const rl = (await import("node:readline/promises")).createInterface({ input: process.stdin, output: process.stdout }); try { return await rl.question(q); } finally { rl.close(); } });
+}
+
 /** A user-level "layerwright" server in Claude Code (claude mcp add -s user) would run next to the plugin's: two
  *  servers, two sessions in the Figma window. Offer to remove it (asked at a terminal; otherwise only said). */
 async function dropUserEntry(o: InitOptions, out: Out) {
@@ -132,12 +145,11 @@ async function dropUserEntry(o: InitOptions, out: Out) {
   try { has = !!JSON.parse(readFileSync(file, "utf8")).mcpServers?.[BIN]; } catch { return; }
   if (!has) return;
   const cmd = `claude mcp remove ${BIN} --scope user`;
-  const interactive = !!o.prompt || (process.stdin.isTTY && process.stdout.isTTY && !process.env.CI && !process.env.NODE_TEST_CONTEXT);
-  if (!interactive) { out(`! Claude Code also has a user-level "${BIN}" server, so each session would start two. Remove it: ${cmd}`); return; }
-  const ask = o.prompt ?? (async (q: string) => { const rl = (await import("node:readline/promises")).createInterface({ input: process.stdin, output: process.stdout }); try { return await rl.question(q); } finally { rl.close(); } });
+  const ask = asker(o);
+  if (!ask) { out(`! Claude Code also has a user-level "${BIN}" server, so each session would start two. Remove it: ${cmd}`); return; }
   const yes = !/^n/i.test((await ask(`Claude Code also has a user-level "${BIN}" server; with the plugin each session would start two. Remove it (${cmd})? [Y/n] `)).trim());
   if (!yes) { out(`! Kept the user-level "${BIN}" server. Sessions will show twice in the Figma window until you run: ${cmd}`); return; }
-  const r = (o.exec ?? ((c: string, a: string[]) => { const x = spawnSync(c, a, { encoding: "utf8" }); return { status: x.status, stdout: x.stdout ?? "", stderr: x.stderr ?? "" }; }))("claude", ["mcp", "remove", BIN, "--scope", "user"]);
+  const r = (o.exec ?? runAgentCli)("claude", ["mcp", "remove", BIN, "--scope", "user"]);
   out(r.status === 0 ? `✓ Removed the user-level "${BIN}" server: the plugin provides it now.` : `✗ Couldn't remove it (${(r.stderr || r.stdout).trim()}). Run: ${cmd}`);
 }
 
@@ -156,11 +168,13 @@ export function projectServerDisabled(dir: string): boolean {
 
 /** The plugin provides the server and the skill now; the project's own would run next to them (two servers for one
  *  session). A .mcp.json in git is the team's: it stays, and the server is turned off for this user only
- *  (.claude/settings.local.json → disabledMcpjsonServers). One that isn't in git loses the entry init wrote. */
-function dropProjectEntry(dir: string, out: Out) {
+ *  (.claude/settings.local.json → disabledMcpjsonServers). One that isn't in git loses the entry init wrote, and the
+ *  skill copy goes too, once the user says so (without anyone to ask, init only says what to remove). */
+async function dropProjectEntry(dir: string, o: InitOptions, out: Out) {
   const file = join(dir, ".mcp.json");
   let cfg: any;
   try { cfg = JSON.parse(readFileSync(file, "utf8")); } catch { cfg = undefined; }
+  let entry = false;
   if (cfg?.mcpServers?.[BIN]) {
     if (tracked(dir, ".mcp.json")) {
       if (!projectServerDisabled(dir)) {
@@ -172,19 +186,26 @@ function dropProjectEntry(dir: string, out: Out) {
         writeFileSync(local, JSON.stringify(settings, null, 2) + "\n");
       }
       out(`✓ Turned off this project's "${BIN}" server for you only (.claude/settings.local.json): the plugin runs it now. .mcp.json is in git, so it stays as it is for the team.`);
-    } else {
-      delete cfg.mcpServers[BIN];
-      writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
-      out(`✓ Removed "${BIN}" from ${file}: the Claude Code plugin provides it now.`);
-    }
+    } else entry = true;
   }
   const skill = join(dir, ".claude", "skills", "figma-design", "SKILL.md");
-  try {
-    if (/^---\nname: figma-design\n/.test(readFileSync(skill, "utf8")) && !tracked(dir, ".claude/skills/figma-design/SKILL.md")) {
-      rmSync(dirname(skill), { recursive: true, force: true });
-      out(`✓ Removed the project copy of the figma-design skill: the plugin has it.`);
-    }
-  } catch { /* none */ }
+  let copy = false;
+  try { copy = /^---\nname: figma-design\n/.test(readFileSync(skill, "utf8")) && !tracked(dir, ".claude/skills/figma-design/SKILL.md"); } catch { /* none */ }
+  if (!entry && !copy) return;
+  const what = [entry && `the "${BIN}" entry in ${file}`, copy && `the skill copy ${skill}`].filter(Boolean).join(" and ");
+  const ask = asker(o);
+  if (!ask) { out(`! The Claude Code plugin provides the server and the skill now, so this project's own would run next to them. Remove ${what}.`); return; }
+  if (/^n/i.test((await ask(`The plugin provides the server and the skill now. Remove ${what}? [Y/n] `)).trim())) { out(`! Kept ${what}. Each session starts the server twice until you remove it.`); return; }
+  if (entry) {
+    delete cfg.mcpServers[BIN];
+    writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
+    out(`✓ Removed "${BIN}" from ${file}: the Claude Code plugin provides it now.`);
+  }
+  if (copy) {
+    rmSync(skill, { force: true });
+    try { if (!readdirSync(dirname(skill)).length) rmSync(dirname(skill), { recursive: true }); } catch { /* gone already */ }
+    out(`✓ Removed the project copy of the figma-design skill: the plugin has it.`);
+  }
 }
 
 /** Register the server in an MCP config file, merged: other servers are never touched. false = the file is broken. */
@@ -236,7 +257,7 @@ export async function init(o: InitOptions = {}): Promise<number> {
   }
   const claudePlugin = agents.includes("claude") && pluginInstalled("claude");
 
-  if (claudePlugin) { dropProjectEntry(dir, out); await dropUserEntry(o, out); }
+  if (claudePlugin) { await dropProjectEntry(dir, o, out); await dropUserEntry(o, out); }
   else {
     // .mcp.json (merged, never clobbering other servers)
     const mcpPath = join(dir, ".mcp.json");
@@ -342,7 +363,9 @@ export async function doctor(o: { dir?: string; port?: number; out?: Out; skipBr
   if (existsSync(join(pluginHome(), "manifest.json"))) pass(`plugin files at ${pluginHome()}`); else failWith("plugin files missing", `run: npx ${PKG_NAME} init, then import ${join(pluginHome(), "manifest.json")} in Figma`);
 
   const p = await probe(port);
-  if (!p.ok) {
+  if (!p.ok && p.reason !== "ECONNREFUSED") {
+    failWith(`port ${port} is held by another program that isn't Layerwright (${p.reason}), so sessions can't use Figma on it`, `close that program, or set LAYERWRIGHT_PORT to another port from ${PORT_RANGE[0]}–${PORT_RANGE[1]} and enter the same port in the plugin window`);
+  } else if (!p.ok) {
     failWith(`nothing is listening on ws://localhost:${port} (${p.reason})`, "start Claude Code in this project; it launches the MCP server from .mcp.json. Check /mcp in Claude Code if it failed to start.");
   } else {
     if (p.status.hub) {

@@ -3,8 +3,10 @@
 import type { AnnotationSpec, ResolvedInteraction } from "@cde/core";
 import { annotate } from "./annotate.ts";
 import { progress } from "./progress.ts";
-import { ExecError, checkDestination, clearStyleLookups, findPage, fitSection, getComponent, loose, pageOf, setTextStyle, styleOf, tag, textStyleOf, toReaction, variableOf } from "./execute.ts";
+import { ExecError, checkDestination, clearStyleLookups, closestStyle, findPage, fitSection, getComponent, loose, pageOf, setTextStyle, styleOf, tag, textStyleOf, toReaction, variableOf } from "./execute.ts";
 import { commitUndo } from "./undo.ts";
+import { isLeftover } from "./cursor.ts";
+import { openPage } from "./own.ts";
 
 export type NodeRef = string; // a node id, or "$n": the node produced by op n of this call
 
@@ -12,7 +14,8 @@ export type EditOp =
   | { op: "rename"; node: NodeRef; name: string }
   | { op: "move"; node: NodeRef; parent?: NodeRef; page?: string; index?: number; x?: number; y?: number }
   | { op: "duplicate"; node: NodeRef; parent?: NodeRef; x?: number; y?: number; name?: string }
-  | { op: "set"; node: NodeRef; visible?: boolean; locked?: boolean; x?: number; y?: number; width?: number; height?: number; opacity?: number; text?: string; properties?: Record<string, string | boolean> }
+  | { op: "set"; node: NodeRef; visible?: boolean; locked?: boolean; x?: number; y?: number; width?: number; height?: number; opacity?: number; text?: string; properties?: Record<string, string | boolean>;
+      weight?: string; fontSize?: number; fontFamily?: string; italic?: boolean; fill?: string }
   | { op: "delete"; node: NodeRef }
   | { op: "resizeToFit"; node: NodeRef; padding?: number }
   | { op: "prototype"; node: NodeRef; interactions: ResolvedInteraction[]; replace?: boolean }
@@ -66,6 +69,31 @@ async function siblings(refs: NodeRef[], results: EditResult[], op: string) {
   if (!host || ns.some((n) => n.parent !== host)) throw new Error(`${op} needs layers with the same parent; move them into one frame first.`);
   ns.sort((a, b) => host.children.indexOf(a) - host.children.indexOf(b));
   return { ns, host, index: host.children.indexOf(ns[0]) };
+}
+
+/** DSL weights → the style names fonts use (the closest one a font has is picked: closestStyle). */
+const STYLE_OF: Record<string, string> = { thin: "Thin", extralight: "Extra Light", light: "Light", regular: "Regular", medium: "Medium", semibold: "Semi Bold", bold: "Bold", extrabold: "Extra Bold", black: "Black" };
+let fontList: Promise<Font[]> | undefined;
+/** The font a text gets from set: its family (or the new one) in the style closest to the weight asked for, loaded. */
+async function fontFor(t: TextNode, o: { weight?: string; fontFamily?: string; italic?: boolean }): Promise<FontName> {
+  const cur = (t.fontName === figma.mixed ? t.getRangeFontName(0, 1) : t.fontName) as FontName;
+  fontList ??= figma.listAvailableFontsAsync().catch((e) => { fontList = undefined; throw e; });
+  const want = (o.fontFamily ?? cur.family).toLowerCase();
+  const styles = (await fontList).filter((f) => f.fontName.family.toLowerCase() === want);
+  if (!styles.length) throw new Error(`The font "${o.fontFamily ?? cur.family}" isn't available in Figma here. Install it (TTF/OTF) and restart Figma, or pick another family.`);
+  const family = styles[0].fontName.family;
+  const italic = o.italic ?? /italic|oblique/i.test(cur.style);
+  const style = closestStyle(styles.map((f) => f.fontName.style), o.weight ? STYLE_OF[o.weight] ?? o.weight : cur.style.replace(/\s*(italic|oblique)\s*/i, " ").trim() || "Regular", italic)!;
+  const f = { family, style };
+  await figma.loadFontAsync(f);
+  return f;
+}
+/** A solid paint from #rgb, #rrggbb or #rrggbbaa. */
+function solid(hex: string): SolidPaint {
+  let h = hex.replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const n = (i: number) => parseInt(h.slice(i, i + 2), 16) / 255;
+  return { type: "SOLID", color: { r: n(0), g: n(2), b: n(4) }, opacity: h.length === 8 ? n(6) : 1 };
 }
 
 /** Load every font used in these nodes so text can be written. */
@@ -256,6 +284,7 @@ export async function editNodes(p: { ops: EditOp[]; approved?: boolean; meta?: {
         }
         case "set": {
           const n = await resolve(o.node, results);
+          let fontNote = "";
           if (o.visible !== undefined) n.visible = o.visible;
           if (o.locked !== undefined) n.locked = o.locked;
           if (o.x !== undefined) n.x = o.x;
@@ -271,6 +300,17 @@ export async function editNodes(p: { ops: EditOp[]; approved?: boolean; meta?: {
             await loadFontsIn([n]);
             n.characters = o.text;
           }
+          if (o.weight !== undefined || o.fontFamily !== undefined || o.italic !== undefined || o.fontSize !== undefined) {
+            if (n.type !== "TEXT") throw new Error(`"weight", "fontSize", "fontFamily" and "italic" need a text layer; ${n.name} is a ${n.type}.`);
+            await loadFontsIn([n]);
+            if (o.weight !== undefined || o.fontFamily !== undefined || o.italic !== undefined) { n.fontName = await fontFor(n, o); fontNote = `${n.fontName.family} ${n.fontName.style}`; }
+            if (o.fontSize !== undefined) n.fontSize = o.fontSize;
+          }
+          if (o.fill !== undefined) {
+            if (!("fills" in n)) throw new Error(`"fill" needs a layer with fills; ${n.name} is a ${n.type}.`);
+            if (n.type === "TEXT") await loadFontsIn([n]);
+            (n as GeometryMixin).fills = [solid(o.fill)];
+          }
           if (o.properties) {
             if (n.type !== "INSTANCE") throw new Error(`"properties" needs an instance; ${n.name} is a ${n.type}.`);
             await loadFontsIn([n]);
@@ -284,7 +324,7 @@ export async function editNodes(p: { ops: EditOp[]; approved?: boolean; meta?: {
             n.setProperties(set);
           }
           noteSection(n.parent);
-          r = { op: i, kind: o.op, nodeId: n.id };
+          r = { op: i, kind: o.op, nodeId: n.id, ...(fontNote ? { note: `font ${fontNote}` } : {}) };
           break;
         }
         case "delete": {
@@ -413,7 +453,7 @@ export async function editNodes(p: { ops: EditOp[]; approved?: boolean; meta?: {
           if (!o.start) throw new Error(`flow "${o.name}" needs a start node.`);
           const n = await resolve(o.start, results);
           if (!(n.parent?.type === "PAGE" || n.parent?.type === "SECTION")) throw new Error(`A flow starts at a top-level frame; "${n.name}" is inside "${n.parent?.name}".`);
-          if (pageOf(n)?.id !== page.id) await figma.setCurrentPageAsync(pageOf(n)!);
+          if (pageOf(n)?.id !== page.id) await openPage(pageOf(n)!);
           // One flow per start frame: replace a same-named flow or the one already starting there (e.g. Figma's "Flow 1").
           figma.currentPage.flowStartingPoints = [...figma.currentPage.flowStartingPoints.filter((f) => f.name !== o.name && f.nodeId !== n.id), { nodeId: n.id, name: o.name }];
           r = { op: i, kind: o.op, nodeId: n.id, note: `flow "${o.name}" starts at "${n.name}"` };
@@ -433,12 +473,14 @@ export async function editNodes(p: { ops: EditOp[]; approved?: boolean; meta?: {
   return { applied: results, failed, note: failed ? `Stopped at op ${failed.op}; ops before it were applied (one undo reverts them).` : "One undo reverts every op in this call." };
 }
 
-/** List (and with approved, remove) what Layerwright created in a session or run. */
+/** List (and with approved, remove) what Layerwright created in a session or run, and AI cursors a closed plugin
+ *  window left behind (never part of the design, whichever session drew them). */
 export async function cleanup(p: { session?: string; run?: string; nodeIds?: string[]; approved?: boolean }) {
   await figma.loadAllPagesAsync();
   const found: SceneNode[] = [];
   if (p.nodeIds?.length) for (const id of p.nodeIds) { const n = await figma.getNodeByIdAsync(id); if (n && !n.removed && n.type !== "PAGE" && n.type !== "DOCUMENT") found.push(n as SceneNode); }
   else for (const page of figma.root.children) {
+    for (const n of page.children) if (isLeftover(n)) found.push(n); // overlays are top-level, tagged with their own key
     for (const n of page.findAllWithCriteria({ pluginData: { keys: ["layerwright"] } }) as SceneNode[]) {
       let d: { session?: string; run?: string } = {};
       try { d = JSON.parse(n.getPluginData("layerwright")); } catch { continue; }

@@ -5,6 +5,7 @@ import { progress } from "./progress.ts";
 import { blurEffects, gradientPaint } from "./paints.ts";
 import { commitUndo } from "./undo.ts";
 import { isOverlay } from "./cursor.ts";
+import { openPage, select, show } from "./own.ts";
 
 const rgb = (hex: string) => ({ r: parseInt(hex.slice(1, 3), 16) / 255, g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255 });
 const solid = (p: ImportPaint): SolidPaint => ({ type: "SOLID", color: rgb(p.hex), opacity: p.a });
@@ -18,8 +19,9 @@ export async function ensurePages(names: string[]): Promise<{ pages: { name: str
     let page = figma.root.children.find((p) => p.name === name);
     const created = !page;
     if (!page) {
-      // Reuse an empty default page ("Page 1") for the first entry instead of leaving it behind.
-      const blank = i === 0 && figma.root.children.length === 1 && figma.root.children[0].children.length === 0 ? figma.root.children[0] : null;
+      // Reuse an empty default page ("Page 1") for the first entry instead of leaving it behind (an AI cursor on it
+      // doesn't count: it isn't part of the design).
+      const blank = i === 0 && figma.root.children.length === 1 && figma.root.children[0].children.every(isOverlay) ? figma.root.children[0] : null;
       // Plans with a page limit (Starter = 3): rename a page at this slot that isn't in the requested list.
       const spare = figma.root.children.slice(i).find((pg) => !names.includes(pg.name));
       try { page = blank ?? figma.createPage(); }
@@ -36,7 +38,7 @@ async function pageByName(name?: string): Promise<PageNode> {
   if (!name) return figma.currentPage;
   await figma.loadAllPagesAsync();
   const page = figma.root.children.find((p) => p.name === name) ?? (await ensurePages([name]), figma.root.children.find((p) => p.name === name)!);
-  await figma.setCurrentPageAsync(page);
+  await openPage(page);
   return page;
 }
 
@@ -304,8 +306,8 @@ export async function importTree(p: { page?: string; section?: string; gap?: num
   tag(section ? [section] : created, p.meta);
   commitUndo();
   const shown = section ? [section] : created;
-  figma.currentPage.selection = shown;
-  figma.viewport.scrollAndZoomIntoView(shown);
+  select(shown);
+  show(shown);
   return { page: page.name, sectionId: section?.id, screens: created.map((c) => ({ id: c.id, name: c.name, width: c.width, height: c.height })), warnings: fonts.warnings };
 }
 

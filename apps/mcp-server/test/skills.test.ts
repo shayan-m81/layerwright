@@ -52,6 +52,19 @@ test("the library that ships: every catalog entry has its SKILL.md with a descri
   assert.ok(all.find((s) => s.id === "better-typography")!.files.length > 1, "reference files come along");
 });
 
+test("skill links never reach this computer or the local network, in any address form", async () => {
+  const { privateAddress, safeGet } = await import("../src/skills.ts");
+  for (const ip of ["127.0.0.1", "127.8.9.1", "0.0.0.0", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.169.254", "100.64.0.1", "224.0.0.1", "255.255.255.255",
+    "::", "::1", "::ffff:127.0.0.1", "::ffff:7f00:1", "::ffff:10.0.0.1", "::ffff:a9fe:a9fe", "64:ff9b::7f00:1", "2002:7f00:1::", "fc00::1", "fd12:3456::1", "fe80::1", "fe80::1%en0", "ff02::1", "[::1]", "not-an-ip"])
+    assert.equal(privateAddress(ip), true, ip);
+  for (const ip of ["8.8.8.8", "140.82.112.3", "172.15.0.1", "172.32.0.1", "100.63.0.1", "2606:4700::1111", "::ffff:8.8.8.8", "2a00:1450:4001::200e"])
+    assert.equal(privateAddress(ip), false, ip);
+  // Before any connection: private names and literal addresses, in the forms URLs normalise to (0x7f.1 → 127.0.0.1).
+  for (const url of ["https://localhost/x.md", "https://foo.localhost/x.md", "https://printer.local/x.md", "https://[::1]/x.md", "https://[::ffff:7f00:1]/x.md", "https://0x7f.1/x.md", "https://2130706433/x.md", "https://172.20.0.5/x.md", "https://[fd00::1]/x.md"])
+    await assert.rejects(safeGet(url), /Only public links/, url);
+  await assert.rejects(safeGet("http://example.com/x.md"), /Only https/);
+});
+
 test("front matter: plain, quoted and folded descriptions", () => {
   assert.deepEqual(frontMatter(SKILL), { name: "spacing-audit", description: "Audits a layout against a 4/8pt spacing scale and snaps values." });
   assert.equal(frontMatter('---\nname: x\ndescription: "Use when: a, b"\n---\n').description, "Use when: a, b");
@@ -151,11 +164,28 @@ test("the Figma window's Skills tab through the hub: anyone sees the list, only 
   p.send({ type: "skills-add", source: "https://aiuxplayground.com/skills/spacing-audit" });
   await until(() => p.got.some((m) => m.type === "skills" && m.added?.id === "spacing-audit"));
   p.ws.close();
-  // An unpaired page can look, but not change anything.
+  // An unpaired window isn't let in at all, so it can't change anything.
   const q = plugin("wrong");
-  await until(() => q.got.some((m) => m.type === "pairing"));
-  q.send({ type: "skills-remove", id: "spacing-audit" });
-  await until(() => q.got.some((m) => m.type === "skills" && /isn't paired/.test(m.error ?? "")));
+  await until(() => q.got.some((m) => m.type === "rejected"));
+  await until(() => q.ws.readyState === WebSocket.CLOSED);
   assert.ok(skills.get("spacing-audit"), "still there");
-  q.ws.close(); hub.close();
+  hub.close();
+});
+
+test("without a pairing key on this computer, any window may look at the Skills tab but only a paired one changes it", async () => {
+  const { Hub } = await import("../src/hub.ts");
+  const skills = store();
+  const port = 17342;
+  const hub = new Hub(port, { log: () => {}, key: () => undefined, skills });
+  await hub.start();
+  const ws = new WebSocket(`ws://localhost:${port}/plugin`);
+  const got: any[] = [];
+  ws.on("message", (m) => got.push(JSON.parse(String(m))));
+  await new Promise<void>((r) => ws.on("open", () => { ws.send(JSON.stringify({ type: "hello", protocol: 2 })); r(); }));
+  const until = async (f: () => boolean) => { for (let i = 0; i < 100 && !f(); i++) await new Promise((r) => setTimeout(r, 20)); assert.ok(f()); };
+  await until(() => got.some((m) => m.type === "pairing" && m.paired === false));
+  ws.send(JSON.stringify({ type: "skills-set", id: "animate", on: false }));
+  await until(() => got.some((m) => m.type === "skills" && /isn't paired/.test(m.error ?? "")));
+  assert.equal(skills.get("animate")?.enabled, true);
+  ws.close(); hub.close();
 });

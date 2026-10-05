@@ -35,12 +35,18 @@ Don't ask what you can find out: the file, page, selection and DS come from `fig
 
 ## 2. Setup, once per session
 
-1. `figma_status`. Not connected → tell the user: *Figma desktop → Plugins → Development → Layerwright*.
+1. `figma_status({ title })`. If it returns `doFirst`, call that tool (Monitor) with exactly those arguments right away, before anything else and without mentioning it: it wakes you when the user sends a request from the Figma window. Restart it when it expires. `title` is 2–4 words naming your task in the user's language ("Checkout redesign"). The plugin window shows it instead of the folder name, so the user can tell sessions apart. Not connected → tell the user: *Figma desktop → Plugins → Development → Layerwright*.
    - `warnings` say when the scan is stale, Figma shows another page than your last build, or a newer Layerwright exists (tell the user once, with the steps given).
    - `memory` is what this project learned: font substitutions and mappings (imports reuse them), component choices, the user's notes (follow them), and `recurring` problems with a `hint` (act on it instead of repeating the mistake).
 2. `figma_scan_design_system` (cached; `refresh: true` after DS changes, `reload: true` after editing the cache file). It reads local and library components, styles and variables; a big file takes 10–30 s.
    Read `duplicateNames`: copies of one library set resolve to the most used; otherwise pick by `{ id }` (remembered afterwards).
 3. When the user corrects you or states a preference, save it: `layerwright_memory({ action: "note", note })`.
+4. **Skills.** `figma_status` lists `skills`: design, UX, UI and design-to-code guidance, each with when it fits
+   (a critique, a handoff spec with every state, layout, typography, colour, accessibility, motion, the user's own).
+   Before a job one fits, read the closest one or two with `layerwright_skills({ action: "read", id })` and apply
+   them; this skill's rules still come first. The user adds their own (a link or a pasted SKILL.md) with
+   `layerwright_skills({ action: "add", source })`, `/layer:skills`, the Skills tab or `/skill <link>` in the Figma
+   window's chat box; they stay across updates.
 
 ## 3. Job A: HTML → Figma
 
@@ -53,6 +59,7 @@ Don't ask what you can find out: the file, page, selection and DS come from `fig
   - `swaps` replace elements with instances: `component` by name, or `id`/`key` when names repeat; `overrides: "text"` (default: copy text, hide nothing), `"none"`, or `"match"` (also hide missing layers); `fills: true` to copy the element's fill. An unknown variant is an error, never a silent default.
 - **Then use the Design System (option 2), always after an editable import when the file has one:** `figma_analyze_design({ target: <the imported frame or section>, mode: "sync" })`. It proposes DS buttons and badges (closest-looking variant), text styles by size and weight, and colour variables or styles. Show its `groups`, then `figma_apply_transformations({ analysisId, approved: true, groups | excludeGroups })`. Originals are hidden, one undo reverts it. Repeated custom frames → `figma_edit` componentize (§5).
 - **Fonts:** if the import or sync says a font is missing, the export often ships it: `npx layerwright fonts <export folder>` lists them, `--install` installs TTF/OTF (ask first; the user restarts Figma). If a text style can't be applied, the warning says why: rescan the Design System first (`refresh: true`; a library update changes style ids), and only when the library import itself fails ask the user to check the library is enabled for the file (Assets → Libraries). Don't assume it isn't.
+- **The user sees none of your images.** When they ask to see something, `figma_export_image({ nodeId, save: true })` writes the file and returns its path; send them that file.
 - **Always check the picture:** `figma_export_image({ nodeId, compareWith: { html: path } })`. Look at both images and the heatmap; `regions` say where they differ. Fix and re-run until the verdict is a close match or the remaining differences are explained (font rendering).
 
 ## 4. Job B: build in Figma
@@ -78,6 +85,7 @@ Up to 3 rounds, stop as soon as nothing important is left:
 - **Read first, cheaply:** `figma_inspect({ target, format: "summary" })`, then `format: "instances"` or `"text"` (paged with `offset/limit`), or `"tree"` with `expandInstances: true` for a small node.
 - **Edit:** `figma_edit({ ops, approved? })`, one undo step; ops run in order and `"$n"` refers to the node op *n* produced.
   - `rename`, `move` (parent, section or page), `duplicate`, `set` (visible, x/y, size, opacity, `text`, instance `properties`), `resizeToFit`, `delete`.
+  - `set` also restyles: `weight` (regular, semibold, bold… or 100–900; the closest style the font has is used, and the result names it), `fontSize`, `fontFamily`, `italic` on a text, and `fill: "#hex"` (a text's colour, a frame's or shape's background). When the file has a matching variable or style, prefer `bind` / `style`.
   - `componentize`: `{ nodes, mode: "variants", name, variants: [{ State: "Expanded" }, …], exposeText: ["Title", "Body"] }`. Works on copies placed beside the originals (`duplicate: false` converts in place) and gives cleanly stacked layers Auto Layout so the component adapts to new text. Rename text layers first so the exposed properties get good names.
   - `prototype` (`{ node, interactions }`) and `flow` (`{ name, start }`) wire existing frames, e.g. a variant `change-to` another variant for an interactive component.
   - `bind` (`{ node, field, variable }`: fills, strokes, gap, padding, radius, size, opacity) and `style` (`{ node, kind: fill | stroke | text | effect, style }`) for exact token and style work the audit didn't propose.
@@ -103,6 +111,24 @@ Up to 3 rounds, stop as soon as nothing important is left:
 `figma_inspect({ format: "plan" })` (or the plan you just built) → `code_scan_components` → confirm
 mappings with the user → `code_mapping({ action: "set" })` → implement with the mapped components
 and the project's tokens → `code_verify_usage({ file, planId })` and fix what it reports.
+
+**A component is every state of it, not the one on screen.** When the target is a component, a component set or an
+instance of one (and for each component a screen needs that the code doesn't have yet), implement the whole set:
+1. Read the set, not the instance: `figma_inspect({ target, format: "instances" })` gives `componentSetId`;
+   `figma_get_design_context` lists its variant properties and values and its BOOLEAN / TEXT / INSTANCE_SWAP props;
+   `figma_inspect({ target: <componentSetId>, format: "tree" })` and `figma_export_image` of the set show each variant.
+2. Make a table, one row per variant that exists in Figma (sizes × hierarchies × states …), and map each property to
+   the code: size/type/hierarchy → props; Hover, Pressed, Focused, Disabled, Loading, Selected → real `:hover`,
+   `:active`, `:focus-visible`, `disabled`, `aria-busy`/`aria-pressed`… (not separate components); BOOLEAN → boolean
+   props; TEXT → children or props; INSTANCE_SWAP → an icon or slot prop. Take each variant's exact values; they
+   often differ in padding, radius, colours and icon size, not only in colour.
+3. Build them all, then show them all in one place (a story, a preview route or the project's playground) and compare
+   variant by variant with the exported images until each matches. A variant you can't build (a missing token, an
+   unclear state) is asked about, never dropped silently; report which variants are done.
+
+## Requests from the Figma window
+
+The user can select layers in the Layerwright plugin, pick this session and send a request: a quick action ("Build this in code", "Polish this design", "Turn this into a component", "Make a mobile version") or their own words. It reaches you as a `<channel source="layerwright" request_id="…">` message (Claude Code started with channels), as `fromFigma` in a tool result, or through `figma_inbox` (`/layer:inbox`). Treat it as the user's request: the text names the layers by id and the selection is already yours, and sending it is their approval to change those layers (not others). `figma_reply({ id, status: "working" })` when you start, `status: "done"` with a one-line `message` when finished (or `"failed"` with what you need): the window shows it. Same request id twice is one request. When `figma_status` returns `doFirst`, start that Monitor right away (and again when it expires): it wakes you when a request arrives, so the user never has to type `/layer:inbox`. `figma_inbox` also takes over open requests no other session is handling (`takeOver: true` only when the user typed /layer:inbox here); ones listed under `elsewhere` belong to other sessions.
 
 ## The official Figma MCP (only when it's connected)
 

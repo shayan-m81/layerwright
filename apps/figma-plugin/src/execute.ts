@@ -7,6 +7,7 @@ import { blurEffects, gradientPaint } from "./paints.ts";
 import { annotate } from "./annotate.ts";
 import { commitUndo } from "./undo.ts";
 import { isOverlay } from "./cursor.ts";
+import { openPage, select, show } from "./own.ts";
 
 export class ExecError extends Error {
   constructor(public detail: StructuredError) { super(detail.message); }
@@ -641,7 +642,7 @@ export async function executePlan(plan: ResolvedPlan, meta?: { session?: string;
   // Build on the requested page (or the target's page), never silently on whatever page the user has open.
   const page = plan.target.page ? await findPage(plan.target.page) : plan.target.parentId ? pageOf(parent) : undefined;
   if (page && plan.target.page && plan.target.parentId && pageOf(parent)?.id !== page.id) throw new ExecError({ type: "INVALID_PLAN", message: pageOf(parent) ? `Target parent ${plan.target.parentId} is on page "${pageOf(parent)!.name}", not "${page.name}".` : `Target parent ${plan.target.parentId} isn't on any page.` });
-  if (page && figma.currentPage.id !== page.id) await figma.setCurrentPageAsync(page);
+  if (page) await openPage(page);
   if (!plan.target.parentId && page) parent = page;
   const onPage = parent.type === "PAGE";
   const content = figma.currentPage.children.filter((c) => !isOverlay(c)); // not the AI cursor
@@ -685,7 +686,7 @@ export async function executePlan(plan: ResolvedPlan, meta?: { session?: string;
     throw new ExecError({ ...d, message: `${d.message} (execution rolled back; nothing was left on the canvas)` });
   }
   tag(created, meta);
-  if (onPage || parent.type === "SECTION") { figma.currentPage.selection = created; figma.viewport.scrollAndZoomIntoView(created); }
+  if (onPage || parent.type === "SECTION") { select(created); show(created); }
   commitUndo(); // one undo step for the whole plan
   return { createdRootIds: created.map((n) => n.id), page: { id: figma.currentPage.id, name: figma.currentPage.name }, nodeIds: ctx.nodeIds, warnings: ctx.warnings };
 }

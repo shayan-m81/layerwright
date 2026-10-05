@@ -18,10 +18,20 @@ export const PLUGIN = "layer";
 export const PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
 
 export type Runner = (cmd: string, args: string[]) => { status: number | null; stdout: string; stderr: string };
-const run: Runner = (cmd, args) => {
-  const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 120_000, shell: process.platform === "win32" });
+export const run: Runner = (cmd, args) => {
+  const r = process.platform === "win32"
+    ? spawnSync(winCommandLine(cmd, args), { encoding: "utf8", timeout: 120_000, shell: true })
+    : spawnSync(cmd, args, { encoding: "utf8", timeout: 120_000 });
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? (r.error ? String(r.error.message) : "") };
 };
+
+/** One command line for cmd.exe. On Windows claude and codex are .cmd shims, which only run through a shell, and a
+ *  path with spaces (the marketplace under C:\Users\First Last) must stay one argument: quoted the way the programs
+ *  read their arguments back. Inside quotes cmd takes & | < > ^ literally. */
+export function winCommandLine(cmd: string, args: string[]): string {
+  const q = (a: string) => (/^[\w@+=:,./\\-]+$/.test(a) ? a : `"${a.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, "$1$1")}"`);
+  return [cmd, ...args].map(q).join(" ");
+}
 
 /** The path of a command on PATH, if any. */
 export function onPath(cmd: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
@@ -133,7 +143,8 @@ export function claudeWithChannels(args: string[], out: (s: string) => void = (s
   if (!entry) { out("✗ Layerwright isn't set up for Claude Code here. Run: npx layerwright init"); return Promise.resolve(1); }
   out(`Starting Claude Code with requests from the Figma window (${entry}). Claude Code asks once to confirm the development channel: choose "I am using this for local development".`);
   return new Promise((done) => {
-    const child = spawn("claude", ["--dangerously-load-development-channels", entry, ...args], { stdio: "inherit", shell: process.platform === "win32" });
+    const argv = ["--dangerously-load-development-channels", entry, ...args];
+    const child = process.platform === "win32" ? spawn(winCommandLine("claude", argv), { stdio: "inherit", shell: true }) : spawn("claude", argv, { stdio: "inherit" });
     child.on("exit", (code) => done(code ?? 0));
     child.on("error", (e) => { out(`✗ ${e.message}`); done(1); });
   });

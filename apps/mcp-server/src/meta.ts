@@ -55,15 +55,26 @@ export function pluginHome(): string {
   return join(layerwrightHome(), "figma-plugin");
 }
 /** This computer's pairing key. init writes it into the installed plugin window, which presents it to the hub: only
- *  that window may send requests into sessions (a web page can reach localhost too, but can't read this file). */
+ *  that window may be the plugin and send requests into sessions (a web page can reach localhost too, but can't read
+ *  this file). Sessions present it too when they join the hub. */
 export function pluginKey(create = false): string | undefined {
   const file = join(layerwrightHome(), "key");
-  try { const k = readFileSync(file, "utf8").trim(); if (k) return k; } catch { /* not made yet */ }
-  if (!create) return undefined;
+  const read = () => { try { return readFileSync(file, "utf8").trim() || undefined; } catch { return undefined; } };
+  const had = read();
+  if (had || !create) return had;
   const k = randomBytes(18).toString("hex");
-  mkdirSync(layerwrightHome(), { recursive: true });
-  writeFileSync(file, k + "\n", { mode: 0o600 });
-  return k;
+  try {
+    mkdirSync(layerwrightHome(), { recursive: true });
+    // Only if nobody made it meanwhile (the hub and a session can both get here first): then theirs is the key.
+    writeFileSync(file, k + "\n", { mode: 0o600, flag: "wx" });
+    return k;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    const theirs = read();
+    if (theirs) return theirs;
+    writeFileSync(file, k + "\n", { mode: 0o600 }); // an empty file: replace it
+    return k;
+  }
 }
 /** Requests from the Figma window for one Claude Code session, waiting for its monitor (layerwright inbox-watch):
  *  ~/.layerwright/inbox/<CLAUDE_CODE_SESSION_ID>.jsonl. Claude Code gives the session id to its MCP servers and its

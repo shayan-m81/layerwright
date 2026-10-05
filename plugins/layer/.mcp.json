@@ -4,7 +4,8 @@
       "command": "npx",
       "args": [
         "-y",
-        "layerwright@latest"
+        "--prefer-offline",
+        "layerwright@1.0.0"
       ],
       "env": {
         "LAYERWRIGHT_WORKDIR": "${CLAUDE_PROJECT_DIR}"

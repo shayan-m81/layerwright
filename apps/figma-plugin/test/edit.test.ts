@@ -97,6 +97,27 @@ test("cleanup lists a session's nodes and removes them only with approval", asyn
   assert.equal((await cleanup({ session: "s9" })).nodes.length, 0);
 });
 
+test("cleanup also finds AI cursors a closed window left behind (not another user's live one); the design-system scan doesn't walk them", async () => {
+  const page = resetFigma();
+  const left = F().createFrame(); left.name = "✦ Claude (Layerwright cursor)";
+  left.setPluginData("layerwrightCursor", JSON.stringify({ user: "u:1", at: Date.now() })); // this user's
+  const live = F().createFrame();
+  live.setPluginData("layerwrightCursor", JSON.stringify({ user: "u:2", at: Date.now() })); // someone else's, drawing now
+  const listed = await cleanup({});
+  assert.deepEqual(listed.nodes.map((n: any) => n.name), ["✦ Claude (Layerwright cursor)"]);
+  await cleanup({ approved: true });
+  assert.equal(left.removed, true);
+  assert.equal(live.removed, false);
+  const tag = F().createText(); tag.textStyleId = "S:in-a-cursor"; live.appendChild(tag);
+  const asked: string[] = [];
+  const get = F().getStyleByIdAsync;
+  F().getStyleByIdAsync = async (id: string) => { asked.push(id); return get(id); };
+  const { scanDesignSystem } = await import("../src/scan.ts");
+  await scanDesignSystem({});
+  assert.ok(!asked.includes("S:in-a-cursor"), "the cursor's text isn't read as a layer of the design");
+  assert.ok(page.children.includes(live));
+});
+
 test("componentize gives cleanly stacked absolute layers Auto Layout; text fills the column, uneven layouts stay", async () => {
   const page = resetFigma();
   loaded.add("Inter::Regular");
@@ -291,4 +312,29 @@ test("group, boolean (subtract) and ungroup keep layer order; boolean refuses a 
   const other = F().createFrame(); page.appendChild(other);
   const apart = await editNodes({ approved: true, ops: [{ op: "group", nodes: [bg.id, other.id] }] });
   assert.match(apart.failed!.error, /same parent/);
+});
+
+test("set changes a text's weight, size, family and colour, and a frame's background, with the fonts loaded first (one undo step)", async () => {
+  const { items } = board(1);
+  const frame = items[0], title = frame.children[0];
+  loaded.clear(); // nothing loaded yet: set must load what it uses (the strict mock refuses otherwise)
+  let r = await editNodes({ ops: [{ op: "set", node: title.id, weight: "semibold", fontSize: 18, fill: "#1a7f37" }, { op: "set", node: frame.id, fill: "#dff5e1" }], approved: true });
+  assert.equal(r.failed, undefined, JSON.stringify(r.failed));
+  assert.deepEqual(title.fontName, { family: "Inter", style: "Semi Bold" });
+  assert.equal(title.fontSize, 18);
+  assert.equal(title.fills[0].type, "SOLID");
+  assert.ok(Math.abs(title.fills[0].color.g - 0x7f / 255) < 1e-6);
+  assert.ok(Math.abs(frame.fills[0].color.r - 0xdf / 255) < 1e-6, "the frame's background");
+  assert.match(r.applied[0].note, /font Inter Semi Bold/, "the agent learns which style was used");
+  // The closest style a family has: Vazirmatn writes "SemiBold"; 800 has no exact match there, so Bold.
+  r = await editNodes({ ops: [{ op: "set", node: title.id, fontFamily: "vazirmatn", weight: "extrabold" }], approved: true });
+  assert.equal(r.failed, undefined, JSON.stringify(r.failed));
+  assert.deepEqual(title.fontName, { family: "Vazirmatn", style: "Bold" });
+  r = await editNodes({ ops: [{ op: "set", node: title.id, fontFamily: "Inter", italic: true }], approved: true });
+  assert.deepEqual(title.fontName, { family: "Inter", style: "Italic" }, "upright Bold has no italic here: the closest italic");
+  // Clear errors, nothing half-done.
+  r = await editNodes({ ops: [{ op: "set", node: title.id, fontFamily: "Comic Neue", weight: "bold" }], approved: true });
+  assert.match(r.failed!.error, /"Comic Neue" isn't available/);
+  r = await editNodes({ ops: [{ op: "set", node: frame.id, weight: "bold" }], approved: true });
+  assert.match(r.failed!.error, /need a text layer/);
 });
