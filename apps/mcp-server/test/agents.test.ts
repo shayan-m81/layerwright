@@ -43,22 +43,29 @@ function fakeCli() {
 }
 
 test("the marketplace: both catalogues, the plugin with its commands and skill, the server entry for this install", () => {
-  const dir = buildMarketplace({ command: "npx", args: ["-y", "layerwright@9.9.9"], env: { LAYERWRIGHT_PORT: "7336" } }, tmp());
+  const dir = buildMarketplace({ command: "npx", args: ["-y", "--prefer-offline", "layerwright@9.9.9"], env: { LAYERWRIGHT_PORT: "7336" } }, tmp());
   const p = join(dir, "plugins", "layer");
   assert.equal(JSON.parse(readFileSync(join(dir, ".claude-plugin", "marketplace.json"), "utf8")).plugins[0].source, "./plugins/layer");
   assert.deepEqual(JSON.parse(readFileSync(join(dir, ".agents", "plugins", "marketplace.json"), "utf8")).plugins[0].source, { source: "local", path: "./plugins/layer" });
   const mcp = JSON.parse(readFileSync(join(p, ".mcp.json"), "utf8")).mcpServers.layerwright;
-  assert.deepEqual(mcp, { command: "npx", args: ["-y", "layerwright@9.9.9"], env: { LAYERWRIGHT_PORT: "7336", LAYERWRIGHT_WORKDIR: "${CLAUDE_PROJECT_DIR}" } });
+  assert.deepEqual(mcp, { command: "npx", args: ["-y", "--prefer-offline", "layerwright@9.9.9"], env: { LAYERWRIGHT_PORT: "7336", LAYERWRIGHT_WORKDIR: "${CLAUDE_PROJECT_DIR}" } });
   const codex = JSON.parse(readFileSync(join(p, ".codex-plugin", "plugin.json"), "utf8"));
-  assert.deepEqual(codex.mcpServers.layerwright, { command: "npx", args: ["-y", "layerwright@9.9.9"], env: { LAYERWRIGHT_PORT: "7336" } });
+  assert.deepEqual(codex.mcpServers.layerwright, { command: "npx", args: ["-y", "--prefer-offline", "layerwright@9.9.9"], env: { LAYERWRIGHT_PORT: "7336" } });
   assert.equal(codex.skills, "./skills/");
   // The monitor runs the same Layerwright: inbox-watch wakes the session when a request comes from Figma.
-  assert.deepEqual(JSON.parse(readFileSync(join(p, "monitors", "monitors.json"), "utf8"))[0].command, "npx -y layerwright@9.9.9 inbox-watch");
-  assert.equal(JSON.parse(readFileSync(join(p, "hooks", "hooks.json"), "utf8")).hooks.SessionStart[0].hooks[0].command, "npx -y layerwright@9.9.9 session-hint");
+  assert.deepEqual(JSON.parse(readFileSync(join(p, "monitors", "monitors.json"), "utf8"))[0].command, "npx -y --prefer-offline layerwright@9.9.9 inbox-watch");
+  assert.equal(JSON.parse(readFileSync(join(p, "hooks", "hooks.json"), "utf8")).hooks.SessionStart[0].hooks[0].command, "npx -y --prefer-offline layerwright@9.9.9 session-hint");
   const hooks = JSON.parse(readFileSync(join(p, "hooks", "hooks.json"), "utf8")).hooks;
-  assert.equal(hooks.Stop[0].hooks[0].command, "npx -y layerwright@9.9.9 hook-event", "the chat hooks: when the session waits for the user, Figma says so");
+  assert.equal(hooks.Stop[0].hooks[0].command, "npx -y --prefer-offline layerwright@9.9.9 hook-event", "the chat hooks: when the session waits for the user, Figma says so");
   assert.equal(hooks.PreToolUse[0].matcher, "AskUserQuestion");
   for (const s of ["help", "connect", "import", "design", "edit", "code", "check", "components", "prototype", "shot", "inbox", "doctor", "report", "figma-design"]) assert.ok(existsSync(join(p, "skills", s, "SKILL.md")), s);
+});
+
+test("on Windows the agents' CLIs run through cmd.exe: a path with spaces stays one argument", async () => {
+  const { winCommandLine } = await import("../src/agents.ts");
+  assert.equal(winCommandLine("claude", ["plugin", "marketplace", "add", "C:\\Users\\First Last\\.layerwright\\agents", "--scope", "user"]),
+    'claude plugin marketplace add "C:\\Users\\First Last\\.layerwright\\agents" --scope user');
+  assert.equal(winCommandLine("claude", ["C:\\My Dir\\", 'say "hi"', "a&b"]), 'claude "C:\\My Dir\\\\" "say \\"hi\\"" "a&b"');
 });
 
 test("installing: marketplace then plugin, through each agent's own CLI; a failing step says which and why", () => {

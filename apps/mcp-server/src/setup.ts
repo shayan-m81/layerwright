@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import WebSocket from "ws";
 import { BIN, CLI_FILE, DEFAULT_PORT, FROM_SOURCE, IN_NPX_CACHE, KEY_PLACEHOLDER, MIN_NODE, PKG_NAME, PKG_VERSION, PORT_RANGE, REPO_ROOT, pluginHome, pluginKey, pluginSource, portAllowed, skillSource } from "./meta.ts";
-import { AGENTS, AGENT_NAMES, PLUGIN_ID, buildMarketplace, detectAgents, installAgent, onPath, pluginInstalled, type Agent, type Runner } from "./agents.ts";
+import { AGENTS, AGENT_NAMES, PLUGIN_ID, buildMarketplace, detectAgents, installAgent, onPath, pluginInstalled, run as runAgentCli, type Agent, type Runner } from "./agents.ts";
 
 type Out = (s: string) => void;
 const stdout: Out = (s) => process.stdout.write(s + "\n");
@@ -33,10 +33,11 @@ export function selfCommand(sub: string): string {
   return `node "${file}" ${sub}`;
 }
 
-/** The MCP server entry Claude Code should run for this install. */
+/** The MCP server entry Claude Code should run for this install: this exact version, from npx's cache when it has it
+ *  (an exact version never changes, so there's nothing to ask the registry; the plugin's hooks run it too). */
 export function serverEntry() {
   if (FROM_SOURCE) return { command: "npx", args: ["tsx", join(REPO_ROOT!, "apps/mcp-server/src/cli.ts")] };
-  return { command: "npx", args: ["-y", `${PKG_NAME}@${PKG_VERSION}`] };
+  return { command: "npx", args: ["-y", "--prefer-offline", `${PKG_NAME}@${PKG_VERSION}`] };
 }
 
 export interface InitOptions { dir?: string; port?: number; skipInstall?: boolean; skipBrowserCheck?: boolean; out?: Out;
@@ -137,7 +138,7 @@ async function dropUserEntry(o: InitOptions, out: Out) {
   const ask = o.prompt ?? (async (q: string) => { const rl = (await import("node:readline/promises")).createInterface({ input: process.stdin, output: process.stdout }); try { return await rl.question(q); } finally { rl.close(); } });
   const yes = !/^n/i.test((await ask(`Claude Code also has a user-level "${BIN}" server; with the plugin each session would start two. Remove it (${cmd})? [Y/n] `)).trim());
   if (!yes) { out(`! Kept the user-level "${BIN}" server. Sessions will show twice in the Figma window until you run: ${cmd}`); return; }
-  const r = (o.exec ?? ((c: string, a: string[]) => { const x = spawnSync(c, a, { encoding: "utf8" }); return { status: x.status, stdout: x.stdout ?? "", stderr: x.stderr ?? "" }; }))("claude", ["mcp", "remove", BIN, "--scope", "user"]);
+  const r = (o.exec ?? runAgentCli)("claude", ["mcp", "remove", BIN, "--scope", "user"]);
   out(r.status === 0 ? `✓ Removed the user-level "${BIN}" server: the plugin provides it now.` : `✗ Couldn't remove it (${(r.stderr || r.stdout).trim()}). Run: ${cmd}`);
 }
 

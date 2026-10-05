@@ -22,7 +22,8 @@
       "command": "npx",
       "args": [
         "-y",
-        "layerwright@latest"
+        "--prefer-offline",
+        "layerwright@1.0.0"
       ]
     }
   },
