@@ -1,6 +1,6 @@
 {
   "name": "layer",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Figma from your coding agent: HTML or a Claude Design export into editable Figma, new screens with your Design System, Figma frames into your code, and requests you send from the Figma window. Start with /layer:help.",
   "author": {
     "name": "Shayan Montazeri",
@@ -23,7 +23,7 @@
       "args": [
         "-y",
         "--prefer-offline",
-        "layerwright@1.0.0"
+        "layerwright@1.1.0"
       ]
     }
   },
