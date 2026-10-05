@@ -369,12 +369,42 @@ test("a session takes a request sent to another only when nobody is on it or the
   // Removed in the window: it stays away until it asks to join again.
   plugin.ws.send(JSON.stringify({ type: "kick", session: a.session!.id }));
   await until(() => a.kicked);
+  // The window keeps it in the list as removed (faded), so it doesn't just vanish.
+  const lastSessions = () => [...plugin.got].reverse().find((m) => m.type === "sessions");
+  await until(() => lastSessions()?.removed?.some((r: any) => r.id === a.session!.id));
+  assert.equal(lastSessions().sessions.length, 1);
+  assert.deepEqual(hub.status().removed.map((r: any) => r.name), [a.session!.name], "doctor / hub status show it too");
   await wait(400);
   assert.equal(hub.sessions().length, 1, "it didn't come back by itself");
   await a.rejoin();
   await until(() => hub.sessions().length === 2);
+  await until(() => lastSessions()?.sessions.length === 2 && !lastSessions().removed.length, 3000);
 
   a.close(); b.close(); plugin.ws.close(); hub.close();
+});
+
+test("a removed session whose process has exited drops out of the window's Removed list", async () => {
+  const port = 17318;
+  const hub = new Hub(port, { log: quiet });
+  await hub.start();
+  const plugin = fakePlugin(port);
+  await plugin.open();
+  // A session that says it's a process that doesn't exist (pid 2^31-2): once removed, it's never coming back.
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/client`);
+  await new Promise<void>((r) => ws.once("open", () => r()));
+  ws.send(JSON.stringify({ type: "hello", protocol: HUB_PROTOCOL, key: KEY, workdir: "/tmp/gone", pid: 2 ** 31 - 2 }));
+  await until(() => hub.sessions().length === 1);
+  const id = hub.sessions()[0].id;
+  await until(() => plugin.got.some((m) => m.type === "pairing"));
+  plugin.ws.send(JSON.stringify({ type: "kick", session: id }));
+  await until(() => hub.sessions().length === 0);
+  assert.deepEqual(hub.removedList(), [], "a closed session isn't listed as removed");
+  plugin.ws.close(); hub.close();
+});
+
+test("the hub's log lines carry the local time", async () => {
+  const { logTime } = await import("../src/cli.ts");
+  assert.equal(logTime(new Date(2026, 9, 6, 2, 11, 3)), "2026-10-06 02:11:03");
 });
 
 test("the plugin's SessionStart hook: tells a new session to start watching when a Figma window is connected or was used recently", async () => {
@@ -393,7 +423,9 @@ test("the plugin's SessionStart hook: tells a new session to start watching when
   await sessionHint({ port, self: "node cli.js", out: push, recent: false });
   const ctx = JSON.parse(out[0]).hookSpecificOutput;
   assert.equal(ctx.hookEventName, "SessionStart");
-  assert.match(ctx.additionalContext, /start the Monitor tool silently with command "node cli\.js inbox-watch"/);
+  assert.match(ctx.additionalContext, /start the Monitor tool with command "node cli\.js inbox-watch"/);
+  assert.match(ctx.additionalContext, /Tell the user in one line/, "the watcher is mentioned, never started silently");
+  assert.doesNotMatch(ctx.additionalContext, /silently/);
   plugin.ws.close(); hub.close();
 });
 

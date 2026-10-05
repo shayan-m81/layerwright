@@ -57,7 +57,7 @@ test("doctor: reports a missing server with a fix, then all good with the bridge
   const port = 7339; // inside the range the plugin manifest allows (7331–7340); 7331 is left for a real session
   await init({ dir, port, skipInstall: true, skipBrowserCheck: true, out: () => {} });
   let lines: string[] = [];
-  assert.equal(await doctor({ dir, out: (s) => lines.push(s), skipBrowserCheck: true }), 1);
+  assert.equal(await doctor({ dir, out: (s) => lines.push(s), skipBrowserCheck: true, olderServers: () => [] }), 1);
   assert.match(lines.join("\n"), /nothing is listening[\s\S]*fix: start Claude Code/);
 
   const bridge = new WsBridge(port, () => {});
@@ -68,7 +68,7 @@ test("doctor: reports a missing server with a fix, then all good with the bridge
   plugin.send(JSON.stringify({ type: "hello", fileName: "Demo file", page: "Flow" }));
   await new Promise((r) => setTimeout(r, 50));
   lines = [];
-  assert.equal(await doctor({ dir, out: (s) => lines.push(s), skipBrowserCheck: true }), 0, lines.join("\n"));
+  assert.equal(await doctor({ dir, out: (s) => lines.push(s), skipBrowserCheck: true, olderServers: () => [] }), 0, lines.join("\n"));
   assert.match(lines.join("\n"), /MCP server running on port \d+ \(v9\.9\.9\)/);
   assert.match(lines.join("\n"), /plugin connected — file "Demo file"/);
   assert.equal(bridge.connected(), true, "the doctor probe did not displace the plugin connection");
@@ -93,6 +93,6 @@ test("init --cursor: .cursor/mcp.json merged and the skill as a Cursor rule; doc
   const rule = readFileSync(join(dir, ".cursor", "rules", "figma-design.mdc"), "utf8");
   assert.match(rule, /^---\ndescription: Work as a Design Engineer in Figma[^\n]*\nalwaysApply: false\n---\n\n# Figma Design Engineer/);
   const lines: string[] = [];
-  await doctor({ dir, port: 7399, skipBrowserCheck: true, out: (s) => lines.push(s) });
+  await doctor({ dir, port: 7399, skipBrowserCheck: true, olderServers: () => [], out: (s) => lines.push(s) });
   assert.ok(lines.some((l) => /✓ Cursor set up/.test(l)));
 });

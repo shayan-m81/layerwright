@@ -328,3 +328,19 @@ test("a skill sent on its own: the brief is to apply it to the layers, and the w
   assert.match(lines[0], /^Request q8 from the Layerwright window in Figma: Apply with the skill design-critique on 1 layer: "Card"/);
   delete process.env.CLAUDE_CODE_SESSION_ID;
 });
+
+test("figma_status after the user removed this session in the Figma window: it joins again, and says so", async (ctx) => {
+  process.env.CLAUDE_CODE_SESSION_ID = "test-rejoin"; // a session of its own (its inbox is under the temporary home)
+  ctx.after(() => { delete process.env.CLAUDE_CODE_SESSION_ID; });
+  const t = await connect("claude-code");
+  let rejoined = 0;
+  t.bridge.kicked = true;
+  t.bridge.rejoin = async () => { rejoined++; t.bridge.kicked = false; };
+  const r = JSON.parse((await t.call("figma_status")).content[0].text);
+  assert.equal(rejoined, 1);
+  assert.match(r.rejoined, /The user had removed this session in the Layerwright window in Figma; this call joined it again\. Tell them in one line/);
+  const again = JSON.parse((await t.call("figma_status")).content[0].text);
+  assert.equal(again.rejoined, undefined, "said once");
+  assert.match(r.requestsFromFigma, /tell them in one line that you're watching the Layerwright window/, "the watcher is announced, not started silently");
+  assert.doesNotMatch(r.requestsFromFigma, /silently/);
+});

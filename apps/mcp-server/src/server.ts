@@ -13,6 +13,7 @@ import { diffImages, importHtml, renderToPlan, screenshotHtml } from "@cde/html-
 import { inlineImages } from "./images.ts";
 import { PKG_VERSION, inboxFile, stateFile } from "./meta.ts";
 import { withTask } from "./task.ts";
+import { describeOlder, olderServersCached } from "./others.ts";
 import { cachedUpdate, checkForUpdate, type UpdateInfo } from "./update.ts";
 import { MemoryStore } from "./memory.ts";
 import { readPrefs, writePrefs } from "./prefs.ts";
@@ -34,7 +35,8 @@ async function guard(fn: () => Promise<ToolResult>): Promise<ToolResult> {
 }
 
 /** watchChat: follow this session's chat (the plugin's hooks) to tell the Figma window when it waits for the user. */
-export interface ServerOptions { workdir?: string; noUpdateCheck?: boolean; watchChat?: boolean; skills?: SkillStore }
+/** `noProcessScan`: don't look for older Layerwright servers on this computer (default: on when noUpdateCheck is, as in tests). */
+export interface ServerOptions { workdir?: string; noUpdateCheck?: boolean; noProcessScan?: boolean; watchChat?: boolean; skills?: SkillStore }
 
 export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
   const workdir = resolve(opts.workdir ?? process.env.LAYERWRIGHT_WORKDIR ?? process.cwd());
@@ -201,6 +203,13 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
   if (!opts.noUpdateCheck) checkForUpdate().then((u) => { update = u; bridge.notify?.(serverInfo()); }).catch(() => {});
   bridge.onHello = () => bridge.notify?.(serverInfo());
 
+  // Sessions on this computer still running a 0.x (single-session) Layerwright: they can't reach Figma next to a hub.
+  const olderNote = () => {
+    if (opts.noProcessScan ?? opts.noUpdateCheck) return {};
+    const older = olderServersCached();
+    return older.length ? { olderLayerwright: older.map((s) => describeOlder(s, PKG_VERSION)), olderNote: "Tell the user once: those sessions can't use Figma until they're updated." } : {};
+  };
+
   server.registerTool("figma_status", {
     description: "Check whether the Figma bridge plugin is connected, which file/page is open, the current selection, and whether a Design System scan is cached. Cheap; call first, with a title for this session.",
     inputSchema: {
@@ -208,17 +217,21 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
       listen: z.boolean().optional().describe("Return doFirst (the watcher that wakes this session when the user sends a request from the Figma window) even if it was returned before: /layer:connect"),
     },
   }, async ({ title, listen }) => guard(async () => {
-    if (bridge.kicked) await bridge.rejoin?.();
+    // Removed in the Figma window: this call brings it back. The user removed it on purpose, so they hear about it.
+    const wasRemoved = !!bridge.kicked;
+    if (wasRemoved) await bridge.rejoin?.();
     if (title) bridge.setTitle?.(title);
     // The language the user chose to be told things in (every project, every session): layerwright_memory language.
     const language = readPrefs().language;
     const base = { connected: bridge.connected(), file: bridge.info()?.fileName, designSystemCached: !!loadDs(), designSystemScannedAt: ds?.scannedAt, workdir,
-      ...(language ? { language, languageNote: `Explain things to the user in ${language} (their saved choice), here and in figma_reply messages.` } : {}) };
+      ...(language ? { language, languageNote: `Explain things to the user in ${language} (their saved choice), here and in figma_reply messages.` } : {}),
+      ...olderNote(),
+      ...(wasRemoved ? { rejoined: "The user had removed this session in the Layerwright window in Figma; this call joined it again. Tell them in one line. If they didn't mean to use Figma from this session, don't make Figma calls." } : {}) };
     // Requests from the Figma window should start this session by themselves. The plugin's monitor does that in a
     // terminal; where plugin monitors don't run (the desktop app), the agent starts the same watcher once.
     const watch = (!watchTold || listen) && /claude/i.test(server.server.getClientVersion()?.name ?? "") && inboxFile()
       ? { doFirst: { tool: "Monitor", command: selfCommand("inbox-watch"), description: "Requests from the Layerwright window in Figma", timeout_ms: 1800000 },
-          requestsFromFigma: "Before you answer the user, start the Monitor in doFirst (silently, no need to mention it). It wakes this session when the user sends a request from the Figma window, so they never have to type /layer:inbox. It exits at once if a watcher already runs for this session. When it expires, start it again. When it reports a request, call figma_inbox and do it." }
+          requestsFromFigma: "Before you answer the user, start the Monitor in doFirst, and tell them in one line that you're watching the Layerwright window in Figma for their requests (it runs in the background; they can ask you to stop it). It wakes this session when the user sends a request from the Figma window, so they never have to type /layer:inbox. It exits at once if a watcher already runs for this session. When it expires, start it again. When it reports a request, call figma_inbox and do it." }
       : undefined;
     if (watch) watchTold = true;
     // Skills help with every job, Figma open or not (Figma → code, a spec, a critique of a screenshot).

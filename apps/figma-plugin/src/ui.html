@@ -62,6 +62,9 @@
   .conn i { width: 6px; height: 6px; border-radius: 50%; background: var(--fg3); }
   .conn[data-state="connected"] { color: var(--ok); }
   .conn[data-state="connected"] i { background: var(--ok); animation: ping 2.4s ease-out infinite; }
+  /* Connected to the hub, but no session to send to: not a success colour. */
+  .conn[data-state="idle"] { color: var(--warn); }
+  .conn[data-state="idle"] i { background: var(--warn); }
   .conn[data-state="running"] { color: var(--brand2); }
   .conn[data-state="running"] i { background: var(--brand2); animation: ping 1s ease-out infinite; }
   .conn[data-state="disconnected"] i { animation: blink 1.6s ease-in-out infinite; }
@@ -128,6 +131,7 @@
   .beacon::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid currentColor; opacity: 0; color: var(--fg3); }
   .beacon[data-state="connected"] { background: var(--ok); }
   .beacon[data-state="connected"]::after { color: var(--ok); animation: ring 2.8s ease-out infinite; }
+  .beacon[data-state="idle"] { background: var(--warn); }
   .beacon[data-state="running"] { background: var(--brand2); }
   .beacon[data-state="running"]::after { color: var(--brand2); animation: ring 1.2s ease-out infinite; }
   .beacon[data-state="disconnected"] { animation: blink 1.6s ease-in-out infinite; }
@@ -254,10 +258,13 @@
   .opt:hover { background: var(--hover); }
   .opt[aria-pressed="true"] { background: color-mix(in srgb, var(--c) 11%, transparent); }
   .opt .check { color: var(--c); font-weight: 700; }
-  .x { flex: none; height: 22px; min-width: 22px; padding: 0 5px; border: 0; border-radius: 6px; display: grid; place-items: center; background: none; color: var(--fg3); opacity: 0; transition: opacity .15s, background .15s, color .15s; font-size: 10.5px; font-weight: 600; }
-  .opt:hover .x, #sessions li:hover .x, .x:focus-visible { opacity: 1; }
-  .x:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad-text); }
-  .x[data-confirm="1"] { opacity: 1; background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad-text); }
+  /* Remove a session: its own class (the 18px .x below is for Activity's ×), sized to its label. Pressed once it reads
+     "Remove" and takes the state pill's place, so the row never grows past the window. */
+  .kick { flex: none; height: 24px; min-width: 24px; padding: 0 6px; border: 0; border-radius: 6px; display: grid; place-items: center; background: none; color: var(--fg3); opacity: 0; transition: opacity .15s, background .15s, color .15s; font-size: 11px; font-weight: 600; white-space: nowrap; }
+  #sessions li:hover .kick, .kick:focus-visible { opacity: 1; }
+  .kick:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad-text); }
+  .kick[data-confirm="1"] { opacity: 1; padding: 0 10px; background: var(--bad); color: #fff; }
+  #sessions li[data-confirm="1"] .pill { display: none; }
   #selHint { margin: 8px 2px 0; display: flex; gap: 6px; color: var(--fg2); font-size: 10.5px; }
   .acts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
   .act { position: relative; overflow: hidden; display: flex; align-items: center; gap: 8px; text-align: left; padding: 8px 9px; border-radius: 10px; background: var(--bg); font-size: 11px; font-weight: 550; line-height: 1.25; }
@@ -312,6 +319,9 @@
   #sessions .who { flex: 1; min-width: 0; }
   #sessions .who b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #sessions .who small { display: block; color: var(--fg3); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Sessions removed here: still listed, faded, until they join again (their agent's next figma_status). */
+  #sessions li.gone { opacity: .62; }
+  #sessions li.gone .avatar { filter: grayscale(1); }
 
   /* ---------- requests sent from here ---------- */
   #requestsBox { display: none; }
@@ -760,7 +770,9 @@
   let miniH = 0;               // the compact window's height, as last asked of Figma
   let paired = null;           // from the hub: may this window send requests into sessions?
   let tab = "home", tabIndex = 0, unseen = 0;
-  let kickArmed = null;        // a session whose remove button was pressed once (press again to remove)
+  let kickArmed = null, kickArmedAt = 0; // a session whose remove button was pressed once (press again to remove)
+  let removed = [];            // from the hub: sessions removed here that haven't joined again { id, name, color, client, workdir, at }
+  let holdList = false;        // a press on the session list: don't redraw it under the pointer, or the click is lost
   let skills = null, skillCats = [], skillBusy = false, skillRmArmed = null; // the Skills tab, from the hub
   let picked = [];             // skills picked for the next request (@name in the chat box); the agent reads them first
   let skMenu = null;           // the @ menu: { which: "ask" | "m", q, items, i }
@@ -889,18 +901,25 @@
   function render() {
     const open = isOpen();
     const state = !open || rejected ? "disconnected" : running.size ? "running" : "connected";
-    $("dot").dataset.state = state;
-    $("hero").dataset.state = state;
-    $("conn").dataset.state = state;
-    $("connText").textContent = state === "running" ? "Working" : state === "connected" ? (sessions.length > 1 ? sessions.length + " sessions" : "Connected") : failures > 1 ? "Waiting for Claude" : "Connecting";
+    const look = state === "connected" && !sessions.length ? "idle" : state; // the hub, but no session
+    $("dot").dataset.state = look;
+    $("hero").dataset.state = look;
+    $("conn").dataset.state = look;
+    $("detail").title = "";
+    // Connected to the hub isn't connected to a session: with none, nothing here can be sent anywhere. Say so.
+    $("connText").textContent = state === "running" ? "Working" : state === "connected" ? (sessions.length > 1 ? sessions.length + " sessions" : sessions.length ? "Connected" : "No session") : failures > 1 ? "Waiting for Claude" : "Connecting";
     if (state === "running") {
       const [r] = running.values();
       $("status").textContent = (LABEL[r.method] || r.method) + "…";
       $("detail").textContent = (r.session && sessions.length > 1 ? "for " + r.session.name + " · " : "") + Math.round((Date.now() - r.started) / 1000) + "s" + (running.size > 1 ? " · " + (running.size - 1) + " more waiting" : "");
       // Always show that something is moving; a real percentage replaces the sweep when the plugin reports one.
       if ($("progress").style.display !== "block") { $("progress").dataset.mode = "indet"; $("progress").style.display = "block"; }
+    } else if (state === "connected" && !sessions.length) {
+      $("status").textContent = "Connected · no session";
+      $("detail").textContent = removed.length ? "You removed " + removed[0].name : "Start Claude Code or Codex in a project";
+      $("detail").title = removed.length ? "It joins again the next time you ask it for Figma work in its chat." : "Or ask a running session for Figma work: it joins by itself.";
     } else if (state === "connected") {
-      $("status").textContent = sessions.length > 1 ? "Connected · " + sessions.length + " sessions" : "Connected to Claude Code";
+      $("status").textContent = sessions.length > 1 ? "Connected · " + sessions.length + " sessions" : "Connected to " + (clientName(sessions[0].client) || "Claude Code");
       const sel = hello && hello.selection ? hello.selection : 0;
       $("detail").textContent = hello ? (hello.fileName + " · " + String(hello.page || "").trim() + (sel ? " · " + count(sel, "layer", "layers") + " selected" : "")) : "Ready";
     } else if (rejected) {
@@ -957,16 +976,23 @@
   const isBusy = (s) => [...running.values()].some((x) => x.session && x.session.id === s.id && !QUIET[x.method]) || requests.some((x) => x.session === s.id && (x.status === "working" || x.status === "seen"));
   const stateText = (s) => asking.has(s.id) ? "asks you in the chat" : desk.asks.some((a) => a.session === s.id) ? "waiting for you" : openFor(s) > 1 ? "on " + openFor(s) + " requests" : isBusy(s) ? "working" : thinking(s) ? "thinking" : "idle";
   // Remove a session from the shared Figma connection: press once to arm, again to remove.
-  const kickBtn = (s) => '<span class="x" role="button" data-act="kick" data-session="' + esc(s.id) + '"' + (kickArmed === s.id ? ' data-confirm="1">Remove?' : ' title="Remove ' + esc(s.name) + ' from Figma">✕') + '</span>';
+  const kickBtn = (s) => '<button type="button" class="kick" data-act="kick" data-session="' + esc(s.id) + '"' + (kickArmed === s.id
+    ? ' data-confirm="1" title="Press again to remove ' + esc(s.name) + ' from Figma" aria-label="Confirm: remove ' + esc(s.name) + '">Remove</button>'
+    : ' title="Remove ' + esc(s.name) + ' from Figma" aria-label="Remove ' + esc(s.name) + '">✕</button>');
+  const whoHTML = (s, sub) => '<span class="avatar" style="--c:' + col(s.color) + '">' + esc(initials(s.name)) + '</span>' +
+    '<span class="who" title="' + esc(s.workdir || "") + '"><b>' + esc(s.name) + '</b><small>' + esc(sub) + '</small></span>';
 
   function renderSessions() {
     const many = sessions.length > 1;
-    $("sessionsBox").style.display = sessions.length ? "block" : "none";
-    $("noSessions").style.display = sessions.length ? "none" : "block";
+    $("sessionsBox").style.display = sessions.length || removed.length ? "block" : "none";
+    $("noSessions").style.display = sessions.length || removed.length ? "none" : "block";
     $("sessionCount").textContent = String(sessions.length);
     $("sessionCount").dataset.show = many ? "1" : "";
-    setHTML($("sessions"), sessions.map((s, i) => '<li class="' + fresh("s:" + s.id).trim() + '" style="--i:' + i + '"><span class="avatar" style="--c:' + col(s.color) + '">' + esc(initials(s.name)) + '</span>' +
-      '<span class="who" title="' + esc(s.workdir || "") + '"><b>' + esc(s.name) + '</b><small>' + esc([clientName(s.client), short(s.workdir)].filter(Boolean).join(" · ")) + '</small></span>' + sessionState(s) + kickBtn(s) + '</li>').join(""));
+    if (!holdList) setHTML($("sessions"), sessions.map((s, i) => '<li class="' + fresh("s:" + s.id).trim() + '" style="--i:' + i + '"' + (kickArmed === s.id ? ' data-confirm="1"' : "") + '>' +
+      whoHTML(s, [clientName(s.client), short(s.workdir)].filter(Boolean).join(" · ")) + sessionState(s) + kickBtn(s) + '</li>').join("") +
+      // Removed here, not gone from its chat: it comes back when its agent next uses Figma (figma_status).
+      removed.map((s) => '<li class="gone" title="Removed from Figma. It joins again the next time you ask it for Figma work in its chat.">' +
+        whoHTML(s, "Rejoins when you ask it for Figma") + '<span class="pill off">Removed</span></li>').join(""));
 
     // A session asking the user something in its chat: say so first, and where to answer.
     const chat = [...asking.entries()].map(([id, a]) => {
@@ -1079,10 +1105,11 @@
   function renderMini(state) {
     if (!settings.mini) return;
     const to = target();
-    $("mDot").dataset.state = state;
+    $("mDot").dataset.state = state === "connected" && !sessions.length ? "idle" : state;
     const sel = hello && hello.selection ? hello.selection : 0;
     const [r] = running.values();
     setHTML($("mStatus"), state === "running" ? "<b>" + esc((LABEL[r.method] || r.method) + "…") + "</b> " + esc(Math.round((Date.now() - r.started) / 1000) + "s")
+      : state === "connected" && !sessions.length ? "<b>No session connected</b>"
       : state === "connected" ? "<b>" + esc(hello ? String(hello.page || "").trim() || hello.fileName : "Connected") + "</b>" + (sessions.length > 1 ? " · " + sessions.length + " sessions" : "")
       : "<b>" + (failures > 1 ? "Waiting for Claude Code" : "Connecting…") + "</b>");
     $("mTo").style.display = sessions.length ? "inline-flex" : "none";
@@ -1183,11 +1210,13 @@
     if (d.act === "del-req") { const i = requests.findIndex((x) => x.id === d.id); if (i >= 0) requests.splice(i, 1); render(); return; }
     if (d.act === "del-ev") { events.splice(Number(d.i), 1); renderActivity(); render(); return; }
     if (d.act === "kick") {
-      if (kickArmed !== d.session) { kickArmed = d.session; setTimeout(() => { if (kickArmed === d.session) { kickArmed = null; render(); } }, 3000); render(); return; }
+      // Press once to arm, again to remove. A second press that fast is the same gesture (a double-click), not a yes.
+      if (kickArmed !== d.session) { kickArmed = d.session; kickArmedAt = Date.now(); setTimeout(() => { if (kickArmed === d.session) { kickArmed = null; render(); } }, 4000); render(); return; }
+      if (Date.now() - kickArmedAt < 400) return;
       kickArmed = null;
       const s = byId(d.session);
       if (isOpen()) ws.send(JSON.stringify({ type: "kick", session: d.session }));
-      toast("Removed " + (s ? s.name : "the session") + ". It can join again from its own chat.");
+      toast("Removed " + (s ? s.name : "the session") + ". It joins again the next time you ask it for Figma work in its chat.");
       render();
       return;
     }
@@ -1207,6 +1236,11 @@
   $("clearReqs").onclick = () => { for (let i = requests.length - 1; i >= 0; i--) if (FINISHED[requests[i].status]) requests.splice(i, 1); render(); toast("Cleared the finished requests"); };
   $("clearLog").onclick = () => { events.length = 0; unseen = 0; renderActivity(); render(); };
   $("sessions").onclick = act;
+  // A redraw between press and release would put a new button under the pointer and the click would never arrive
+  // (the list redraws every second while a session thinks). Hold it while pressed; catch up right after the click.
+  $("sessions").onpointerdown = () => { holdList = true; };
+  const releaseList = () => { if (!holdList) return; setTimeout(() => { holdList = false; render(); }, 0); };
+  if (window.addEventListener) { window.addEventListener("pointerup", releaseList, true); window.addEventListener("pointercancel", releaseList, true); }
   $("mMenu").onclick = act;
   $("mAsks").onclick = act;
   $("mActs").onclick = act;
@@ -1496,7 +1530,7 @@
     sock.onopen = () => { if (my !== gen) return sock.close(); failures = 0; if (hello) sock.send(JSON.stringify(withKey(hello))); render(); };
     sock.onclose = (e) => {
       if (my !== gen) return;
-      failures++; running.clear(); sessions = []; paired = null; post({ type: "sessions", sessions });
+      failures++; running.clear(); sessions = []; removed = []; paired = null; post({ type: "sessions", sessions });
       if ((e && e.code === 4003) || rejected) {
         // Not paired with this computer's Layerwright: knocking again every few seconds won't change that. Try again
         // now and then (or when the port is changed), in case the user runs the command meanwhile.
@@ -1519,6 +1553,7 @@
       if (req.type === "skill-text") { onSkillText(req); return; }
       if (req.type === "sessions") {
         sessions = (Array.isArray(req.sessions) ? req.sessions : []).slice().sort((a, b) => (b.connectedAt || 0) - (a.connectedAt || 0)); // newest first
+        removed = Array.isArray(req.removed) ? req.removed.filter((r) => r && typeof r.id === "string" && !sessions.some((s) => s.id === r.id)).slice(0, 8) : [];
         for (const id of [...asking.keys()]) if (id !== "solo" && !sessions.some((x) => x.id === id)) asking.delete(id);
         post({ type: "sessions", sessions });
         render();
