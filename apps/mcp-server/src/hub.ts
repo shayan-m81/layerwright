@@ -4,19 +4,36 @@
 //
 //   paths on ws://127.0.0.1:<port>
 //     /doctor   status for `doctor` and for clients deciding what holds the port; answered, then closed
-//     /client   an MCP server (RelayBridge)
-//     anything  the Figma plugin (the plugin connects to the bare origin, as it always has)
+//     /stop     `layerwright hub stop`
+//     /client   an MCP server (RelayBridge); it presents this computer's pairing key in its hello
+//     anything  the Figma plugin (the plugin connects to the bare origin, as it always has); it presents the key too
+//
+// A web page in the user's browser can reach localhost as well: it is refused at the upgrade (originAllowed), and a
+// window without the key never becomes the plugin.
 //
 // It isn't tied to any session: closing one doesn't touch the others, and it exits by itself once no session has
 // been connected for a while.
+import { timingSafeEqual } from "node:crypto";
+import type { IncomingMessage } from "node:http";
 import { basename } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import type { BridgeHello, FigmaAction, SessionInfo, StructuredError } from "@cde/core";
+import { originAllowed } from "./bridge.ts";
 import { pluginKey } from "./meta.ts";
 import { SkillStore } from "./skills.ts";
 
-/** Bumped when the hub ⇄ client messages change incompatibly. */
-export const HUB_PROTOCOL = 1;
+/** Bumped when the hub ⇄ client messages change incompatibly. 2: sessions present the pairing key. */
+export const HUB_PROTOCOL = 2;
+/** Close codes the sessions act on: removed in the Figma window; the hub gave its port to a newer Layerwright. */
+export const CLOSE_KICKED = 4002, CLOSE_REPLACED = 4004;
+const UNPAIRED = "This Layerwright window isn't paired with Layerwright on this computer, so it can't connect. Run npx layerwright plugin (it reinstalls the paired plugin), then close and reopen the plugin in Figma.";
+
+/** The same key, compared in constant time. */
+function sameKey(got: unknown, want: string): boolean {
+  if (typeof got !== "string" || got.length !== want.length) return false;
+  return timingSafeEqual(Buffer.from(got), Buffer.from(want));
+}
+const str = (v: unknown, max: number) => (typeof v === "string" ? v.slice(0, max) : undefined);
 /** Distinct, readable on light and dark Figma themes. */
 export const SESSION_COLORS = ["#7c3aed", "#0d99ff", "#14ae5c", "#f24822", "#e8a200", "#e83e8c", "#00a3a3", "#8b5e3c"];
 
@@ -29,7 +46,7 @@ export interface HubOptions {
   idleMs?: number;
   /** Called when the hub stops by itself (idle, or replaced by a newer protocol). */
   onExit?: (reason: string) => void;
-  /** The pairing key the plugin window must present to send requests into sessions (default: ~/.layerwright/key). */
+  /** The pairing key the plugin window and the sessions must present (default: ~/.layerwright/key, made if missing). */
   key?: () => string | undefined;
   /** Called when a paired plugin window says hello (the hub process remembers it for new sessions: prefs.ts). */
   onPluginSeen?: () => void;
@@ -51,6 +68,7 @@ export class Hub {
   private seq = 0;
   private idle?: NodeJS.Timeout;
   private stopping = false;
+  private retiring = false;
   readonly version: string;
   private log: (m: string) => void;
 
@@ -62,7 +80,8 @@ export class Hub {
   /** Resolves with an error string when the port can't be taken (another hub, or an older server, has it). */
   start(): Promise<string | undefined> {
     return new Promise((resolve) => {
-      const wss = (this.wss = new WebSocketServer({ host: "127.0.0.1", port: this.port }));
+      const verifyClient = ({ req }: { req: IncomingMessage }) => originAllowed(req.url, req.headers.origin);
+      const wss = (this.wss = new WebSocketServer({ host: "127.0.0.1", port: this.port, verifyClient }));
       wss.on("listening", () => { this.log(`listening on ws://localhost:${this.port}`); this.armIdle(); resolve(undefined); });
       wss.on("error", (e: any) => resolve(e.code === "EADDRINUSE" ? `Port ${this.port} is already in use.` : String(e.message ?? e)));
       wss.on("connection", (ws, req) => {
@@ -89,11 +108,11 @@ export class Hub {
 
   sessions(): SessionInfo[] { return [...this.clients.values()].map((c) => c.info); }
 
-  close(reason = "stopped") {
+  close(reason = "stopped", code = 4001) {
     if (this.stopping) return;
     this.stopping = true;
     clearTimeout(this.idle);
-    for (const c of this.clients.values()) c.ws.close(4001, reason);
+    for (const c of this.clients.values()) c.ws.close(code, reason);
     this.plugin?.close();
     this.wss?.close();
   }
@@ -103,52 +122,70 @@ export class Hub {
   private pluginOpen() { return !!this.plugin && this.plugin.readyState === WebSocket.OPEN; }
 
   private addPlugin(ws: WebSocket) {
-    // A new window takes over once it says hello, except that an unpaired one can't push out a paired one: a web page
-    // can reach localhost too, and must not take the real plugin's place.
+    // A window becomes the plugin once it says hello with this computer's pairing key (init and `layerwright plugin`
+    // write it into the installed window): a web page can reach localhost too, and must never get the sessions'
+    // requests nor answer them. Without any key on this computer, any window may connect (unpaired, it sends nothing
+    // into sessions).
     let adopted = false;
     ws.on("message", (raw) => {
-      if (adopted) return this.fromPlugin(String(raw));
+      if (adopted) { if (this.plugin === ws) this.fromPlugin(String(raw)); return; } // a replaced window has no say
       let msg: any;
       try { msg = JSON.parse(String(raw)); } catch { return; }
       if (msg?.type !== "hello") return; // nothing goes through before hello
-      if (this.pluginOpen() && this.plugin !== ws && this.paired && !this.keyMatches(msg.key)) {
-        ws.send(JSON.stringify({ type: "rejected", message: "A paired Layerwright window is already connected." }));
-        ws.close(4003, "a paired plugin window is already connected");
-        return;
+      const verdict = this.pairing(ws, msg);
+      if (verdict === "rejected") return;
+      if (this.plugin && this.plugin !== ws) {
+        // The window was reopened: what the old one had in flight fails now (its close comes later, and is ignored).
+        const old = this.plugin;
+        this.failPending("The Figma plugin window was replaced during the request. Check the result (figma_inspect) before retrying.");
+        old.close(4000, "replaced by a newer plugin connection");
       }
-      if (this.plugin && this.plugin !== ws) this.plugin.close(4000, "replaced by a newer plugin connection");
       this.plugin = ws;
       adopted = true;
       this.log("plugin connected");
-      this.fromPlugin(String(raw));
+      this.fromPlugin(String(raw), verdict);
     });
     ws.on("close", () => {
       if (this.plugin !== ws) return;
       this.plugin = undefined;
       this.hello = undefined;
       this.paired = false;
-      for (const c of this.clients.values()) {
-        for (const id of c.pending) this.toClient(c, { type: "response", res: { id, ok: false, error: { type: "PLUGIN_DISCONNECTED", message: "Figma plugin disconnected during the request." } } });
-        c.pending.clear();
-      }
+      this.failPending("Figma plugin disconnected during the request.");
       this.broadcastPlugin();
     });
   }
 
-  private keyMatches(key: unknown) {
-    const want = (this.o.key ?? (() => pluginKey()))();
-    return !!want && key === want;
+  /** Whether a window's hello carries the key. One that doesn't, while this computer has one, is told how to pair and
+   *  closed (an older plugin, which would take the message for a request, is only closed). */
+  private pairing(ws: WebSocket, hello: any): "paired" | "unpaired" | "rejected" {
+    let want: string | undefined;
+    try { want = (this.o.key ?? (() => pluginKey(true)))(); } catch { /* no key can be made: nothing to check */ }
+    if (!want) return "unpaired";
+    if (sameKey(hello.key, want)) return "paired";
+    if (Number(hello.protocol ?? 0) >= 2) ws.send(JSON.stringify({ type: "rejected", message: UNPAIRED }));
+    ws.close(4003, "not paired with this computer");
+    return "rejected";
   }
 
-  private fromPlugin(raw: string) {
+  /** Every request in flight fails with this: the window that had them is gone. */
+  private failPending(message: string) {
+    for (const c of this.clients.values()) {
+      for (const id of c.pending) this.toClient(c, { type: "response", res: { id, ok: false, error: { type: "PLUGIN_DISCONNECTED", message } } });
+      c.pending.clear();
+    }
+  }
+
+  private fromPlugin(raw: string, checked?: "paired" | "unpaired") {
     let msg: any;
     try { msg = JSON.parse(raw); } catch { return; }
     if (msg?.type === "hello") {
-      const { key, ...hello } = msg; // the key stays here: sessions never see it
-      this.paired = this.keyMatches(key);
+      const { key: _key, ...hello } = msg; // the key stays here: sessions never see it
+      const pairing = checked ?? this.pairing(this.plugin!, msg);
+      if (pairing === "rejected") return;
+      this.paired = pairing === "paired";
       this.hello = hello;
       if (this.paired) try { this.o.onPluginSeen?.(); } catch { /* only a hint for new sessions */ }
-      this.toPlugin({ type: "pairing", paired: this.paired });
+      this.toModern({ type: "pairing", paired: this.paired });
       this.broadcastPlugin();
       this.sendSessions();
       return;
@@ -161,7 +198,7 @@ export class Hub {
       r.status = "stopped"; r.touched = Date.now();
       const c = this.clients.get(r.session);
       if (c) this.toClient(c, { type: "action-stop", id: msg.id });
-      this.toPlugin({ type: "action-update", id: msg.id, status: "stopped", session: r.session, message: "Stopped" });
+      this.toModern({ type: "action-update", id: msg.id, status: "stopped", session: r.session, message: "Stopped" });
       this.log(`request ${msg.id} stopped from the Figma window`);
       return;
     }
@@ -169,7 +206,7 @@ export class Hub {
     if (msg?.type === "kick" && typeof msg.session === "string") {
       // "Remove" in the window: that session is let go and doesn't come back by itself (figma_status rejoins).
       const c = this.clients.get(msg.session);
-      if (c && this.paired) { this.log(`session ${c.info.name} removed from the Figma window`); c.ws.close(4002, "removed in the Figma window"); }
+      if (c && this.paired) { this.log(`session ${c.info.name} removed from the Figma window`); c.ws.close(CLOSE_KICKED, "removed in the Figma window"); }
       return;
     }
     if (msg?.type === "progress") {
@@ -187,6 +224,9 @@ export class Hub {
   }
 
   private toPlugin(msg: unknown) { if (this.pluginOpen()) this.plugin!.send(JSON.stringify(msg)); }
+  /** Messages a plugin window older than protocol 2 doesn't know: it would take them for requests ("undefined failed"). */
+  private modern() { return (this.hello?.protocol ?? 0) >= 2; }
+  private toModern(msg: unknown) { if (this.modern()) this.toPlugin(msg); }
 
   /** The Skills tab: the list, and (from the paired window only, since a web page can reach localhost too) turning a
    *  skill on or off, adding one from a link or pasted text, removing one of the user's own. Every session reads the
@@ -226,7 +266,7 @@ export class Hub {
   /** A request from the Figma window for one session. Only a paired window may send one: it becomes a prompt. */
   private routeAction(msg: any) {
     const id = String(msg.action?.id ?? "");
-    const failed = (message: string) => this.toPlugin({ type: "action-update", id, status: "failed", message, session: msg.session });
+    const failed = (message: string) => this.toModern({ type: "action-update", id, status: "failed", message, session: msg.session });
     if (!id || typeof msg.session !== "string") return;
     if (!this.paired) return failed("This plugin window isn't paired with Layerwright on this computer, so it can't send requests. Run npx layerwright init, then reopen the plugin.");
     const c = this.clients.get(msg.session);
@@ -251,9 +291,7 @@ export class Hub {
   }
 
   /** Sessions only go to a plugin that understands them; an older plugin would take them for requests. */
-  private sendSessions() {
-    if ((this.hello?.protocol ?? 0) >= 2) this.toPlugin({ type: "sessions", sessions: this.sessions() });
-  }
+  private sendSessions() { this.toModern({ type: "sessions", sessions: this.sessions() }); }
 
   // ---------- sessions ----------
 
@@ -272,9 +310,17 @@ export class Hub {
             ws.close();
             this.retireWhenQuiet();
           } else {
-            ws.send(JSON.stringify({ type: "rejected", message: `This session runs an older Layerwright than the one sharing the Figma connection (hub ${this.version}). Update it (restart the session to get layerwright@latest).` }));
+            ws.send(JSON.stringify({ type: "rejected", message: `This session runs an older Layerwright than the one sharing the Figma connection (hub ${this.version}). Update it: run npx layerwright@latest init in the project, then restart this session.` }));
             ws.close();
           }
+          return;
+        }
+        // Only Layerwright's own processes, run by this user: they can read the key, a web page can't.
+        let want: string | undefined;
+        try { want = (this.o.key ?? (() => pluginKey(true)))(); } catch { /* no key can be made: nothing to check */ }
+        if (want && !sameKey(msg.key, want)) {
+          ws.send(JSON.stringify({ type: "rejected", message: "This session's pairing key (~/.layerwright/key) isn't the one the shared Figma connection uses. Both must run as the same user with the same LAYERWRIGHT_HOME; `npx layerwright hub stop` restarts the hub." }));
+          ws.close();
           return;
         }
         c = { ws, pending: new Set(), info: this.register(msg) };
@@ -307,12 +353,18 @@ export class Hub {
   }
 
   private register(msg: any): SessionInfo {
-    const id = `s${(++this.seq).toString(36)}${Date.now().toString(36).slice(-4)}`;
-    // The agent's title for its task when it already has one (a reconnect); the folder name until it sends one.
+    // A session that reconnects asks for its id back, so its requests and the selection it was given stay its own
+    // (another session's automatic pick-up would otherwise take them at once). Unless a live session holds that id.
+    const want = typeof msg.resume === "string" && /^s[0-9a-z]{1,24}$/.test(msg.resume) ? msg.resume : undefined;
+    const held = want ? this.clients.get(want) : undefined;
+    let id = want && held?.ws.readyState !== WebSocket.OPEN ? want : "";
+    if (id && held) this.clients.delete(id); // its socket is on its way out
+    while (!id || this.clients.has(id)) id = `s${(++this.seq).toString(36)}${Date.now().toString(36).slice(-4)}`;
+    // The agent's title for its task when it already has one (a reconnect); else the name it had, or the folder name.
     const title = cleanTitle(msg.title);
     const name = this.uniqueName(title ?? (String(msg.name || (msg.workdir ? basename(String(msg.workdir)) : "") || "Session").slice(0, 40)));
     const used = new Set([...this.clients.values()].map((c) => c.info.color));
-    const color = SESSION_COLORS.find((x) => !used.has(x)) ?? SESSION_COLORS[this.seq % SESSION_COLORS.length];
+    const color = SESSION_COLORS.includes(msg.color) && !used.has(msg.color) ? msg.color : SESSION_COLORS.find((x) => !used.has(x)) ?? SESSION_COLORS[this.seq % SESSION_COLORS.length];
     return { id, name, color, workdir: msg.workdir ? String(msg.workdir) : undefined, client: msg.client ? String(msg.client) : undefined, version: msg.version ? String(msg.version) : undefined, connectedAt: Date.now(), titled: title ? true : undefined };
   }
 
@@ -327,6 +379,11 @@ export class Hub {
       // The task (a request from the window this is for) gives that work its own cursor in the plugin.
       const task = typeof msg.task === "string" && msg.task ? msg.task.slice(0, 40) : undefined;
       this.toPlugin({ id: `${c.info.id}${SEP}${own}`, method: msg.method, params: msg.params, session: c.info, task });
+      return;
+    }
+    if (msg?.type === "cancel") {
+      // The session gave up on a request (it timed out there): nobody waits for it now, and a late answer is dropped.
+      c.pending.delete(String(msg.id));
       return;
     }
     if (msg?.type === "client-info") {
@@ -361,7 +418,7 @@ export class Hub {
       r.session = c.info.id;
       r.status = "seen";
       r.touched = Date.now();
-      this.toPlugin({ type: "action-update", id: msg.id, status: "seen", session: c.info.id, message: `Picked up by ${c.info.name}` });
+      this.toModern({ type: "action-update", id: msg.id, status: "seen", session: c.info.id, message: `Picked up by ${c.info.name}` });
       this.toClient(c, { type: "inbox-claim", rid: msg.rid, ok: true, action: r.action });
       return;
     }
@@ -369,11 +426,15 @@ export class Hub {
       const r = this.requests.get(msg.id);
       if (r?.status === "stopped") return; // the user stopped it: a late update from the session doesn't revive it
       if (r) { r.status = String(msg.status); r.session = c.info.id; r.touched = Date.now(); }
-      this.toPlugin({ type: "action-update", id: msg.id, status: msg.status, message: typeof msg.message === "string" ? msg.message.slice(0, 400) : undefined, session: c.info.id });
+      this.toModern({ type: "action-update", id: msg.id, status: msg.status, message: str(msg.message, 400), session: c.info.id });
       return;
     }
     if (msg?.type === "notify" && msg.msg && typeof msg.msg === "object") {
-      this.toPlugin({ ...msg.msg, session: c.info.id });
+      // Only what sessions send the window (server.ts): their version and update notice, and whether they wait for
+      // the user in the chat. Nothing else is passed through.
+      const m = msg.msg;
+      if (m.type === "server-info") this.toPlugin({ type: "server-info", version: str(m.version, 40), update: m.update && typeof m.update === "object" ? m.update : undefined, session: c.info.id });
+      else if (m.type === "session-state") this.toModern({ type: "session-state", waiting: !!m.waiting, kind: str(m.kind, 20), text: str(m.text, 400), session: c.info.id });
       return;
     }
   }
@@ -395,15 +456,19 @@ export class Hub {
     this.idle.unref?.();
   }
 
+  /** Once, however many newer sessions knock: the sessions are told (CLOSE_REPLACED) so they wait for the newer hub
+   *  instead of starting an old one again. */
   private retireWhenQuiet() {
+    if (this.retiring) return;
+    this.retiring = true;
     const busy = () => [...this.clients.values()].some((c) => c.pending.size);
-    const tick = () => { if (this.stopping) return; if (busy()) { setTimeout(tick, 500).unref?.(); return; } this.exit("replaced by a newer Layerwright"); };
+    const tick = () => { if (this.stopping) return; if (busy()) { setTimeout(tick, 500).unref?.(); return; } this.exit("replaced by a newer Layerwright", CLOSE_REPLACED); };
     tick();
   }
 
-  private exit(reason: string) {
+  private exit(reason: string, code?: number) {
     this.log(`stopping: ${reason}`);
-    this.close(reason);
+    this.close(reason, code);
     this.o.onExit?.(reason);
   }
 }

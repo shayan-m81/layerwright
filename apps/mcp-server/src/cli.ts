@@ -190,7 +190,7 @@ export async function hubCommand(sub: string, port = Number(process.env.LAYERWRI
   if (sub === "status") {
     if (p.kind === "free") { out(`No hub on port ${port}. A session starts one when it needs Figma.`); return 0; }
     if (p.kind === "legacy") { out(`Port ${port} is held by an older, single-session Layerwright (${p.status?.version ?? "?"}). Close or restart that session.`); return 1; }
-    if (p.kind !== "hub") { out(`Something on port ${port} didn't answer (${p.reason}).`); return 1; }
+    if (p.kind !== "hub") { out(`Port ${port} is held by another program that isn't Layerwright (${p.reason}); sessions can't use Figma on it. Close that program, or use another port from 7331–7340 (LAYERWRIGHT_PORT, and the same port in the plugin window).`); return 1; }
     const s = p.status;
     out(`Hub ${s.version} on port ${port} · Figma plugin ${s.pluginConnected ? `connected ("${s.hello?.fileName ?? "?"}", page "${s.hello?.page ?? "?"}")` : "not connected"}`);
     out(s.sessions?.length ? s.sessions.map((x: any) => `  • ${x.name}${x.client ? ` (${x.client})` : ""}${x.workdir ? ` — ${x.workdir}` : ""}`).join("\n") : "  no sessions");

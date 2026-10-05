@@ -104,7 +104,7 @@ test("end to end: the Figma window → hub → this session's server → a chann
   const port = 17328;
   const hub = new Hub(port, { log: () => {}, key: () => "k-e2e" });
   await hub.start();
-  const bridge = new RelayBridge(port, { log: () => {}, workdir: "/work/shop", startHub: () => {}, anyPort: true });
+  const bridge = new RelayBridge(port, { log: () => {}, workdir: "/work/shop", startHub: () => {}, anyPort: true, key: () => "k-e2e" });
   await bridge.start();
   const server = createServer(bridge, { workdir: mkdtempSync(join(tmpdir(), "lw-e2e-")), noUpdateCheck: true });
   const [a, b] = InMemoryTransport.createLinkedPair();

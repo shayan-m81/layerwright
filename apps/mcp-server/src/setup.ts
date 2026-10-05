@@ -342,7 +342,9 @@ export async function doctor(o: { dir?: string; port?: number; out?: Out; skipBr
   if (existsSync(join(pluginHome(), "manifest.json"))) pass(`plugin files at ${pluginHome()}`); else failWith("plugin files missing", `run: npx ${PKG_NAME} init, then import ${join(pluginHome(), "manifest.json")} in Figma`);
 
   const p = await probe(port);
-  if (!p.ok) {
+  if (!p.ok && p.reason !== "ECONNREFUSED") {
+    failWith(`port ${port} is held by another program that isn't Layerwright (${p.reason}), so sessions can't use Figma on it`, `close that program, or set LAYERWRIGHT_PORT to another port from ${PORT_RANGE[0]}–${PORT_RANGE[1]} and enter the same port in the plugin window`);
+  } else if (!p.ok) {
     failWith(`nothing is listening on ws://localhost:${port} (${p.reason})`, "start Claude Code in this project; it launches the MCP server from .mcp.json. Check /mcp in Claude Code if it failed to start.");
   } else {
     if (p.status.hub) {

@@ -1,5 +1,6 @@
 // Local transport: a WebSocket server on localhost that the Figma plugin UI connects to.
 // Swappable: tools only depend on the `FigmaTransport` interface.
+import type { IncomingMessage } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import type { BridgeHello, BridgeMethod, BridgeResponse, FigmaAction, FigmaActionStatus, StructuredError } from "@cde/core";
 import { currentTask } from "./task.ts";
@@ -40,6 +41,17 @@ export class BridgeError extends Error {
   constructor(public detail: StructuredError) { super(detail.message); }
 }
 
+/** Who may open a WebSocket on the bridge port. Browsers always send an Origin header with it and Node's `ws` never
+ *  does, so a web page open in the user's browser is told apart from Layerwright's own processes: the status, stop and
+ *  session paths take no Origin at all; the plugin path also takes "null", what the Figma plugin window (a sandboxed
+ *  iframe) sends. Checked at the upgrade, so a refused page never gets a socket. */
+export function originAllowed(url: string | undefined, origin: string | undefined): boolean {
+  if (origin === undefined) return true;
+  if (/^\/(doctor|stop|client)\b/.test(url ?? "/")) return false;
+  return origin === "null";
+}
+const verifyClient = ({ req }: { req: IncomingMessage }) => originAllowed(req.url, req.headers.origin);
+
 export class WsBridge implements FigmaTransport {
   private socket?: WebSocket;
   private wss?: WebSocketServer;
@@ -62,7 +74,7 @@ export class WsBridge implements FigmaTransport {
       return Promise.resolve();
     }
     return new Promise((resolve) => {
-      const wss = (this.wss = new WebSocketServer({ host: "127.0.0.1", port: this.port }));
+      const wss = (this.wss = new WebSocketServer({ host: "127.0.0.1", port: this.port, verifyClient }));
       wss.on("listening", () => { this.log(`listening on ws://localhost:${this.port}`); resolve(); });
       wss.on("error", (e: any) => {
         this.startError = e.code === "EADDRINUSE" ? `Port ${this.port} is already in use (another Claude session running the bridge?). Set LAYERWRIGHT_PORT to another port from 7331–7340 and enter the same port in the plugin window.` : String(e.message ?? e);
@@ -93,7 +105,7 @@ export class WsBridge implements FigmaTransport {
   private onMessage(raw: string) {
     let msg: any;
     try { msg = JSON.parse(raw); } catch { return; }
-    if (msg?.type === "hello") { this.hello = msg; try { this.onHello?.(); } catch { /* listener */ } return; }
+    if (msg?.type === "hello") { const { key: _key, ...hello } = msg; this.hello = hello; try { this.onHello?.(); } catch { /* listener */ } return; }
     if (msg?.type === "progress") {
       // Figma is still working: give every pending request its full timeout again (up to MAX_MS in total).
       this.lastProgress = { label: String(msg.label ?? ""), done: msg.done, total: msg.total, at: Date.now() };

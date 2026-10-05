@@ -151,11 +151,28 @@ test("the Figma window's Skills tab through the hub: anyone sees the list, only 
   p.send({ type: "skills-add", source: "https://aiuxplayground.com/skills/spacing-audit" });
   await until(() => p.got.some((m) => m.type === "skills" && m.added?.id === "spacing-audit"));
   p.ws.close();
-  // An unpaired page can look, but not change anything.
+  // An unpaired window isn't let in at all, so it can't change anything.
   const q = plugin("wrong");
-  await until(() => q.got.some((m) => m.type === "pairing"));
-  q.send({ type: "skills-remove", id: "spacing-audit" });
-  await until(() => q.got.some((m) => m.type === "skills" && /isn't paired/.test(m.error ?? "")));
+  await until(() => q.got.some((m) => m.type === "rejected"));
+  await until(() => q.ws.readyState === WebSocket.CLOSED);
   assert.ok(skills.get("spacing-audit"), "still there");
-  q.ws.close(); hub.close();
+  hub.close();
+});
+
+test("without a pairing key on this computer, any window may look at the Skills tab but only a paired one changes it", async () => {
+  const { Hub } = await import("../src/hub.ts");
+  const skills = store();
+  const port = 17342;
+  const hub = new Hub(port, { log: () => {}, key: () => undefined, skills });
+  await hub.start();
+  const ws = new WebSocket(`ws://localhost:${port}/plugin`);
+  const got: any[] = [];
+  ws.on("message", (m) => got.push(JSON.parse(String(m))));
+  await new Promise<void>((r) => ws.on("open", () => { ws.send(JSON.stringify({ type: "hello", protocol: 2 })); r(); }));
+  const until = async (f: () => boolean) => { for (let i = 0; i < 100 && !f(); i++) await new Promise((r) => setTimeout(r, 20)); assert.ok(f()); };
+  await until(() => got.some((m) => m.type === "pairing" && m.paired === false));
+  ws.send(JSON.stringify({ type: "skills-set", id: "animate", on: false }));
+  await until(() => got.some((m) => m.type === "skills" && /isn't paired/.test(m.error ?? "")));
+  assert.equal(skills.get("animate")?.enabled, true);
+  ws.close(); hub.close();
 });
