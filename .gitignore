@@ -3,3 +3,4 @@ dist
 # legacy name, never commit caches
 .design-engineer/
 .layerwright/
+.claude/worktrees/

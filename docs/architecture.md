@@ -1,10 +1,11 @@
 # Architecture
 
 ```
-Claude Code ──stdio/MCP──▶ layerwright server ──ws://localhost:7331──▶ Figma plugin (UI relay → main thread) ──▶ Plugin API
-                              │  validate (Zod) · resolve · retrieve · analyze · verify   (packages/core, pure TS)
-HTML file/folder ──Chromium──▶│  DOM → Design DSL                                          (packages/html-import)
-                              └─ code_scan_components · code_mapping · code_verify_usage
+Claude Code / Codex / Cursor ──stdio/MCP──▶ layerwright server ──ws──▶ hub ──ws://127.0.0.1:7331──▶ Figma plugin (UI relay → main thread) ──▶ Plugin API
+   (one server per session)                   │                     (one per computer)
+                                              │  validate (Zod) · resolve · retrieve · analyze · verify   (packages/core, pure TS)
+HTML file/folder ──Chromium──────────────────▶│  DOM → Design DSL                                          (packages/html-import)
+                                              └─ code_scan_components · code_mapping · code_verify_usage
 ```
 
 ## Principles
@@ -46,7 +47,28 @@ The request is `{ id, method, params }` and the response is `{ id, ok, result | 
 `ensurePages`, `foundations`, `exportImage`, `cleanup`, `select`. The plugin announces itself with
 `{ type: "hello", fileName, page, pluginBuild }`; the build stamp lets `doctor` and `figma_status` spot a
 plugin window that still runs older code. `doctor` connects to `/doctor` and gets a status reply
-without displacing the plugin connection. The manifest allows localhost ports 7331–7340 only.
+without displacing the plugin connection (browsers can't). The manifest allows localhost ports 7331–7340 only.
+
+## Shared hub
+
+Every session's server is a client of one small process per computer, the hub (`apps/mcp-server/src/hub.ts`),
+which owns the bridge port. The first session that finds the port free starts it detached (`relay.ts`), the
+plugin connects to it once, and it exits by itself a minute after the last session leaves. Sessions don't
+affect each other: closing one leaves the rest connected, and if the hub goes away a session starts a new one
+and the plugin reconnects. `LAYERWRIGHT_DIRECT=1` keeps the old one-session bridge (`bridge.ts`).
+
+- **Routing.** A session's request goes to the plugin as `<session id>~<request id>` with the session's name and
+  colour; the answer goes back to that session only. Sessions keep their id across a reconnect.
+- **Who may connect.** The hub listens on `127.0.0.1`. Connections from a browser (any upgrade with an
+  `Origin` header other than the plugin iframe's `null`) are refused, sessions present the per-computer key
+  (`~/.layerwright/key`, mode 0600), and a plugin window must be paired with the same key: `init` and
+  `layerwright plugin` write it into the installed plugin.
+- **Requests from Figma.** The window and canvas notes send requests to a session through the hub; the session
+  gets them in its next tool result, with `figma_inbox`, or woken by the Claude Code plugin's monitor
+  (`layerwright inbox-watch`). Only notes the local user types count.
+- **Versions.** `HUB_PROTOCOL` is bumped on incompatible hub ⇄ session changes. A session with an older protocol
+  is refused with a message to update; a newer one asks the old hub to retire once it is idle. Messages added
+  after 0.2.2 are sent only to plugin windows that announce a protocol that knows them.
 
 ## Verification
 

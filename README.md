@@ -6,15 +6,15 @@
 [![npm](https://img.shields.io/npm/v/layerwright.svg)](https://www.npmjs.com/package/layerwright)
 [![MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/shayan-m81/layerwright/blob/main/LICENSE)
 
-![Demo: Claude Code imports an HTML landing page into Figma as editable Auto Layout frames, desktop and mobile](https://github.com/shayan-m81/layerwright/raw/main/docs/assets/demo.gif)
+![Demo: a request sent from the Layerwright window in Figma; a Claude Code session builds mobile versions of two Persian screens with Auto Layout while its cursor shows the work](https://github.com/shayan-m81/layerwright/raw/main/docs/assets/demo.gif)
 
-<sub>Claude Code imports an HTML landing page through the Layerwright plugin: a 1440 and a 390 frame with Auto Layout, real text layers and named groups (`nav`, `hero`, `cta`), not a picture.</sub>
+<sub>Select a desktop screen in Figma, press **Mobile** in the Layerwright window and send it to a Claude Code session. The session builds 390 px mobile versions of two right-to-left Persian screens with Auto Layout, its cursor showing where it works. The window lists the connected sessions and each request's answer. (2× speed.)</sub>
 
 ```bash
 npx layerwright init   # in your project, then open the plugin in Figma desktop (see Quickstart)
 ```
 
-Layerwright is an open-source MCP server and Figma plugin for Claude Code (and Cursor). It imports
+Layerwright is an open-source MCP server and Figma plugin for Claude Code, Codex and Cursor. It imports
 HTML, such as a Claude Design "standalone HTML" export, into Figma as real frames with Auto Layout,
 text, images and vector icons. It builds new screens from your own Design System: real component
 instances, variables and text styles. And it works the other way: select a Figma frame and Claude
@@ -31,9 +31,12 @@ Layerwright closes that gap locally:
 - **Claude Design to Figma:** export standalone HTML, run one command, and you get editable Figma frames.
 - **Claude Code to Figma:** ask Claude for a screen or a flow, and it is built from your Design System's components.
 - **Figma to code:** select a frame, and Claude implements it with the React components you already have (not a new copy of each button), mapped once and shared with your team.
+- **Ask from Figma:** select layers, press *Mobile version* or *Build in code* in the plugin window, and a session starts on it.
 - **No API keys, no cloud, no account.** Everything runs on your machine. The plugin only talks to `localhost`.
 
 ## Features
+
+### Bring designs into Figma
 
 - **HTML to Figma import** (`import_html_to_plan`)
   - Flexbox becomes Auto Layout: direction, gap, padding, alignment and wrap. Fixed CSS sizes stay fixed.
@@ -42,36 +45,49 @@ Layerwright closes that gap locally:
   - Images and inline SVG icons are imported as real images and vectors.
   - Desktop (1440) and mobile (390) screens are rendered side by side.
   - RTL is supported (Persian, Arabic, Hebrew). Rows keep their visual order and text stays right-aligned.
-- **Figma to code** (`figma_inspect` → `code_scan_components` → `code_mapping` → `code_verify_usage`)
-  - Reads the frame as a plan: layout, spacing and colour tokens, text styles, and every component instance with its variant and properties.
-  - Scans your React / Next.js codebase for exported components (and Tailwind or shadcn/ui) and suggests which code component each Figma component is.
-  - The mappings you confirm are saved in `.layerwright/mapping.json`; commit it and the whole team reuses them.
-  - Claude implements the frame with the mapped components and your theme tokens; `code_verify_usage` then flags design components that weren't used, raw `<button>` / `<input>` duplicates, and arbitrary Tailwind values.
-- **Design System sync.** After an import, `figma_analyze_design({ mode: "sync" })` swaps buttons and pills for your DS components (the variant that looks closest), gives text your text styles by size and weight, and binds colours to your variables and styles. You approve it; originals are kept hidden.
-- **Design System automation.** After a Design System scan, buttons, inputs and links become your real Figma components when they clearly match, and you can map any element yourself (`mappings: [{ selector, component }]`).
+- **Pixel-faithful mode** (`figma_import_html`) for review boards and art-heavy pages: exact layers, variant sets built from states, and instance swaps.
 - **AI design to Figma from a prompt.** Claude writes a typed Design Plan (a JSON DSL). The plan is validated and resolved against your components, variables and text styles, then built deterministically. Claude never writes Figma plugin code.
 - **Prototypes.** Click, hover and timed interactions, navigate / overlay / swap / back, smart animate and push transitions, scrolling frames and flow starting points, in plans or on existing frames.
+- **No AI needed for a plain import.** `npx layerwright import ./design.html --to-figma` builds it in the open Figma file.
+- **Fonts from exports:** `npx layerwright fonts ./export --install` installs the TTF/OTF fonts a design ships.
+
+### Use your Design System
+
+- **Design System automation.** After a Design System scan, buttons, inputs and links become your real Figma components when they clearly match, and you can map any element yourself (`mappings: [{ selector, component }]`).
+- **Design System sync.** After an import, `figma_analyze_design({ mode: "sync" })` swaps buttons and pills for your DS components (the variant that looks closest), gives text your text styles by size and weight, and binds colours to your variables and styles. You approve it; originals are kept hidden.
+- **Audit and fix existing frames.** Hard-coded colours become variables, raw text gets text styles, and custom buttons become component instances, in groups you can pick. Originals are hidden, never deleted.
 - **Work on existing designs** (`figma_edit`). Rename, move, duplicate, delete, and turn existing frames into components or variant sets with text properties, in one undo step.
 - **Figma back to a plan.** Any subtree exports as an editable Design Plan to clone, refactor or implement in code: layout, tokens, text styles, instances, gradients, shadows, blurs, shapes, and vectors or boolean shapes as SVG icons.
+
+### Figma to code
+
+`figma_inspect` → `code_scan_components` → `code_mapping` → `code_verify_usage`
+
+- Reads the frame as a plan: layout, spacing and colour tokens, text styles, and every component instance with its variant and properties.
+- Scans your React / Next.js codebase for exported components (and Tailwind or shadcn/ui) and suggests which code component each Figma component is.
+- The mappings you confirm are saved in `.layerwright/mapping.json`; commit it and the whole team reuses them.
+- Claude implements the frame with the mapped components and your theme tokens; `code_verify_usage` then flags design components that weren't used, raw `<button>` / `<input>` duplicates, and arbitrary Tailwind values.
+
+### Work together with your agents
+
+- **Several sessions, one Figma.** Every Claude Code, Codex and Cursor session on your computer shares one connection to the plugin, with no port to configure. The plugin window shows who is connected and what each is doing (sessions name themselves after their task). Your selection goes to the session you give it to, and a session never overwrites a layer another one just changed.
+- **Ask from Figma.** Select layers in the plugin window, pick a session and send a request: *Build in code*, *Polish design*, *Make component*, *Mobile version*, or your own words. A Claude Code session with the plugin starts on it by itself (the plugin's monitor wakes the session); Codex gets it on its next Figma step or with `/layer:inbox`. Progress and the session's answer come back to the window.
+- **Notes on the canvas.** Type a text layer that starts with `@<session>` (or `@claude` when one session is connected) on the frame it's about, and that session gets it like a request from the window. Only notes you type count: edits by collaborators and text Layerwright writes never start a task.
+- **AI cursor.** While a session changes the canvas, a cursor in its colour with its name shows where it works, like a collaborator's. It exists only during that change and is gone before the change's undo step closes, so undo never brings it back. Waiting and questions show in the plugin window instead (Settings → AI cursor to turn it off).
+- **`/layer:` commands in Claude Code and Codex.** `init` installs the Layerwright plugin for the agents it finds (it asks; Claude Code by default): `/layer:help`, `/layer:connect`, `/layer:import`, `/layer:design`, `/layer:edit`, `/layer:code`, `/layer:check`, `/layer:components`, `/layer:prototype`, `/layer:shot`, `/layer:inbox`, `/layer:doctor`, `/layer:report`.
+
+### Check, learn and stay safe
+
+- **You see what was built.** `figma_export_image` renders any node, and compares it with the source HTML (or another node) with a diff heatmap. `save: true` writes the PNG to `.layerwright/exports/` so the agent can show it to you (`/layer:shot`).
 - **Accessibility and critique.** WCAG contrast (on the real background), touch-target and text-size checks, plus consistency signals; Claude uses them with a picture in a critique loop to polish what it builds.
-- **You see what was built.** `figma_export_image` renders any node, and compares it with the source HTML (or another node) with a diff heatmap.
 - **Safe by default.**
-  - Every run is one undo step.
-  - A failed run rolls back completely.
+  - Every run is one undo step, and a failed run rolls back completely.
   - Results are checked against the plan: structure, sizes, variants, text overrides and prototype links.
   - Existing nodes change only after you approve; deleting without approval only hides and labels a layer.
   - Everything Layerwright creates is tagged, so `figma_cleanup` can list and remove a session's leftovers.
-- **Audit and fix existing frames.** Hard-coded colours become variables, raw text gets text styles, and custom buttons become component instances, in groups you can pick. Originals are hidden, never deleted.
-- **Pixel-faithful mode** (`figma_import_html`) for review boards and art-heavy pages: exact layers, variant sets built from states, and instance swaps.
+  - Only your paired plugin window and your own sessions can use the local connection: web pages in your browser can't.
 - **Learns per project.** Font substitutions, mappings and component choices are reused next time, your corrections are kept as notes, and recurring problems come with a hint (`.layerwright/memory.json`, shareable). `npx layerwright report` drafts a redacted issue from them for you to send.
 - **Tells you about updates** in the plugin window, in Claude and in `doctor`.
-- **Fonts from exports:** `npx layerwright fonts ./export --install` installs the TTF/OTF fonts a design ships.
-- **No AI needed for a plain import.** `npx layerwright import ./design.html --to-figma` builds it in the open Figma file.
-- **Several sessions, one Figma.** Every Claude Code, Codex and Cursor session on your computer shares one connection to the plugin, with no port to configure. The plugin window shows who is connected and what each is doing (sessions name themselves after their task); your selection goes to the newest session unless you give it to another, and a session never overwrites a layer another one just changed.
-- **`/layer:` commands in Claude Code and Codex.** `init` installs the Layerwright plugin for the agents it finds (it asks; Claude Code by default): `/layer:help`, `/layer:connect`, `/layer:import`, `/layer:design`, `/layer:edit`, `/layer:code`, `/layer:check`, `/layer:components`, `/layer:prototype`, `/layer:shot`, `/layer:inbox`, `/layer:doctor`, `/layer:report`.
-- **Ask from Figma.** Select layers in the plugin window, pick a session and send a request: *Build in code*, *Polish design*, *Make component*, *Mobile version*, or your own words. A Claude Code session with the plugin starts on it by itself (the plugin's monitor wakes the session); Codex gets it on its next Figma step or with `/layer:inbox`. Progress and the session's answer come back to the window.
-- **AI cursor.** While a session changes the canvas, a cursor in its colour with its name shows where it works, like a collaborator's. It lives inside the change's undo step, so undo never brings it back (Settings → AI cursor to turn it off).
-- **Pictures you can keep.** `figma_export_image({ save: true })` writes the PNG to `.layerwright/exports/` so the agent can show it to you (`/layer:shot`).
 
 ## Quickstart (3 steps)
 
@@ -109,10 +125,11 @@ Want it in Figma without Claude? Run the plugin, then `npx layerwright import ./
 
 ```mermaid
 flowchart LR
-  A[Claude Code] -- MCP / stdio --> B[layerwright server]
+  A[Claude Code / Codex / Cursor] -- MCP / stdio --> B[layerwright server<br/>one per session]
   H[HTML file or folder] -- headless Chromium --> B
   B -- "Zod-validated Design Plan<br/>resolved against your DS" --> B
-  B -- ws://localhost --> C[Figma plugin]
+  B -- ws://127.0.0.1 --> K[hub<br/>one per computer]
+  K -- ws://127.0.0.1 --> C[Figma plugin]
   C -- "fixed Plugin API calls<br/>one undo step" --> D[(Figma file)]
 ```
 
@@ -120,6 +137,8 @@ flowchart LR
 2. **Validate and resolve.** The server checks the plan with Zod. It then resolves every component, variant, property, variable and text style against a cached scan of *your* Figma file. Unknown names come back as errors with suggestions and never reach Figma.
 3. **Execute.** The plugin builds the resolved plan with fixed Plugin API calls. There is no `eval` and no model-written code.
 4. **Verify.** The result is re-inspected and compared with the plan and, for HTML imports, with the page's rendered boxes. `figma_export_image` shows the result next to the source.
+
+Every session reaches Figma through one small local process, the **hub**. The first session starts it, and it stops by itself a minute after the last session leaves. It routes each request to the plugin and the answer back to the session that asked, so several agents can work in one file.
 
 Read more in [docs/architecture.md](https://github.com/shayan-m81/layerwright/blob/main/docs/architecture.md). The DSL is documented in [docs/dsl.md](https://github.com/shayan-m81/layerwright/blob/main/docs/dsl.md).
 
@@ -168,6 +187,9 @@ Yes. Scan the file that has your components (`figma_scan_design_system`), and im
 **Does it work with right-to-left languages?**
 Yes. Direction, text alignment and row order are preserved. Fonts such as Vazirmatn are matched to their real style names.
 
+**Can a web page or another app talk to it?**
+No. The hub listens on `127.0.0.1` only and refuses browser connections. Sessions need the per-computer key that `init` creates (`~/.layerwright/key`), and only the plugin window paired with that key can send requests into your sessions. Canvas notes count only when you type them, not when a collaborator does.
+
 **Does it work in the Figma browser app?**
 Development plugins need Figma desktop.
 
@@ -185,7 +207,8 @@ Start with `npx layerwright doctor`. It checks Node, `.mcp.json`, the skill, the
 - Images must be PNG, JPEG or GIF (a Figma limit), up to 10 MB each.
 - The scan finds library components only when an instance of them exists in the open file. Others can be used by key (e.g. found with the official Figma MCP's library search).
 - Prototype overlays open centred (their position can't be set through the Plugin API). Plans can't hide instance layers by override yet.
-- One Figma plugin connection per port. Parallel sessions need separate ports from 7331–7340 (`LAYERWRIGHT_PORT`, and the same port in the plugin window).
+- One Figma window is connected at a time: every session on your computer shares it through the hub. Sessions from an older Layerwright are asked to update before they can join.
+- AI cursors are real, locked layers while a change runs (Figma has no API for overlays), so collaborators in the file see them briefly. They are removed before the change's undo step closes.
 
 ## Roadmap
 
