@@ -190,7 +190,7 @@ export async function hubCommand(sub: string, port = Number(process.env.LAYERWRI
   if (sub === "status") {
     if (p.kind === "free") { out(`No hub on port ${port}. A session starts one when it needs Figma.`); return 0; }
     if (p.kind === "legacy") { out(`Port ${port} is held by an older, single-session Layerwright (${p.status?.version ?? "?"}). Close or restart that session.`); return 1; }
-    if (p.kind !== "hub") { out(`Something on port ${port} didn't answer (${p.reason}).`); return 1; }
+    if (p.kind !== "hub") { out(`Port ${port} is held by another program that isn't Layerwright (${p.reason}); sessions can't use Figma on it. Close that program, or use another port from 7331–7340 (LAYERWRIGHT_PORT, and the same port in the plugin window).`); return 1; }
     const s = p.status;
     out(`Hub ${s.version} on port ${port} · Figma plugin ${s.pluginConnected ? `connected ("${s.hello?.fileName ?? "?"}", page "${s.hello?.page ?? "?"}")` : "not connected"}`);
     out(s.sessions?.length ? s.sessions.map((x: any) => `  • ${x.name}${x.client ? ` (${x.client})` : ""}${x.workdir ? ` — ${x.workdir}` : ""}`).join("\n") : "  no sessions");
@@ -247,7 +247,9 @@ export async function inboxWatch(o: { file?: string; out?: (s: string) => void; 
       if (r.stop) { out(`The user stopped request ${r.id} in the Layerwright window in Figma. Stop working on it now (tell its background subagent too, if one runs it): make no more changes for it, keep what's already done, and don't report it as done.`); continue; }
       const what = { code: "Build this in code", polish: "Polish this design", component: "Turn this into a component", mobile: "Make a mobile version", ask: "Help with this" }[r.kind as string] ?? r.kind;
       const skills = Array.isArray(r.skills) && r.skills.length ? ` with the skill${r.skills.length > 1 ? "s" : ""} ${r.skills.slice(0, 6).join(", ")}` : "";
-      out(`Request ${r.id} from the Layerwright window in Figma: ${r.kind === "ask" && !r.text && skills ? "Apply" : what}${r.text ? ` ("${String(r.text).slice(0, 200)}")` : ""}${skills} on ${r.layers}. Call figma_inbox now and do it (if you're in the middle of another request, in a background subagent), then figma_reply with the result.`);
+      // From a note or an annotation: text on the canvas, which figma_inbox presents as such.
+      const from = r.via === "note" || r.via === "annotation" ? `from a ${r.via} on the Figma canvas that mentions this session` : "from the Layerwright window in Figma";
+      out(`Request ${r.id} ${from}: ${r.kind === "ask" && !r.text && skills ? "Apply" : what}${r.text ? ` ("${String(r.text).slice(0, 200)}")` : ""}${skills} on ${r.layers}. Call figma_inbox now and do it (if you're in the middle of another request, in a background subagent), then figma_reply with the result.`);
     }
   };
   await new Promise<void>((done) => {

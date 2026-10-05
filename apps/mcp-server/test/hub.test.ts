@@ -2,9 +2,18 @@
 // goes away, when an older single-session server holds the port, and when a session leaves.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { createServer as tcpServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import WebSocket from "ws";
-import { Hub } from "../src/hub.ts";
-import { RelayBridge, probePort } from "../src/relay.ts";
+import { CLOSE_REPLACED, HUB_PROTOCOL, Hub } from "../src/hub.ts";
+import { pluginKey } from "../src/meta.ts";
+import { RelayBridge, probePort, spawnHub } from "../src/relay.ts";
+
+// This computer's pairing key, in a home of its own: the hubs and sessions below read it from there by default.
+process.env.LAYERWRIGHT_HOME = mkdtempSync(join(tmpdir(), "lw-hub-"));
+const KEY = pluginKey(true)!;
 
 const quiet = () => {};
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -13,11 +22,13 @@ async function until(fn: () => boolean, ms = 3000) {
   while (!fn()) { if (Date.now() > end) throw new Error("timed out waiting"); await wait(20); }
 }
 
-/** A fake Figma plugin: answers every request with who asked, records what it was sent. */
-function fakePlugin(port: number, o: { protocol?: number; key?: string } = {}) {
+/** A fake Figma plugin (paired: it has this computer's key): answers every request with who asked, records what it
+ *  was sent. `silent` methods are never answered. */
+function fakePlugin(port: number, o: { protocol?: number; key?: string | null; origin?: string } = {}) {
   const got: any[] = [];
-  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
-  ws.on("open", () => ws.send(JSON.stringify({ type: "hello", fileName: "TEST", page: "Page 1", protocol: o.protocol ?? 2, key: o.key })));
+  const ws = new WebSocket(`ws://127.0.0.1:${port}`, o.origin ? { origin: o.origin } : {});
+  ws.on("error", () => {});
+  ws.on("open", () => ws.send(JSON.stringify({ type: "hello", fileName: "TEST", page: "Page 1", protocol: o.protocol ?? 2, key: o.key === null ? undefined : o.key ?? KEY })));
   ws.on("message", (raw) => {
     const m = JSON.parse(String(raw));
     got.push(m);
@@ -27,6 +38,7 @@ function fakePlugin(port: number, o: { protocol?: number; key?: string } = {}) {
       setTimeout(() => ws.send(JSON.stringify({ id: m.id, ok: true, result: { by: m.session?.name } })), 200);
       return;
     }
+    if (m.method === "silent") return;
     if (m.method) ws.send(JSON.stringify({ id: m.id, ok: true, result: { by: m.session?.name, method: m.method } }));
   });
   return { ws, got, open: () => new Promise<void>((r) => ws.once("open", () => r())) };
@@ -80,8 +92,54 @@ test("an older plugin (no protocol) never gets session messages it would mistake
   const plugin = fakePlugin(port, { protocol: 0 });
   await until(() => a.connected());
   await a.request("ping", {});
-  assert.ok(!plugin.got.some((m) => m.type === "sessions"));
+  a.notify({ type: "session-state", waiting: true, kind: "question" });
+  a.actionUpdate("q1", "done", "ok");
+  a.notify({ type: "server-info", version: "1.0.0" });
+  await until(() => plugin.got.some((m) => m.type === "server-info"));
+  assert.deepEqual(plugin.got.filter((m) => !m.method).map((m) => m.type), ["server-info"], "no pairing, sessions, action-update or session-state");
   a.close(); plugin.ws.close(); hub.close();
+});
+
+test("a session passes only its own kinds of notice to the window, as plain fields", async () => {
+  const port = 17325;
+  const hub = new Hub(port, { log: quiet });
+  await hub.start();
+  const a = new RelayBridge(port, { log: quiet, workdir: "/x/app", startHub: () => {}, anyPort: true });
+  await a.start();
+  const plugin = fakePlugin(port);
+  await until(() => a.connected());
+  a.notify({ type: "sessions", sessions: [{ id: "x", name: "fake" }] });
+  a.notify({ type: "skills", skills: [] });
+  a.notify({ id: "fake~1", method: "editNodes", params: {} });
+  a.notify({ type: "session-state", waiting: true, kind: "question", text: "Which one?", extra: "<img>" });
+  await until(() => plugin.got.some((m) => m.type === "session-state"));
+  assert.deepEqual(plugin.got.find((m) => m.type === "session-state"), { type: "session-state", waiting: true, kind: "question", text: "Which one?", session: a.session!.id });
+  assert.ok(!plugin.got.some((m) => m.method || m.type === "skills" || (m.type === "sessions" && m.sessions.some((s: any) => s.name === "fake"))));
+  a.close(); plugin.ws.close(); hub.close();
+});
+
+test("a web page can't reach the hub: no status, no stop, no session, no plugin place; Layerwright's own processes and the plugin window can", async () => {
+  const port = 17324;
+  const hub = new Hub(port, { log: quiet });
+  await hub.start();
+  const refused = (path: string, origin?: string) => new Promise<boolean>((done) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}${path}`, origin ? { origin } : {});
+    ws.on("unexpected-response", () => done(true));
+    ws.on("error", () => done(true));
+    ws.on("open", () => { ws.close(); done(false); });
+  });
+  for (const path of ["/doctor", "/stop", "/client", "/"]) assert.equal(await refused(path, "https://evil.example"), true, `${path} from a web page`);
+  for (const path of ["/doctor", "/stop", "/client"]) assert.equal(await refused(path, "null"), true, `${path} with Origin: null`);
+  assert.equal((await probePort(port)).kind, "hub", "doctor and sessions (no Origin) still get in");
+  // The Figma plugin window sends Origin: null.
+  const plugin = fakePlugin(port, { origin: "null" });
+  await until(() => plugin.got.some((m) => m.type === "pairing" && m.paired));
+  // A session without this computer's key is refused.
+  const stranger = new RelayBridge(port, { log: quiet, startHub: () => {}, anyPort: true, key: () => "not-the-key" });
+  await stranger.start();
+  await until(() => /pairing key/.test(stranger.startError ?? ""));
+  assert.equal(hub.sessions().length, 0);
+  stranger.close(); plugin.ws.close(); hub.close();
 });
 
 test("when the hub goes away, a session starts a new one and the plugin comes back to it", async () => {
@@ -201,23 +259,24 @@ test("requests from the Figma window: only a paired window sends them, each reac
   const port = 17329;
   const hub = new Hub(port, { log: quiet, key: () => "k-123" });
   await hub.start();
-  const a = new RelayBridge(port, { log: quiet, workdir: "/work/shop", startHub: () => {}, anyPort: true });
-  const b = new RelayBridge(port, { log: quiet, workdir: "/work/admin", startHub: () => {}, anyPort: true });
+  const a = new RelayBridge(port, { log: quiet, workdir: "/work/shop", startHub: () => {}, anyPort: true, key: () => "k-123" });
+  const b = new RelayBridge(port, { log: quiet, workdir: "/work/admin", startHub: () => {}, anyPort: true, key: () => "k-123" });
   const gotA: any[] = [], gotB: any[] = [];
   a.onAction = (x) => gotA.push(x);
   b.onAction = (x) => gotB.push(x);
   await a.start(); await b.start();
 
-  // An unpaired window (no key): connected, told it isn't paired, and its requests are refused.
-  const stranger = fakePlugin(port);
-  await until(() => stranger.got.some((m) => m.type === "pairing"));
-  assert.equal(stranger.got.find((m) => m.type === "pairing").paired, false);
+  // An unpaired window (no key, or another computer's): told how to pair, closed, never the plugin; an older one is
+  // only closed (it would take the message for a request).
+  const stranger = fakePlugin(port, { key: null });
+  await until(() => stranger.got.some((m) => m.type === "rejected"));
+  assert.match(stranger.got.find((m) => m.type === "rejected").message, /npx layerwright plugin/);
+  await until(() => stranger.ws.readyState === WebSocket.CLOSED);
+  const old = fakePlugin(port, { key: null, protocol: 0 });
+  await until(() => old.ws.readyState === WebSocket.CLOSED);
+  assert.deepEqual(old.got, []);
+  assert.equal(a.connected(), false, "no session ever saw them as the plugin");
   const action = { id: "q1", kind: "code", nodes: [{ id: "1:2", name: "Card", type: "FRAME" }], at: 1 };
-  stranger.ws.send(JSON.stringify({ type: "action", session: a.session!.id, action }));
-  await until(() => stranger.got.some((m) => m.type === "action-update"));
-  assert.match(stranger.got.find((m) => m.type === "action-update").message, /isn't paired/);
-  assert.equal(gotA.length, 0);
-  stranger.ws.close();
 
   // The paired window: its request goes to that session only, and the session's progress comes back tagged.
   const plugin = fakePlugin(port, { key: "k-123" });
@@ -256,8 +315,8 @@ test("a session takes a request sent to another only when nobody is on it or the
   const port = 17327;
   const hub = new Hub(port, { log: quiet, key: () => "k-1" });
   await hub.start();
-  const a = new RelayBridge(port, { log: quiet, workdir: "/work/a", startHub: () => {}, anyPort: true });
-  const b = new RelayBridge(port, { log: quiet, workdir: "/work/b", startHub: () => {}, anyPort: true });
+  const a = new RelayBridge(port, { log: quiet, workdir: "/work/a", startHub: () => {}, anyPort: true, key: () => "k-1" });
+  const b = new RelayBridge(port, { log: quiet, workdir: "/work/b", startHub: () => {}, anyPort: true, key: () => "k-1" });
   const dropped: string[] = [];
   a.onAction = () => {}; a.onActionDrop = (id) => dropped.push(id);
   await a.start(); await b.start();
@@ -336,4 +395,104 @@ test("the plugin's SessionStart hook: tells a new session to start watching when
   assert.equal(ctx.hookEventName, "SessionStart");
   assert.match(ctx.additionalContext, /start the Monitor tool silently with command "node cli\.js inbox-watch"/);
   plugin.ws.close(); hub.close();
+});
+
+test("nothing stays in flight: a reopened window fails what the old one had, a request the session gave up on is dropped, and late answers are ignored", async () => {
+  const port = 17323;
+  const hub = new Hub(port, { log: quiet });
+  await hub.start();
+  const a = new RelayBridge(port, { log: quiet, workdir: "/work/shop", startHub: () => {}, anyPort: true });
+  await a.start();
+  const first = fakePlugin(port);
+  await until(() => a.connected());
+  const lost = a.request("silent" as any, {}, 60_000);
+  await until(() => first.got.some((m) => m.method === "silent"));
+  // The window is reopened before the old socket's close arrives: the request fails now, not after a minute.
+  const second = fakePlugin(port);
+  await assert.rejects(lost, (e: any) => e.detail.type === "PLUGIN_DISCONNECTED" && /replaced/.test(e.detail.message));
+  const stale = first.got.find((m) => m.method === "silent").id;
+  first.ws.send(JSON.stringify({ id: stale, ok: true, result: "late" })); // the old window answers anyway: nobody hears it
+  await until(() => a.connected());
+  assert.deepEqual(await a.request<any>("ping", {}), { by: "shop", method: "ping" });
+
+  // The session times out: the hub stops waiting too, so `hub stop` isn't blocked by it.
+  await assert.rejects(a.request("silent" as any, {}, 80), (e: any) => e.detail.type === "TIMEOUT");
+  await wait(50);
+  const r: any = await new Promise((done) => { const ws = new WebSocket(`ws://127.0.0.1:${port}/stop`); ws.on("message", (m) => done(JSON.parse(String(m)))); });
+  assert.equal(r.stopping, true, "no request is left in flight");
+  a.close(); first.ws.close(); second.ws.close(); hub.close();
+});
+
+test("a session that reconnects keeps its id, colour and name; one whose id is in use gets a new one", async () => {
+  const port = 17322;
+  let hub = new Hub(port, { log: quiet });
+  await hub.start();
+  const a = new RelayBridge(port, { log: quiet, workdir: "/work/shop", startHub: () => {}, anyPort: true });
+  const b = new RelayBridge(port, { log: quiet, workdir: "/work/shop", startHub: () => {}, anyPort: true });
+  await a.start(); await b.start();
+  const before = { a: a.session!, b: b.session! };
+  assert.equal(before.b.name, "shop 2");
+  hub.close();
+  hub = new Hub(port, { log: quiet });
+  await hub.start();
+  await until(() => hub.sessions().length === 2, 5000);
+  const back = new Map(hub.sessions().map((s) => [s.id, s]));
+  for (const s of [before.a, before.b]) {
+    assert.equal(back.get(s.id)?.name, s.name, "whichever comes back first, names don't swap");
+    assert.equal(back.get(s.id)?.color, s.color);
+  }
+  // Someone else asks for an id a live session has: it gets its own.
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/client`);
+  const welcome: any = await new Promise((done) => { ws.on("open", () => ws.send(JSON.stringify({ type: "hello", protocol: HUB_PROTOCOL, key: KEY, resume: before.a.id, color: before.a.color }))); ws.on("message", (m) => done(JSON.parse(String(m)))); });
+  assert.equal(welcome.type, "welcome");
+  assert.notEqual(welcome.session.id, before.a.id);
+  assert.notEqual(welcome.session.color, before.a.color);
+  ws.close(); a.close(); b.close(); hub.close();
+});
+
+test("an older hub gives the port to a newer session once, and its own sessions wait for the newer hub instead of starting an old one", async () => {
+  const port = 17321;
+  let exits = 0;
+  const hub = new Hub(port, { log: quiet, onExit: () => { exits++; } });
+  await hub.start();
+  let started = 0;
+  const a = new RelayBridge(port, { log: quiet, startHub: () => { started++; }, anyPort: true });
+  await a.start();
+  const newer = () => new Promise<void>((done) => { const ws = new WebSocket(`ws://127.0.0.1:${port}/client`); ws.on("open", () => ws.send(JSON.stringify({ type: "hello", protocol: HUB_PROTOCOL + 1 }))); ws.on("close", () => done()); });
+  const codes: number[] = [];
+  (a as any).ws.on("close", (c: number) => codes.push(c));
+  await Promise.all([newer(), newer()]);
+  await until(() => exits > 0);
+  await wait(800);
+  assert.equal(exits, 1);
+  assert.deepEqual(codes, [CLOSE_REPLACED]);
+  assert.equal(started, 0, "the newer session starts the hub");
+  assert.match(a.startError ?? "", /moving to a newer Layerwright/);
+  a.close();
+});
+
+test("a port held by something that isn't Layerwright: said plainly, and no hub is started to fight over it", async () => {
+  const port = 17320;
+  const squatter = tcpServer((s) => { s.on("error", () => {}); }); // accepts, never answers
+  await new Promise<void>((r) => squatter.listen(port, "127.0.0.1", () => r()));
+  let started = 0;
+  const a = new RelayBridge(port, { log: quiet, startHub: () => { started++; }, anyPort: true });
+  const t0 = Date.now();
+  await a.start();
+  assert.ok(Date.now() - t0 < 5000, "the first round ends quickly");
+  assert.equal(started, 0);
+  assert.match(a.startError ?? "", /isn't Layerwright \(timeout\)/);
+  a.close();
+  squatter.close();
+});
+
+test("the hub starts from a checkout (node --import tsx), whatever folder the session runs in", async () => {
+  const port = 17319;
+  spawnHub(port);
+  const end = Date.now() + 20_000;
+  let p = await probePort(port);
+  while (p.kind !== "hub" && Date.now() < end) { await wait(200); p = await probePort(port); }
+  assert.equal(p.kind, "hub");
+  const r: any = await new Promise((done) => { const ws = new WebSocket(`ws://127.0.0.1:${port}/stop`); ws.on("message", (m) => done(JSON.parse(String(m)))); });
+  assert.equal(r.stopping, true);
 });

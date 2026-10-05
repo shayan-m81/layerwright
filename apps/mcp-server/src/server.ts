@@ -1,8 +1,8 @@
 // MCP tool surface. Claude reasons; these tools validate, resolve and execute deterministically.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   AnnotationDsl, Resolver, accessibilityFindings, analyzeDesign, compilePlan, designMetrics, emptyDesignSystem, enrichDesignSystem, Interaction, resolveInteraction, retrieve, snapshotToPlan, summarize, validatePlan, verifyAgainstPlan,
   type AnalysisResult, type DesignSystem, type ExecutionReport, type NodeSnapshot, type ResolvedPlan, type StructuredError, type TransformReport, type PlanSummary,
@@ -53,11 +53,23 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
   let lastPage: string | undefined;
 
   const cacheFile = (fileName: string) => join(cacheDir, `${fileName.replace(/[^\w.-]+/g, "_")}.json`);
+  /** Where `save` points, refused when it leaves the project (an absolute path elsewhere, ../, or a link out of it):
+   *  an export never creates folders or overwrites files outside it. */
+  const saveTarget = (save: string) => {
+    const file = resolve(workdir, save);
+    const within = (root: string, p: string) => { const r = relative(root, p); return r !== ".." && !r.startsWith(`..${sep}`) && !isAbsolute(r); };
+    let real = file;
+    while (!existsSync(real)) real = dirname(real);
+    let ok = within(workdir, file);
+    try { ok &&= within(realpathSync(workdir), realpathSync(real)); } catch { ok = false; }
+    if (!ok) throw new BridgeError({ type: "UNSUPPORTED_PROPERTY", path: "save", message: `save must be a file or folder inside the project (${workdir}), relative to it, e.g. "exports/hero.png"; or true for .layerwright/exports. "${save}" is outside it.` });
+    return file;
+  };
   /** Write an exported image where the user can open it: true → .layerwright/exports/<node>.<ext>; a path → that file, or that folder. */
   const saveExport = (save: true | string, img: { base64: string; format: string; name: string }) => {
     const ext = img.format === "jpg" ? "jpg" : "png";
     const fileName = `${img.name.replace(/[^\p{L}\p{N}._]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "export"}.${ext}`;
-    let file = save === true ? join(home, "exports", fileName) : resolve(workdir, save);
+    let file = save === true ? join(home, "exports", fileName) : saveTarget(save);
     if (save !== true && (/[\\/]$/.test(save) || (existsSync(file) && statSync(file).isDirectory()) || !/\.(png|jpe?g)$/i.test(file))) file = join(file, fileName);
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, Buffer.from(img.base64, "base64"));
@@ -106,7 +118,7 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
     if (push) server.server.notification({ method: "notifications/claude/channel", params: { content: actionPrompt(a), meta: actionMeta(a) } }).catch(() => {});
     // Claude Code's plugin monitor (layerwright inbox-watch) reads this file and wakes the session: no channel needed.
     const file = push ? inboxFile() : undefined;
-    if (file) { try { mkdirSync(dirname(file), { recursive: true }); appendFileSync(file, JSON.stringify({ id: a.id, kind: a.kind, text: a.text, skills: a.skills, layers: layersLine(a) }) + "\n"); } catch { /* the channel or the next tool result still carries it */ } }
+    if (file) { try { mkdirSync(dirname(file), { recursive: true }); appendFileSync(file, JSON.stringify({ id: a.id, kind: a.kind, text: a.text, skills: a.skills, layers: layersLine(a), via: a.via }) + "\n"); } catch { /* the channel or the next tool result still carries it */ } }
     inbox.add(a, push);
   };
   // Asking the user in the chat. The plugin's hooks (layerwright hook-event) write what this session does there: it
@@ -582,7 +594,7 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
       scale: z.number().min(0.05).max(4).optional().describe("Default 1; capped so the longest side stays within maxDimension"),
       maxDimension: z.number().int().min(100).max(4000).optional().describe("Default 1600 px"),
       format: z.enum(["png", "jpg"]).optional(),
-      save: z.union([z.boolean(), z.string()]).optional().describe("Also write the image to disk and return its path, so it can be shown to the user or attached: true saves to .layerwright/exports/<node>.png; a string is a file or folder (relative to the workdir). The image you see is only visible to you, not to the user"),
+      save: z.union([z.boolean(), z.string()]).optional().describe("Also write the image to disk and return its path, so it can be shown to the user or attached: true saves to .layerwright/exports/<node>.png; a string is a file or folder inside the project (relative to the workdir). The image you see is only visible to you, not to the user"),
       compareWith: z.object({
         html: z.string().optional().describe("The .html file (or folder) the node was built from"),
         nodeId: z.string().optional().describe("Another Figma node to compare with (before/after, original/clone)"),
@@ -591,6 +603,7 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
       }).optional(),
     },
   }, async ({ nodeId, scale, maxDimension, format, save, compareWith }) => guard(async () => {
+    if (typeof save === "string") saveTarget(save); // refused before Figma renders anything
     const maxDim = maxDimension ?? 1600;
     const exp = (s?: number) => bridge.request<{ base64: string; format: string; width: number; height: number; scale: number; name: string }>("exportImage", { nodeId, scale: s, format, maxDimension: maxDim }, 120_000);
     const mime = (f: string) => (f === "jpg" ? "image/jpeg" : "image/png");
