@@ -51,3 +51,17 @@ test("report: a redacted issue draft (no texts, names, ids, paths) with a prefil
   assert.doesNotMatch(d.body, /Card/);
   assert.match(d.url, /^https:\/\/github\.com\/shayan-m81\/layerwright\/issues\/new\?title=/);
 });
+
+test("prefs: the language the user chose is kept for every project; a Figma window used lately counts for two weeks", async () => {
+  process.env.LAYERWRIGHT_HOME = mkdtempSync(join(tmpdir(), "lw-prefs-"));
+  const { readPrefs, writePrefs, figmaUsedRecently } = await import("../src/prefs.ts");
+  assert.deepEqual(readPrefs(), {});
+  writePrefs({ language: "Persian" });
+  writePrefs({ figmaSeenAt: new Date(Date.UTC(2026, 9, 1)).toISOString() });
+  assert.equal(readPrefs().language, "Persian", "one write doesn't lose the other");
+  assert.equal(figmaUsedRecently(readPrefs(), Date.UTC(2026, 9, 10)), true);
+  assert.equal(figmaUsedRecently(readPrefs(), Date.UTC(2026, 9, 20)), false);
+  writePrefs({ language: "" });
+  assert.equal(readPrefs().language, undefined, "an empty language clears it");
+  delete process.env.LAYERWRIGHT_HOME;
+});

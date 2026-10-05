@@ -5,8 +5,42 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-05
+
 ### Added
 - Listed metadata for MCP directories: `mcpName` in the npm package and a `server.json` for the official MCP Registry (a test keeps their name and version in step), and `glama.json` for claiming the Glama listing.
+- Importing the Figma plugin no longer means hunting for a hidden folder: `init` copies the manifest path to the clipboard and shows the folder in Finder / Explorer, and the steps say to paste it in the file dialog (⌘⇧G on a Mac). `layerwright plugin` reinstalls the plugin files and shows the same steps again.
+- Any number of Claude Code and Cursor sessions use Figma at once. The first one starts a small shared process (the hub) that owns the bridge port; every session joins it, and the plugin connects to it once. Closing a session doesn't touch the others; if the hub goes away, a session starts a new one and the plugin reconnects by itself. The hub stops when no session has been connected for a minute. `layerwright hub status` / `hub stop` show and stop it; `LAYERWRIGHT_DIRECT=1` keeps the old one-session bridge.
+- The plugin window lists the connected sessions (colour, project, client, what each is doing) and tags activity and errors with the session they belong to.
+- Selection hand-off: with several sessions connected, the user's selection belongs to the session they give it to (a chip under "Your selection"), the session whose own work selected it, or the one they approve when it asks in the window. Another session that asks for "the selection" waits for the user instead of acting on layers meant for someone else, and `figma_status` doesn't hand it the ids.
+- Conflict check: an edit to a layer that another session changed after this one last read it is refused with `CONFLICT` (nothing changes) instead of overwriting that work. Edits from different sessions run one after another.
+- `figma_export_image` takes `save`: `true` writes the picture to `.layerwright/exports/<layer>.png`, a string to that file or folder, and the result gives the path. The picture the agent sees is visible only to the agent; now it can hand the user the file.
+- Session titles: `figma_status({ title })` names the session after its task ("Checkout redesign") instead of its folder, so the plugin window tells sessions apart. Titles stay unique and survive a reconnect.
+- The plugin window shows a picture of the current selection (name, type, size), also with one session.
+- The Layerwright plugin for Claude Code and Codex: `/layer:help`, `/layer:import`, `/layer:design`, `/layer:edit`, `/layer:code`, `/layer:check`, `/layer:components`, `/layer:prototype`, `/layer:shot`, `/layer:inbox`, `/layer:doctor`, `/layer:report`, with the MCP server and the figma-design skill inside. `init` asks which agents get it (the installed ones preselected; `--agents`, `--no-agents`) and installs it through `claude plugin` / `codex plugin`; `layerwright agents` refreshes it. The repository is also a marketplace for both (`plugins/layer`).
+- Requests from the Figma window: select layers, pick a session and send *Build in code*, *Polish design*, *Make component*, *Mobile version* or your own words. In Claude Code the plugin's monitor (`layerwright inbox-watch`) wakes the session, so it starts on the request by itself; `layerwright claude` also pushes them through Claude Code channels where an organization allows them. Every client finds them in its next tool result or with `figma_inbox` (`/layer:inbox`). `figma_reply` sends progress and the outcome back to the window.
+- Tasks written on the canvas: a text layer that starts with "@<session> what to do" (a note, on or inside the frame it's about: "@Checkout make this responsive"), or the same in an annotation on a layer where your plan has annotations. `@layerwright` or `@claude` work when one session is connected. That session gets it like a request from the window, about the layer under the note; its cursor goes there and Activity follows it. It goes once the text stops changing for two seconds (six while the note is still selected), only once (remembered on the layer), and again when you edit it; the session's one-line answer is added under it. When the name after @ isn't a session's, the note waits in the window with a button for each session (or "Let it go"). The session is told the note isn't part of the design. Plugins can't read Figma comments, so notes are the way in.
+- Pairing: `init` writes a per-computer key into the installed plugin window. Only a paired window can send requests into sessions, and an unpaired connection can no longer push a paired window off the hub (a web page can reach localhost too).
+- The AI cursor: each session gets a cursor in its colour with its name. It goes where the session looks (inspects, pictures), outlines the layer it changes, glides along a soft curve, clicks where the work lands, and stays "thinking" between steps until the session goes quiet. Cursors come off before every undo commit and go back on after, so undo never brings one back; layouts, scans and inspects skip them; Settings → AI cursor turns them off.
+- The plugin window is reorganised into tabs (Home, Activity, Skills, Settings, Sessions), with the Star on GitHub button in the header and at the top of Settings. In a narrow window the other tabs show only their icon.
+- `/layer:connect`: connects the session to Figma and keeps it listening for requests from the window (`figma_status({ listen: true })` hands back the watcher even after the first time).
+- The language Layerwright explains things in: `/layer:help` asks once, `layerwright_memory({ action: "language" })` keeps it in `~/.layerwright/prefs.json`, and every session's `figma_status` returns it.
+- Compact window: the button next to Star shrinks the plugin to the selection (click its picture to zoom), who gets it, the four actions, the chat box and the last request; the window sizes itself to fit, and the choice is remembered.
+- Click the picture of the selection to zoom Figma to that layer.
+- Cursor crews: work on several layers at once (edits, design-system fixes) brings helper cursors in nearby shades, one per layer, each saying what it does there; step by step the crew moves to the layer each step works on. After a build they fan out over the new frames, then fade away.
+- Lively cursors: a working cursor keeps moving and clicking over its layer, a reading one skims it line by line, a thinking one sways and glances around; moves follow a hand's minimum-jerk path with a slight overshoot.
+- Zoom to the result: when a build lands, a change lands off screen, or a request from the window is done, the view glides (centre and zoom together) to what was made or changed. Settings → Zoom to the result.
+- Asking in the chat: when a session asks the user something (a question, `AskUserQuestion`, a permission prompt, or it stops with a request from the window still open), the Figma window says so first ("Checkout asked you something · Answer in Claude Code", with the question), Figma shows a notice, and the session's cursor comes into view and waves with a "?" bubble and pulses until the answer. The plugin's new chat hooks (`layerwright hook-event`, on PreToolUse/PostToolUse of AskUserQuestion, Notification and Stop) tell the session's server, which tells the window.
+- Multitasking: several requests from the window run at once. Every Figma tool takes `requestId`; a session works on extra requests in background subagents, and each request gets its own cursor ("Checkout · Mobile", in a nearby shade). The window shows how many requests a session is on, and "Show the result" zooms to each one's result.
+- The AI cursor shows what really happens: the layer it reads, the text it types ("typing “Pay now”"), the frame it builds and how far along it is ("building “Hero” · 2/5"), what it finished ("built 3 frames ✓") and the request from the window it works on ("on it: making a component"). It drag-selects the layer it changes, shows Figma's corner handles, leans into its moves with its name tag trailing, presses with a double ripple, and types its tag out.
+
+### Changed
+- The cursors work beside the user: when the user selects, edits or moves the view, they carry on at full colour, and the view never zooms by itself meanwhile (the window offers "Show the result" instead). Outlines are thin edges, so a click on the layer under them reaches it, and the cursors' own drawing isn't counted as changes to the design. Helpers grow in from the session's cursor and glide back into it when done; a cursor leaving fades and shrinks away.
+- The SessionStart hook also starts the request watcher when the Figma window isn't open yet but was used on this computer in the last two weeks, so a session opened before the window still starts on requests by itself.
+- Content scrolling under the plugin's tabs fades out instead of being cut off (the fade shows only once the panel is scrolled, so it never covers the first card).
+- With several sessions, a new selection goes to the session that connected last until the user gives it to another one, instead of to nobody.
+- When the Claude Code plugin is installed, `init` no longer writes the project `.mcp.json` entry and skill (and removes the ones it wrote before, plus, if you agree, a user-level `layerwright` server), so a session doesn't start two servers. The server takes its project from `LAYERWRIGHT_WORKDIR` (set by the plugin) or the folder it starts in.
+- An older single-session server holding the port is reported plainly ("held by an older Layerwright"), and the session takes over by itself once it's gone.
 
 ## [0.2.2] - 2026-09-30
 
@@ -136,7 +170,8 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 - The plugin no longer opens a duplicate connection after the port is changed.
 
-[Unreleased]: https://github.com/shayan-m81/layerwright/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/shayan-m81/layerwright/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/shayan-m81/layerwright/compare/v0.2.2...v1.0.0
 [0.2.2]: https://github.com/shayan-m81/layerwright/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/shayan-m81/layerwright/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/shayan-m81/layerwright/compare/v0.1.4...v0.2.0

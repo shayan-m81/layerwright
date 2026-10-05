@@ -67,20 +67,31 @@ Layerwright closes that gap locally:
 - **Tells you about updates** in the plugin window, in Claude and in `doctor`.
 - **Fonts from exports:** `npx layerwright fonts ./export --install` installs the TTF/OTF fonts a design ships.
 - **No AI needed for a plain import.** `npx layerwright import ./design.html --to-figma` builds it in the open Figma file.
+- **Several sessions, one Figma.** Every Claude Code, Codex and Cursor session on your computer shares one connection to the plugin, with no port to configure. The plugin window shows who is connected and what each is doing (sessions name themselves after their task); your selection goes to the newest session unless you give it to another, and a session never overwrites a layer another one just changed.
+- **`/layer:` commands in Claude Code and Codex.** `init` installs the Layerwright plugin for the agents it finds (it asks; Claude Code by default): `/layer:help`, `/layer:connect`, `/layer:import`, `/layer:design`, `/layer:edit`, `/layer:code`, `/layer:check`, `/layer:components`, `/layer:prototype`, `/layer:shot`, `/layer:inbox`, `/layer:doctor`, `/layer:report`.
+- **Ask from Figma.** Select layers in the plugin window, pick a session and send a request: *Build in code*, *Polish design*, *Make component*, *Mobile version*, or your own words. A Claude Code session with the plugin starts on it by itself (the plugin's monitor wakes the session); Codex gets it on its next Figma step or with `/layer:inbox`. Progress and the session's answer come back to the window.
+- **AI cursor.** While a session changes the canvas, a cursor in its colour with its name shows where it works, like a collaborator's. It lives inside the change's undo step, so undo never brings it back (Settings → AI cursor to turn it off).
+- **Pictures you can keep.** `figma_export_image({ save: true })` writes the PNG to `.layerwright/exports/` so the agent can show it to you (`/layer:shot`).
 
 ## Quickstart (3 steps)
 
-Requirements: Node.js 20+, Figma desktop, Claude Code (or Cursor: `npx layerwright init --cursor`).
+Requirements: Node.js 20+, Figma desktop, Claude Code or Codex (or Cursor: `npx layerwright init --cursor`).
 
 ```bash
 # 1. In your project folder
 npx layerwright init
 ```
-2. In **Figma desktop**, go to **Plugins → Development → Import plugin from manifest…** and pick the path `init` printed (`~/.layerwright/figma-plugin/manifest.json`). Open your file and run **Layerwright**. Keep its small window open.
-3. Restart **Claude Code** in the project and ask:
+`init` asks which agents get the Layerwright plugin (the ones it finds are preselected; `--agents claude,codex` or `--no-agents` skip the question), installs it with their own `claude plugin` / `codex plugin` commands, and pairs the Figma plugin with this computer.
+
+2. In **Figma desktop**, go to **Plugins → Development → Import plugin from manifest…**. The plugin sits in a hidden folder (`~/.layerwright/figma-plugin/manifest.json`), so `init` copies that path to your clipboard and shows the folder: in the file dialog press **⌘⇧G** (Windows: click the File name box), paste, Enter. You do this once; afterwards run **Plugins → Development → Layerwright** and keep its small window open. `npx layerwright plugin` shows these steps again.
+3. Start a new **Claude Code** or **Codex** session, type `/layer:help`, or ask:
    - *"Import ./design.html into Figma"*: a Claude Design HTML export becomes editable frames.
    - *"Create a sign-up flow in Figma using our Design System"*: new screens built from your components.
    - Select a frame in Figma, then *"Implement the selected Figma frame in code using our components"*: Figma → code with your mapped React components and theme tokens, checked afterwards.
+
+Requests from the Figma window wake a Claude Code session by themselves: the plugin runs a monitor (`layerwright inbox-watch`) whose notifications reach the session. `npx layerwright claude` also turns on Claude Code channels (a research preview; Team and Enterprise organizations must enable them first). In Codex a request waits for the session's next Figma step or `/layer:inbox`.
+
+Install from GitHub instead: `claude plugin marketplace add shayan-m81/layerwright` then `claude plugin install layer@layerwright`; for Codex, `codex plugin marketplace add shayan-m81/layerwright` then `codex plugin add layer@layerwright`. `npx layerwright agents` refreshes the plugin after an update.
 
 Another MCP client (Claude Desktop, VS Code, Windsurf)? Add the same `layerwright` server to its MCP config and start from its prompts: `figma_design` (the whole guide), `html_to_figma`, `build_in_figma`, `change_figma` or `figma_to_code`. They are built from the same skill, so every client follows the same workflow.
 
@@ -120,7 +131,8 @@ Read more in [docs/architecture.md](https://github.com/shayan-m81/layerwright/bl
 | `figma_execute_plan` | Builds a plan in Figma: one undo step, rollback on failure, automatic verification |
 | `figma_preview_plan` | Validates and resolves a hand-written plan and returns a summary |
 | `figma_edit` | Rename, move, duplicate, set, delete, resize to fit, group / ungroup, boolean shapes, componentize (variants, text properties), swap instances, bind variables, apply styles, annotations, prototype links and flows |
-| `figma_export_image` | A node as an image; compared with the source HTML or another node, with a diff heatmap |
+| `figma_export_image` | A node as an image; compared with the source HTML or another node, with a diff heatmap. `save: true` writes it to `.layerwright/exports/` to show the user |
+| `figma_inbox` / `figma_reply` | Requests the user sent from the Figma window to this session, and the answer shown back in the window |
 | `figma_status` / `figma_scan_design_system` / `figma_get_design_context` | Connection and page, Design System scan (components, variants, variables, styles, duplicate names), task-scoped context |
 | `figma_inspect` / `figma_verify` / `figma_select` | Snapshots (tree, summary, text, instances, or the subtree as a plan), plan-vs-canvas checks, select and zoom (switches page) |
 | `figma_analyze_design` / `figma_apply_transformations` | Audit a frame against the DS, or `mode: "sync"` after an import; apply the groups you approve |

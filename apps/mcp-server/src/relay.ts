@@ -1,0 +1,276 @@
+// The MCP server's side of the shared bridge: connects to the hub (see hub.ts) as one session, and starts the hub
+// first when nothing holds the port yet. Same interface as WsBridge, so the tools can't tell the difference.
+import { spawn } from "node:child_process";
+import { mkdirSync, openSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import WebSocket from "ws";
+import type { BridgeHello, BridgeMethod, FigmaAction, FigmaActionStatus, SessionInfo } from "@cde/core";
+import { BridgeError, WsBridge, type FigmaTransport } from "./bridge.ts";
+import { HUB_PROTOCOL } from "./hub.ts";
+import { FROM_SOURCE, REPO_ROOT } from "./meta.ts";
+import { currentTask } from "./task.ts";
+
+type Probe = { kind: "hub"; status: any } | { kind: "legacy"; status: any } | { kind: "free" } | { kind: "unknown"; reason: string };
+
+/** What answers on the port: a hub, an older single-session server, or nothing. */
+export function probePort(port: number, timeoutMs = 1500): Promise<Probe> {
+  return new Promise((done) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/doctor`);
+    const t = setTimeout(() => { ws.terminate(); done({ kind: "unknown", reason: "timeout" }); }, timeoutMs);
+    ws.on("message", (m) => {
+      clearTimeout(t);
+      let status: any;
+      try { status = JSON.parse(String(m)); } catch { return done({ kind: "unknown", reason: "bad reply" }); }
+      done(status?.hub ? { kind: "hub", status } : { kind: "legacy", status });
+      ws.close();
+    });
+    ws.on("error", (e: any) => { clearTimeout(t); done(e.code === "ECONNREFUSED" ? { kind: "free" } : { kind: "unknown", reason: e.code ?? e.message }); });
+  });
+}
+
+/** Start the hub as its own process, detached from this session, logging to ~/.layerwright/hub.log. */
+export function spawnHub(port: number) {
+  const home = process.env.LAYERWRIGHT_HOME ?? join(homedir(), ".layerwright");
+  mkdirSync(home, { recursive: true });
+  const log = openSync(join(home, "hub.log"), "a");
+  const args = FROM_SOURCE
+    ? ["--import", "tsx", resolve(REPO_ROOT!, "apps/mcp-server/src/cli.ts"), "hub", "--port", String(port)]
+    : [fileURLToPath(import.meta.url), "hub", "--port", String(port)]; // the published bundle: this file is dist/cli.js
+  const child = spawn(process.execPath, args, { detached: true, stdio: ["ignore", log, log], env: { ...process.env, LAYERWRIGHT_HUB: "1" }, cwd: home });
+  child.unref();
+}
+
+export interface RelayOptions {
+  version?: string;
+  workdir?: string;
+  log?: (m: string) => void;
+  /** How to start a hub when the port is free (tests pass an in-process one). */
+  startHub?: (port: number) => void | Promise<void>;
+  /** Tests: allow ports outside the plugin's 7331–7340 so they never meet a real session. */
+  anyPort?: boolean;
+}
+
+interface Pending { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout; method: string; timeoutMs: number; started: number }
+
+export class RelayBridge implements FigmaTransport {
+  private ws?: WebSocket;
+  private hello?: BridgeHello;
+  private plugin = false;
+  private seq = 0;
+  private pending = new Map<string, Pending>();
+  private retryTimer?: NodeJS.Timeout;
+  private closed = false;
+  private rejected = false;
+  private client?: string;
+  private title?: string;
+  lastProgress?: { label: string; done?: number; total?: number; at: number };
+  startError?: string;
+  /** This session as the hub named it (shown in the plugin window). */
+  session?: SessionInfo;
+  /** How many sessions share the Figma connection right now. */
+  sessionCount = 0;
+  version: string;
+  onHello?: () => void;
+  private log: (m: string) => void;
+
+  constructor(public port = Number(process.env.LAYERWRIGHT_PORT ?? process.env.CDE_PORT ?? 7331), private o: RelayOptions = {}) {
+    this.version = o.version ?? "0";
+    this.log = o.log ?? ((m) => process.stderr.write(`[layerwright] ${m}\n`));
+  }
+
+  /** Connect (starting the hub if needed). Resolves once connected or after a first failed round; keeps trying. */
+  async start(): Promise<void> {
+    if (!this.o.anyPort && (this.port < 7331 || this.port > 7340)) {
+      this.startError = `Port ${this.port} is outside 7331–7340, the only ports the Figma plugin may connect to. Set LAYERWRIGHT_PORT to one of them.`;
+      this.log(this.startError);
+      return;
+    }
+    await this.attempt();
+  }
+
+  private async attempt(): Promise<void> {
+    if (this.closed) return;
+    let p = await probePort(this.port);
+    if (p.kind === "free" || p.kind === "unknown") {
+      try { await (this.o.startHub ?? spawnHub)(this.port); } catch (e) { this.log(`couldn't start the hub: ${(e as Error).message}`); }
+      for (let i = 0; i < 30 && (p.kind === "free" || p.kind === "unknown"); i++) {
+        await new Promise((r) => setTimeout(r, 150));
+        p = await probePort(this.port, 800);
+      }
+    }
+    if (p.kind === "legacy") {
+      this.startError = `Port ${this.port} is held by an older Layerwright${p.status?.version ? ` (${p.status.version})` : ""} that another session started, and it can't be shared. Close that session or restart it to update; this one connects by itself once the port is free.`;
+      this.log(this.startError);
+      return this.retry(3000);
+    }
+    if (p.kind !== "hub") {
+      this.startError = `Couldn't reach or start the Layerwright hub on port ${this.port}. Run: npx layerwright doctor`;
+      this.log(this.startError);
+      return this.retry(3000);
+    }
+    await this.join();
+  }
+
+  private join(): Promise<void> {
+    return new Promise((done) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${this.port}/client`);
+      let settled = false;
+      const settle = () => { if (!settled) { settled = true; done(); } };
+      const t = setTimeout(() => { ws.terminate(); }, 3000);
+      ws.on("open", () => ws.send(JSON.stringify({ type: "hello", protocol: HUB_PROTOCOL, version: this.version, workdir: this.o.workdir ?? process.cwd(), client: this.client, title: this.title, pid: process.pid })));
+      ws.on("message", (raw) => {
+        let msg: any;
+        try { msg = JSON.parse(String(raw)); } catch { return; }
+        if (msg.type === "welcome") {
+          clearTimeout(t);
+          this.ws = ws;
+          this.session = msg.session;
+          this.sessionCount = msg.sessions ?? 1;
+          this.startError = undefined;
+          this.setPlugin(!!msg.plugin?.connected, msg.plugin?.hello);
+          this.log(`joined the shared Figma connection as "${this.session?.name}"`);
+          return settle();
+        }
+        if (msg.type === "rejected") { this.startError = String(msg.message); this.rejected = true; this.log(this.startError); return; }
+        if (msg.type === "restarting") { this.log(String(msg.message)); return; }
+        this.onMessage(msg);
+      });
+      ws.on("error", () => {});
+      ws.on("close", (code) => {
+        clearTimeout(t);
+        if (this.ws === ws) this.dropped();
+        settle();
+        // Removed in the Figma window: stay away until this session asks again (figma_status → rejoin).
+        if (code === 4002) { this.kicked = true; this.startError = "This session was removed in the Layerwright window in Figma. Call figma_status to join again."; return; }
+        if (!this.closed) this.retry(this.rejected ? 10_000 : this.ws ? 300 : 1500);
+        this.rejected = false;
+      });
+    });
+  }
+
+  /** The hub went away (closed, crashed, replaced): fail what was in flight; the retry starts a new one. */
+  private dropped() {
+    this.ws = undefined;
+    this.setPlugin(false);
+    for (const [id, p] of this.pending) { clearTimeout(p.timer); p.reject(new BridgeError({ type: "PLUGIN_DISCONNECTED", message: "The shared Figma connection restarted during the request. Check the result (figma_inspect) before retrying." })); this.pending.delete(id); }
+  }
+
+  private retry(ms: number) {
+    if (this.closed) return;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(() => { void this.attempt(); }, ms);
+    this.retryTimer.unref?.();
+  }
+
+  private setPlugin(connected: boolean, hello?: BridgeHello) {
+    this.plugin = connected;
+    this.hello = connected ? hello ?? this.hello : undefined;
+    if (connected && hello) { try { this.onHello?.(); } catch { /* listener */ } }
+  }
+
+  private onMessage(msg: any) {
+    if (msg.type === "plugin") return this.setPlugin(!!msg.connected, msg.hello);
+    if (msg.type === "sessions") { this.sessionCount = Number(msg.count) || this.sessionCount; return; }
+    if (msg.type === "session" && msg.session) { this.session = msg.session; return; }
+    if (msg.type === "action" && msg.action && typeof msg.action.id === "string") { try { this.onAction?.(msg.action); } catch { /* listener */ } return; }
+    if (msg.type === "action-stop" && typeof msg.id === "string") { try { this.onActionStop?.(msg.id); } catch { /* listener */ } return; }
+    if (msg.type === "action-drop" && typeof msg.id === "string") { try { this.onActionDrop?.(msg.id, typeof msg.by === "string" ? msg.by : undefined); } catch { /* listener */ } return; }
+    if ((msg.type === "inbox-list" || msg.type === "inbox-claim") && this.asks.has(msg.rid)) { const done = this.asks.get(msg.rid)!; this.asks.delete(msg.rid); done(msg); return; }
+    if (msg.type === "progress") {
+      this.lastProgress = { label: String(msg.label ?? ""), done: msg.done, total: msg.total, at: Date.now() };
+      for (const [id, p] of this.pending) {
+        clearTimeout(p.timer);
+        const left = Math.min(p.timeoutMs, WsBridge.MAX_MS - (Date.now() - p.started));
+        p.timer = setTimeout(() => this.expire(id), Math.max(0, left));
+      }
+      return;
+    }
+    if (msg.type === "response") {
+      const res = msg.res;
+      const p = this.pending.get(res?.id);
+      if (!p) return;
+      clearTimeout(p.timer);
+      this.pending.delete(res.id);
+      if (res.ok) p.resolve(res.result);
+      else p.reject(new BridgeError(res.error ?? { type: "FIGMA_API_ERROR", message: "Unknown plugin error" }));
+    }
+  }
+
+  /** The MCP client's name (claude-code, cursor…), shown next to the session in the plugin window. */
+  setClient(name: string) {
+    this.client = name;
+    this.send({ type: "client-info", client: name });
+  }
+
+  /** The agent's name for its task, shown in the plugin window instead of the folder name (kept across reconnects). */
+  setTitle(raw: string) {
+    const title = raw.replace(/\s+/g, " ").trim().slice(0, 40);
+    if (title.length < 2) return;
+    this.title = title;
+    if (this.session) this.session = { ...this.session, name: title, titled: true }; // the hub confirms (and de-duplicates) it
+    this.send({ type: "title", title });
+  }
+
+  notify(msg: Record<string, unknown>) { this.send({ type: "notify", msg }); }
+
+  onAction?: (action: FigmaAction) => void;
+  onActionDrop?: (id: string, by?: string) => void;
+  onActionStop?: (id: string) => void;
+  kicked = false;
+  private asks = new Map<string, (msg: any) => void>();
+  private ask(msg: Record<string, unknown>): Promise<any> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return Promise.resolve(undefined);
+    const rid = `k${++this.seq}`;
+    return new Promise((done) => {
+      const t = setTimeout(() => { this.asks.delete(rid); done(undefined); }, 3000);
+      this.asks.set(rid, (m) => { clearTimeout(t); done(m); });
+      this.send({ ...msg, rid });
+    });
+  }
+  /** Every open request from the Figma window, whichever session it was sent to. */
+  async inboxList(): Promise<{ action: FigmaAction; status: string; session: string; sessionName?: string }[]> { return (await this.ask({ type: "inbox-list" }))?.requests ?? []; }
+  /** Take a request that was sent to another session (force: the user moved it here with /layer:inbox). Refused while
+   *  that session handles it: then who has it. */
+  async inboxClaim(id: string, force = false): Promise<FigmaAction | undefined> { return (await this.inboxTake(id, force)).action; }
+  async inboxTake(id: string, force = false): Promise<{ action?: FigmaAction; heldBy?: string; status?: string }> {
+    const r = await this.ask({ type: "inbox-claim", id, force });
+    return r?.ok ? { action: r.action } : { heldBy: r?.heldBy, status: r?.status };
+  }
+  /** Join again after being removed in the Figma window. */
+  async rejoin() { if (!this.kicked) return; this.kicked = false; this.startError = undefined; await this.attempt(); }
+  actionUpdate(id: string, status: FigmaActionStatus, message?: string) { this.send({ type: "action-update", id, status, message }); }
+
+  private send(msg: unknown) { if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg)); }
+
+  close() {
+    this.closed = true;
+    clearTimeout(this.retryTimer);
+    this.ws?.close();
+  }
+
+  connected() { return this.plugin && this.ws?.readyState === WebSocket.OPEN; }
+  info() { return this.hello; }
+
+  request<T>(method: BridgeMethod, params?: unknown, timeoutMs = 60_000): Promise<T> {
+    if (!this.connected()) {
+      return Promise.reject(new BridgeError({ type: "PLUGIN_DISCONNECTED", message: this.startError ?? `Figma plugin is not connected. In Figma desktop: Plugins → Development → "Layerwright" (it connects to ws://localhost:${this.port}).` }));
+    }
+    const id = `r${++this.seq}`;
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => this.expire(id), timeoutMs);
+      this.pending.set(id, { resolve, reject, timer, method, timeoutMs, started: Date.now() });
+      this.send({ type: "request", id, method, params, task: currentTask() });
+    });
+  }
+
+  private expire(id: string) {
+    const p = this.pending.get(id);
+    if (!p) return;
+    this.pending.delete(id);
+    const took = Math.round((Date.now() - p.started) / 1000);
+    const last = this.lastProgress && Date.now() - this.lastProgress.at < 5 * 60_000 ? ` Its last progress was "${this.lastProgress.label}".` : "";
+    p.reject(new BridgeError({ type: "TIMEOUT", message: `Figma did not answer "${p.method}" after ${took}s without progress.${last} The operation may still be running; inspect before retrying.` }));
+  }
+}

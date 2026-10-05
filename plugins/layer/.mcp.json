@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "layerwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "layerwright@latest"
+      ],
+      "env": {
+        "LAYERWRIGHT_WORKDIR": "${CLAUDE_PROJECT_DIR}"
+      }
+    }
+  }
+}

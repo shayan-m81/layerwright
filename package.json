@@ -1,17 +1,18 @@
 {
   "name": "layerwright-monorepo",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "workspaces": [
     "packages/*",
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w @cde/figma-plugin && npm run build -w layerwright",
+    "build": "npm run sync:skill && npm run build -w @cde/figma-plugin && npm run build -w layerwright",
     "typecheck": "tsc -p packages/core && tsc -p packages/html-import && tsc -p apps/mcp-server && tsc -p apps/figma-plugin",
-    "test": "LAYERWRIGHT_NO_UPDATE_CHECK=1 node --import tsx --test packages/core/test/*.test.ts packages/html-import/test/*.test.ts apps/mcp-server/test/*.test.ts apps/figma-plugin/test/*.test.ts",
-    "mcp": "tsx apps/mcp-server/src/cli.ts"
+    "test": "LAYERWRIGHT_NO_UPDATE_CHECK=1 node --import tsx --test --test-timeout=120000 packages/core/test/*.test.ts packages/html-import/test/*.test.ts apps/mcp-server/test/*.test.ts apps/figma-plugin/test/*.test.ts",
+    "mcp": "tsx apps/mcp-server/src/cli.ts",
+    "sync:skill": "node -e \"require('fs').cpSync('skills/figma-design/SKILL.md','plugins/layer/skills/figma-design/SKILL.md')\""
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

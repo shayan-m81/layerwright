@@ -105,7 +105,7 @@ export class T extends N {
   setRangeFontSize(start: number, end: number, size: number) { this.ranges.push({ start, end, size }); }
   setRangeFills(start: number, end: number, fills: any[]) { this.ranges.push({ start, end, fills }); }
   setRangeHyperlink(start: number, end: number, link: any) { this.ranges.push({ start, end, link }); }
-  async setTextStyleIdAsync(id: string) { const s = styles.get(id); const f = s.realFont ?? s.fontName; if (!loaded.has(`${f.family}::${f.style}`)) throw new Error("unloaded style font"); this.textStyleId = id; this.fontName = f; }
+  async setTextStyleIdAsync(id: string) { const s = styles.get(id); const f = s.realFont ?? s.fontName; if (!s.silent && !loaded.has(`${f.family}::${f.style}`)) throw new Error(`in setTextStyleIdAsync: Cannot write to node with unloaded font "${f.family} ${f.style}". Please call figma.loadFontAsync({ family: "${f.family}", style: "${f.style}" }) and await the returned promise first.`); this.textStyleId = id; this.fontName = f; }
 }
 
 class C extends N {

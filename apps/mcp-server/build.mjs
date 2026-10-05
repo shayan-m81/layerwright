@@ -19,6 +19,10 @@ cpSync("../figma-plugin/manifest.json", "dist/figma-plugin/manifest.json");
 cpSync("../figma-plugin/dist", "dist/figma-plugin/dist", { recursive: true });
 mkdirSync("dist/skill", { recursive: true });
 cpSync("../../skills/figma-design/SKILL.md", "dist/skill/SKILL.md");
+// The skills library (catalog, skills, their licenses): read by the server and the hub, never written.
+cpSync("../../skills/library", "dist/skills-library", { recursive: true });
+// The agent plugin template (/layer commands, Claude Code and Codex manifests); init fills in the server entry.
+cpSync("../../plugins/layer", "dist/agent-plugin", { recursive: true });
 // npm shows the package README; ship the repo README and LICENSE with it.
 cpSync("../../README.md", "README.md");
 cpSync("../../LICENSE", "LICENSE");

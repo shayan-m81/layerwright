@@ -8,7 +8,7 @@ import { compilePlan, validatePlan, analyzeDesign, type ResolvedPlan } from "@cd
 import { fixtureDs, loginPlan } from "../../../packages/core/test/fixture.ts";
 import { N, T, loaded, resetFigma, styles } from "./figma-mock.ts";
 
-const { executePlan, applyTransformations } = await import("../src/execute.ts");
+const { executePlan, applyTransformations, fontAsked } = await import("../src/execute.ts");
 
 function compiledLogin(): ResolvedPlan {
   const v = validatePlan(loginPlan);
@@ -81,6 +81,55 @@ test("a library style that reports no font gets it from a layer that uses it, an
   assert.deepEqual(report.warnings, []);
   assert.equal(page.children[0].children[0].textStyleId, "S:lib");
   styles.delete("S:lib");
+});
+
+test("a library style whose font nobody reports is still applied: the font Figma asks for is loaded and it tries again", async () => {
+  const page = resetFigma();
+  // Neither the style, the scan nor a consumer says its font (getStyleConsumersAsync finds nothing); Figma knows it.
+  styles.set("S:nofont", { id: "S:nofont", type: "TEXT", fontName: { family: "", style: "" }, realFont: { family: "Vazirmatn", style: "Medium" }, getStyleConsumersAsync: async () => [] });
+  const plan = compiledLogin();
+  const h = (plan.roots[0] as any).children[0];
+  h.textStyleId = "S:nofont"; h.textStyleKey = undefined; h.textStyleFont = undefined;
+  const report = await executePlan(plan);
+  assert.deepEqual(report.warnings.filter((w) => /can't be applied/.test(w)), []);
+  const t = page.children[0].children[0];
+  assert.equal(t.textStyleId, "S:nofont");
+  assert.deepEqual(t.fontName, { family: "Vazirmatn", style: "Medium" });
+  assert.equal(t.characters, "Welcome back");
+  styles.delete("S:nofont");
+});
+
+test("figma_edit applies a text style that reports no font to an existing text", async () => {
+  resetFigma();
+  styles.set("S:nofont2", { id: "S:nofont2", type: "TEXT", fontName: { family: "", style: "" }, realFont: { family: "Vazirmatn", style: "Bold" }, getStyleConsumersAsync: async () => [] });
+  const page = (globalThis as any).figma.currentPage;
+  loaded.add("Inter::Regular");
+  const t = new T(); t.characters = "Label"; page.appendChild(t);
+  const { editNodes } = await import("../src/edit.ts");
+  const r: any = await editNodes({ ops: [{ op: "style", node: t.id, kind: "text", styleId: "S:nofont2", styleName: "Fa Text xs/Medium" }], approved: true } as any);
+  assert.equal(r.applied?.length, 1, JSON.stringify(r));
+  assert.equal(t.textStyleId, "S:nofont2");
+  styles.delete("S:nofont2");
+});
+
+test("a style Figma links without asking for its font: the font is loaded anyway, so the text can be written", async () => {
+  const page = resetFigma();
+  // Like the real Figma for some library styles: setTextStyleIdAsync succeeds with the font unloaded.
+  styles.set("S:silent", { id: "S:silent", type: "TEXT", fontName: { family: "", style: "" }, realFont: { family: "Vazirmatn", style: "Bold" }, silent: true, getStyleConsumersAsync: async () => [] });
+  const plan = compiledLogin();
+  const h = (plan.roots[0] as any).children[0];
+  h.textStyleId = "S:silent"; h.textStyleKey = undefined; h.textStyleFont = undefined;
+  const report = await executePlan(plan);
+  assert.deepEqual(report.warnings.filter((w) => /can't be applied/.test(w)), []);
+  const t = page.children[0].children[0];
+  assert.equal(t.textStyleId, "S:silent");
+  assert.equal(t.characters, "Welcome back");
+  styles.delete("S:silent");
+});
+
+test("fontAsked reads the font out of Figma's refusal", () => {
+  assert.deepEqual(fontAsked(new Error('Cannot write to node with unloaded font "IRANYekan X Medium". Please call figma.loadFontAsync({ family: "IRANYekan X", style: "Medium" }) and await the returned promise first.')), { family: "IRANYekan X", style: "Medium" });
+  assert.equal(fontAsked(new Error("something else")), undefined);
 });
 
 test("a style that can't be had says why (not a guess about the library), and is looked up once per run", async () => {

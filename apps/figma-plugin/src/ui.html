@@ -2,85 +2,740 @@
 <html>
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <style>
-  :root { --fg: var(--figma-color-text, #1e1e1e); --muted: var(--figma-color-text-secondary, #6b6b6b); --line: var(--figma-color-border, #e6e6e6);
-    --card: var(--figma-color-bg-secondary, #f7f7f7); --ok: #14ae5c; --run: #0d99ff; --bad: #f24822; --accent: #7c3aed; }
+  /* Figma's own theme tokens (light and dark follow the editor), with light fallbacks for previews. */
+  :root {
+    --bg: var(--figma-color-bg, #ffffff);
+    --bg2: var(--figma-color-bg-secondary, #f6f6f7);
+    --bg3: var(--figma-color-bg-tertiary, #ececee);
+    --hover: var(--figma-color-bg-hover, #f1f1f3);
+    --fg: var(--figma-color-text, #1b1b1f);
+    --fg2: var(--figma-color-text-secondary, #67676f);
+    --fg3: var(--figma-color-text-tertiary, #9a9aa3);
+    --line: var(--figma-color-border, #e7e7ea);
+    --brand: #7c3aed;
+    --brand2: #8b5cf6;
+    --cyan: #06b6d4;
+    --ok: var(--figma-color-icon-success, #14ae5c);
+    --bad: var(--figma-color-icon-danger, #f24822);
+    --bad-text: var(--figma-color-text-danger, #c4311b);
+    --warn: #e8a200;
+    --r: 12px;
+    --ease: cubic-bezier(.2, .8, .2, 1);
+    --spring: cubic-bezier(.34, 1.56, .64, 1);
+    --shadow: 0 1px 2px rgba(15, 12, 30, .06), 0 4px 14px -6px rgba(15, 12, 30, .12);
+  }
   * { box-sizing: border-box; }
-  body { font: 12px/1.45 Inter, system-ui, sans-serif; margin: 0; color: var(--fg); background: var(--figma-color-bg, #fff); }
-  main { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-  .card { background: var(--card); border-radius: 8px; padding: 10px; }
-  .row { display: flex; align-items: center; gap: 8px; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); flex: none; }
-  .dot[data-state="connected"] { background: var(--ok); }
-  .dot[data-state="running"] { background: var(--run); animation: pulse 1s infinite alternate; }
-  @keyframes pulse { to { opacity: .35; } }
-  #status { font-weight: 600; }
-  .muted { color: var(--muted); }
-  #detail { margin-top: 2px; }
-  #progress { display: none; margin-top: 8px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
-  #bar { height: 100%; width: 0; background: var(--run); transition: width .3s; }
-  #help { display: none; }
+  html, body { height: 100%; }
+  body { font: 12px/1.5 Inter, system-ui, -apple-system, sans-serif; margin: 0; color: var(--fg); background: var(--bg); -webkit-font-smoothing: antialiased; overflow: hidden; }
+  button { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; cursor: pointer;
+    transition: background .18s, border-color .18s, transform .12s, box-shadow .18s, color .18s; }
+  button:hover { background: var(--hover); }
+  button:active { transform: scale(.97); }
+  button:focus-visible { outline: 2px solid var(--brand2); outline-offset: 1px; }
+  button:disabled { opacity: .45; cursor: default; transform: none; }
+  code { font: 10.5px ui-monospace, Menlo, monospace; background: var(--bg2); padding: 1px 5px; border-radius: 4px; }
+  svg { flex: none; }
+  .muted { color: var(--fg2); }
+  .label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--fg3); margin: 4px 2px 8px; display: flex; align-items: center; gap: 6px; }
+  .badge { font-size: 10px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--fg2); background: var(--bg); border-radius: 999px; padding: 0 7px; line-height: 17px; }
+  .card { background: var(--bg2); border-radius: var(--r); padding: 12px; }
+  .enter { animation: enter .42s var(--ease) both; animation-delay: calc(var(--i, 0) * 45ms); }
+  @keyframes enter { from { opacity: 0; transform: translateY(6px) scale(.985); } }
+  .app { height: 100%; display: flex; flex-direction: column; }
+
+  /* ---------- header ---------- */
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px 8px; }
+  .brand { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  .mark { width: 26px; height: 26px; border-radius: 8px; flex: none; background: #140f24; box-shadow: 0 2px 8px -2px rgba(124, 58, 237, .55); position: relative; overflow: hidden; }
+  .mark i { position: absolute; width: 12px; height: 12px; border-radius: 3.5px; }
+  .mark .l1 { left: 5px; top: 5px; background: linear-gradient(135deg, #a78bfa, #6d28d9); opacity: .6; animation: float1 6s var(--ease) infinite; }
+  .mark .l2 { left: 9px; top: 9px; background: linear-gradient(135deg, #67e8f9, #7c3aed); animation: float2 6s var(--ease) infinite; }
+  @keyframes float1 { 50% { transform: translate(-1px, -1px); } }
+  @keyframes float2 { 50% { transform: translate(1px, 1px); } }
+  .brand > div { min-width: 0; }
+  .brand b, .conn > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .conn { max-width: 100%; }
+  .brand b { display: block; font-size: 12.5px; font-weight: 650; letter-spacing: -.01em; line-height: 1.2; }
+  .conn { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--fg3); line-height: 1.2; }
+  .conn i { width: 6px; height: 6px; border-radius: 50%; background: var(--fg3); }
+  .conn[data-state="connected"] { color: var(--ok); }
+  .conn[data-state="connected"] i { background: var(--ok); animation: ping 2.4s ease-out infinite; }
+  .conn[data-state="running"] { color: var(--brand2); }
+  .conn[data-state="running"] i { background: var(--brand2); animation: ping 1s ease-out infinite; }
+  .conn[data-state="disconnected"] i { animation: blink 1.6s ease-in-out infinite; }
+  @keyframes ping { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); } 100% { box-shadow: 0 0 0 6px transparent; } }
+  @keyframes blink { 50% { opacity: .3; } }
+
+  /* the star: a dark pill with a living gradient edge */
+  .star { position: relative; isolation: isolate; display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px 5px 8px; border: 0; border-radius: 999px; color: #fff; font-weight: 600; font-size: 11px;
+    background: linear-gradient(135deg, #17131f, #2a1d4a); box-shadow: 0 6px 16px -8px rgba(124, 58, 237, .9); overflow: hidden; flex: none; }
+  .star::before { content: ""; position: absolute; inset: -1px; z-index: -2; border-radius: inherit; padding: 1px;
+    background: conic-gradient(from var(--spin, 0deg), #8b5cf6, #22d3ee, #f472b6, #facc15, #8b5cf6); animation: spin 4.5s linear infinite;
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
+  .star::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 60%; z-index: -1; background: linear-gradient(110deg, transparent, rgba(255,255,255,.2) 50%, transparent); transform: translateX(-100%); animation: sheen 3.4s ease-in-out infinite; }
+  .star:hover { background: linear-gradient(135deg, #1d1828, #35245c); transform: translateY(-1px); box-shadow: 0 10px 22px -8px rgba(124, 58, 237, 1); }
+  .tw { animation: twinkle 2.6s ease-in-out infinite; transform-origin: 50% 55%; }
+  .star:hover .tw, .promo:hover .tw { animation: burst .6s var(--ease) both; }
+  @property --spin { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+  @keyframes spin { to { --spin: 360deg; } }
+  @keyframes sheen { 0% { transform: translateX(-100%); } 55%, 100% { transform: translateX(270%); } }
+  @keyframes twinkle { 0%, 70%, 100% { transform: scale(1) rotate(0); filter: none; } 82% { transform: scale(1.3) rotate(20deg); filter: drop-shadow(0 0 4px #facc15); } }
+  @keyframes burst { 40% { transform: scale(1.5) rotate(72deg); filter: drop-shadow(0 0 6px #facc15); } 100% { transform: scale(1.15) rotate(144deg); filter: drop-shadow(0 0 3px #facc15); } }
+
+  /* ---------- tabs ---------- */
+  .tabs { position: relative; display: grid; grid-template-columns: repeat(5, auto); margin: 0 12px; padding: 3px; background: var(--bg2); border-radius: 10px; flex: none; }
+  .tabs button { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 5px; border: 0; background: none; padding: 6px 2px; border-radius: 7px; color: var(--fg2); font-size: 11px; font-weight: 550; white-space: nowrap; }
+  .tabs button:hover { background: none; color: var(--fg); }
+  .tabs button[data-on="1"] { color: var(--fg); }
+  .tabs button svg { transition: transform .35s var(--spring), color .2s; }
+  .tabs button[data-on="1"] svg { transform: scale(1.12); color: var(--brand2); }
+  .ink { position: absolute; z-index: 0; top: 3px; bottom: 3px; left: 0; width: 0; border-radius: 7px; background: var(--bg); box-shadow: var(--shadow); transition: transform .45s var(--spring), width .45s var(--spring); }
+  /* The ink sits under the tab in TABS order: home, activity, skills, settings, sessions. */
+  /* Five tabs in Figma's 340 px window: words only (the icons come back when the window is wider). */
+  .tabs button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* A narrow window (Figma's default is 340px): other tabs show their icon only, the open one keeps its name. */
+  @media (max-width: 420px) { .tabs button:not([data-on="1"]) span { display: none; } .tabs button { padding: 6px 8px; } }
+  .count { min-width: 14px; height: 14px; padding: 0 4px; border-radius: 999px; font-size: 9px; font-weight: 700; line-height: 14px; text-align: center; color: #fff; background: var(--brand2); display: none; }
+  .count[data-show="1"] { display: inline-block; animation: pop .35s var(--spring); }
+  @keyframes pop { from { transform: scale(.4); opacity: 0; } }
+
+  /* ---------- panels ---------- */
+  #panels { flex: 1; min-height: 0; overflow: auto; padding: 12px; scrollbar-width: thin; }
+  /* Content scrolls out softly under the tabs instead of being cut off: a fade attached to the tabs, over the
+     panels' top padding only, shown once the panel is scrolled (at the top it covers nothing). */
+  .fade { position: relative; z-index: 3; height: 0; flex: none; pointer-events: none; }
+  .fade::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 12px; opacity: 0; transition: opacity .2s;
+    background: linear-gradient(var(--bg), color-mix(in srgb, var(--bg) 80%, transparent) 45%, transparent); }
+  .fade[data-on="1"]::after { opacity: 1; }
+  .panel { display: none; flex-direction: column; gap: 12px; }
+  .panel[data-active="1"] { display: flex; animation: inR .38s var(--ease) both; }
+  #panels[data-dir="left"] .panel[data-active="1"] { animation-name: inL; }
+  @keyframes inR { from { opacity: 0; transform: translateX(14px); filter: blur(2px); } }
+  @keyframes inL { from { opacity: 0; transform: translateX(-14px); filter: blur(2px); } }
+
+  /* ---------- hero ---------- */
+  .hero { position: relative; overflow: hidden; isolation: isolate; border-radius: 14px; padding: 13px 13px 13px 14px; background: var(--bg2); }
+  .hero::before, .hero::after { content: ""; position: absolute; z-index: -1; width: 180px; height: 180px; border-radius: 50%; filter: blur(38px); opacity: 0; transition: opacity .6s; }
+  .hero::before { background: #8b5cf6; left: -50px; top: -90px; }
+  .hero::after { background: #22d3ee; right: -60px; bottom: -110px; }
+  .hero[data-state="running"]::before, .hero[data-state="running"]::after { opacity: .28; animation: drift 6s ease-in-out infinite alternate; }
+  .hero[data-state="connected"]::before { opacity: .12; }
+  @keyframes drift { to { transform: translate(40px, 30px) scale(1.15); } }
+  .hero-row { display: flex; align-items: center; gap: 12px; }
+  .beacon { position: relative; width: 10px; height: 10px; flex: none; border-radius: 50%; background: var(--fg3); transition: background .3s; }
+  .beacon::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid currentColor; opacity: 0; color: var(--fg3); }
+  .beacon[data-state="connected"] { background: var(--ok); }
+  .beacon[data-state="connected"]::after { color: var(--ok); animation: ring 2.8s ease-out infinite; }
+  .beacon[data-state="running"] { background: var(--brand2); }
+  .beacon[data-state="running"]::after { color: var(--brand2); animation: ring 1.2s ease-out infinite; }
+  .beacon[data-state="disconnected"] { animation: blink 1.6s ease-in-out infinite; }
+  @keyframes ring { 0% { transform: scale(.6); opacity: .55; } 100% { transform: scale(1.8); opacity: 0; } }
+  #status { font-size: 13px; font-weight: 650; letter-spacing: -.01em; }
+  #detail { color: var(--fg2); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stack { display: flex; flex: none; }
+  .stack .avatar { width: 22px; height: 22px; border-radius: 50%; font-size: 9px; margin-left: -6px; box-shadow: 0 0 0 2px var(--bg2); background: color-mix(in srgb, var(--c) 22%, var(--bg)); }
+  .stack .avatar:first-child { margin-left: 0; }
+  #progress { display: none; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: color-mix(in srgb, var(--brand2) 15%, transparent); overflow: hidden; }
+  #bar { height: 100%; width: 0; background: linear-gradient(90deg, var(--brand), var(--cyan)); border-radius: 0 2px 2px 0; transition: width .4s var(--ease); }
+  #progress[data-mode="indet"] #bar { width: 35% !important; animation: slide 1.3s var(--ease) infinite; }
+  @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+  #help { display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); color: var(--fg2); }
   #help ol { margin: 6px 0 0 16px; padding: 0; }
-  #help li { margin: 2px 0; }
-  #error { display: none; border-left: 3px solid var(--bad); background: var(--figma-color-bg-danger-tertiary, #fdecea); color: var(--figma-color-text-danger, #a50e0e); white-space: pre-wrap; word-break: break-word; }
-  #update { display: none; border-left: 3px solid var(--accent); }
-  .tech { margin-top: 4px; font-size: 10.5px; opacity: .75; font-family: ui-monospace, Menlo, monospace; }
-  h2 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 4px; }
-  #activity { list-style: none; margin: 0; padding: 0; max-height: 128px; overflow: auto; }
-  #activity li { display: flex; gap: 6px; padding: 3px 0; border-bottom: 1px solid var(--line); }
+  #help li { margin: 3px 0; }
+
+  /* ---------- avatars, pills ---------- */
+  .avatar { width: 26px; height: 26px; border-radius: 8px; flex: none; display: grid; place-items: center; font-size: 10.5px; font-weight: 700; letter-spacing: .02em;
+    color: var(--c); background: color-mix(in srgb, var(--c) 15%, transparent); }
+  .sdot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
+  .pill { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 550; border-radius: 999px; padding: 2px 8px; white-space: nowrap; background: var(--bg3); color: var(--fg2); flex: none; }
+  .pill.busy { background: color-mix(in srgb, var(--brand2) 14%, transparent); color: var(--brand2); }
+  .pill.busy::before, .pill.wait::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: blink 1s ease-in-out infinite; }
+  .pill.wait { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); font-weight: 650; }
+  .pill.sel { background: transparent; box-shadow: inset 0 0 0 1px var(--line); color: var(--fg); }
+  .pill.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+  .pill.bad { background: color-mix(in srgb, var(--bad) 13%, transparent); color: var(--bad-text); }
+  .tag { font-size: 10.5px; background: var(--bg); box-shadow: inset 0 0 0 1px var(--line); border-radius: 5px; padding: 1px 6px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ---------- a session asking for the selection ---------- */
+  #asks:empty { display: none; }
+  #asks { display: flex; flex-direction: column; gap: 8px; }
+  .ask { position: relative; border-radius: var(--r); padding: 12px 12px 12px 14px; background: color-mix(in srgb, var(--c) 9%, var(--bg));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 35%, transparent); animation: enter .35s var(--ease) both, glow 2.4s ease-in-out .4s infinite; }
+  .ask::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0; background: var(--c); }
+  @keyframes glow { 50% { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 60%, transparent), 0 0 0 4px color-mix(in srgb, var(--c) 12%, transparent); } }
+  .ask .title { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .ask .what { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .ask .acts { display: flex; gap: 6px; margin-top: 10px; }
+  .ask .primary { flex: 1; background: var(--c); border-color: var(--c); color: #fff; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ask .primary:hover { background: color-mix(in srgb, var(--c) 88%, #000); }
+  .ask .note { margin-top: 8px; font-size: 10.5px; color: var(--fg2); }
+
+  /* ---------- a session asking the user something in its chat ---------- */
+  #chatAsks:empty, #mChat:empty { display: none; }
+  #chatAsks, #mChat { display: flex; flex-direction: column; gap: 8px; }
+  .chat-ask { position: relative; display: flex; gap: 10px; align-items: flex-start; border-radius: 14px; padding: 11px 12px; background: color-mix(in srgb, var(--c) 11%, var(--bg));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 45%, transparent); animation: enter .4s var(--spring) both, breathe 2.6s ease-in-out .4s infinite; }
+  @keyframes breathe { 50% { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 70%, transparent), 0 0 0 5px color-mix(in srgb, var(--c) 14%, transparent); } }
+  .chat-ask .q { position: relative; width: 28px; height: 28px; flex: none; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 14px; background: var(--c);
+    box-shadow: 0 6px 14px -6px var(--c); animation: hop 1.6s var(--spring) infinite; }
+  @keyframes hop { 0%, 60%, 100% { transform: translateY(0) rotate(0); } 20% { transform: translateY(-4px) rotate(-10deg); } 40% { transform: translateY(0) rotate(8deg); } }
+  .chat-ask .body { flex: 1; min-width: 0; }
+  .chat-ask .body b { display: block; font-weight: 650; }
+  .chat-ask .said { margin-top: 5px; padding: 6px 9px; border-radius: 4px 12px 12px 12px; background: var(--bg); box-shadow: inset 0 0 0 1px var(--line); color: var(--fg); font-size: 11px; word-break: break-word; }
+  .chat-ask .go { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 10.5px; font-weight: 600; color: var(--c); }
+  .dots { display: inline-flex; gap: 3px; }
+  .dots i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; animation: dot 1.2s ease-in-out infinite; }
+  .dots i:nth-child(2) { animation-delay: .15s; } .dots i:nth-child(3) { animation-delay: .3s; }
+  @keyframes dot { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
+  .pill.asking { background: color-mix(in srgb, var(--c, var(--brand2)) 16%, transparent); color: var(--c, var(--brand2)); font-weight: 650; }
+  .pill.asking::before { content: "?"; font-weight: 800; animation: blink 1s ease-in-out infinite; }
+  #resultBar { position: fixed; left: 50%; bottom: 14px; z-index: 6; display: flex; align-items: center; gap: 7px; padding: 7px 12px 7px 9px; border: 0; border-radius: 999px; color: #fff; font-weight: 600;
+    background: linear-gradient(135deg, var(--brand2), var(--brand)); box-shadow: 0 12px 26px -10px var(--brand); transform: translate(-50%, 170%); opacity: 0; transition: transform .45s var(--spring), opacity .3s; pointer-events: none; }
+  #resultBar[data-show="1"] { transform: translate(-50%, 0); opacity: 1; pointer-events: auto; }
+  #resultBar:hover { background: linear-gradient(135deg, #9d74f8, #6d28d9); }
+
+  /* ---------- the selection: picture, who gets it, what to ask ---------- */
+  #selCard { display: none; padding: 10px; border-radius: 14px; }
+  #selCard .head { display: flex; align-items: center; justify-content: space-between; padding: 0 2px; }
+  #selCard .label { margin: 0; }
+  #thumb { position: relative; margin-top: 8px; border-radius: 10px; overflow: hidden; height: 128px; display: none; place-items: center;
+    background: conic-gradient(var(--bg3) 25%, var(--bg) 0 50%, var(--bg3) 0 75%, var(--bg) 0) 0 0 / 12px 12px; box-shadow: inset 0 0 0 1px var(--line); }
+  #thumb img { display: block; max-width: calc(100% - 18px); max-height: 112px; width: auto; height: auto; border-radius: 3px; box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 8px 22px -8px rgba(0,0,0,.3); animation: thumbIn .5s var(--ease) both; }
+  @keyframes thumbIn { from { opacity: 0; transform: scale(.94) translateY(4px); filter: blur(3px); } }
+  #thumb { cursor: zoom-in; transition: box-shadow .2s; }
+  #thumb:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand2) 55%, var(--line)); }
+  #thumb img { transition: transform .45s var(--spring); }
+  #thumb:hover img { transform: scale(1.03); }
+  .zoomhint { position: absolute; right: 7px; bottom: 7px; display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; border-radius: 999px; font-size: 10px; font-weight: 600; color: #fff; background: rgba(23, 19, 31, .78);
+    opacity: 0; transform: translateY(4px); transition: opacity .2s, transform .3s var(--spring); pointer-events: none; }
+  #thumb:hover .zoomhint, #mThumb:hover .zoomhint { opacity: 1; transform: none; }
+  #thumb[data-loading="1"]::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--bg) 70%, transparent) 50%, transparent 70%) 0 0 / 250% 100%; animation: sheen 1.1s linear infinite; }
+  #thumbMeta { display: flex; justify-content: space-between; gap: 8px; margin: 6px 2px 0; font-size: 10.5px; color: var(--fg2); }
+  #thumbMeta:empty { display: none; }
+  #thumbMeta b { color: var(--fg); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #thumbMeta span { flex: none; font-variant-numeric: tabular-nums; color: var(--fg3); }
+  #selNames { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+  #selNames:empty { display: none; }
+  .to { display: flex; align-items: center; gap: 6px; margin: 10px 2px 0; font-size: 10px; color: var(--fg3); font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  #toRow { justify-content: space-between; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; border-radius: 999px; padding: 4px 10px 4px 8px; background: var(--bg); border: 1px solid var(--line); font-size: 11px; }
+  .chip .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
+  .chip:hover { border-color: var(--c); background: var(--bg); }
+  .chip[aria-pressed="true"] { border-color: var(--c); background: color-mix(in srgb, var(--c) 12%, var(--bg)); font-weight: 600; box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 12%, transparent); }
+  .chip .check { color: var(--c); font-weight: 700; }
+  /* the session picker: who gets the selection and the requests */
+  .picker { position: relative; margin-top: 6px; }
+  .picker-btn { width: 100%; display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 11px; background: var(--bg); text-align: left; }
+  .picker-btn:hover { border-color: color-mix(in srgb, var(--c, var(--brand2)) 45%, var(--line)); background: var(--bg); }
+  .picker-btn .meta, .opt .meta { flex: 1; min-width: 0; line-height: 1.25; }
+  .picker-btn .meta b, .opt .meta b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .picker-btn .meta small, .opt .meta small { display: block; font-size: 10.5px; color: var(--fg3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .picker-btn .chev { color: var(--fg3); transition: transform .35s var(--spring); }
+  .picker[data-open="1"] .chev { transform: rotate(180deg); }
+  .ring { position: relative; }
+  .ring::after { content: ""; position: absolute; inset: -3px; border-radius: 10px; border: 1.5px solid var(--c); opacity: .55; }
+  .ring[data-live="1"]::after { animation: halo 2.2s ease-out infinite; }
+  @keyframes halo { 0% { transform: scale(.92); opacity: .7; } 100% { transform: scale(1.18); opacity: 0; } }
+  #selChips.menu { position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 4; display: none; flex-direction: column; gap: 2px; margin: 0; padding: 4px;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 16px 36px -14px rgba(0,0,0,.4); max-height: 230px; overflow: auto; }
+  .picker[data-open="1"] #selChips.menu { display: flex; animation: menuIn .24s var(--ease) both; transform-origin: top center; }
+  @keyframes menuIn { from { opacity: 0; transform: translateY(-5px) scale(.97); } }
+  .opt { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 8px; border: 0; border-radius: 8px; background: none; text-align: left; }
+  .opt:hover { background: var(--hover); }
+  .opt[aria-pressed="true"] { background: color-mix(in srgb, var(--c) 11%, transparent); }
+  .opt .check { color: var(--c); font-weight: 700; }
+  .x { flex: none; height: 22px; min-width: 22px; padding: 0 5px; border: 0; border-radius: 6px; display: grid; place-items: center; background: none; color: var(--fg3); opacity: 0; transition: opacity .15s, background .15s, color .15s; font-size: 10.5px; font-weight: 600; }
+  .opt:hover .x, #sessions li:hover .x, .x:focus-visible { opacity: 1; }
+  .x:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad-text); }
+  .x[data-confirm="1"] { opacity: 1; background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad-text); }
+  #selHint { margin: 8px 2px 0; display: flex; gap: 6px; color: var(--fg2); font-size: 10.5px; }
+  .acts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
+  .act { position: relative; overflow: hidden; display: flex; align-items: center; gap: 8px; text-align: left; padding: 8px 9px; border-radius: 10px; background: var(--bg); font-size: 11px; font-weight: 550; line-height: 1.25; }
+  .act .ic { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; color: var(--a); background: color-mix(in srgb, var(--a) 13%, transparent); transition: transform .35s var(--spring); }
+  .act:hover { border-color: color-mix(in srgb, var(--a) 45%, var(--line)); transform: translateY(-1px); box-shadow: 0 6px 16px -10px color-mix(in srgb, var(--a) 80%, transparent); background: var(--bg); }
+  .act:hover .ic { transform: scale(1.12) rotate(-6deg); }
+  .act::after { content: ""; position: absolute; inset: 0; background: radial-gradient(circle, color-mix(in srgb, var(--a) 25%, transparent), transparent 65%); opacity: 0; transition: opacity .45s; }
+  .act:active::after { opacity: 1; transition: none; }
+  .askbox { display: flex; align-items: center; gap: 6px; margin-top: 8px; padding: 4px 4px 4px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; transition: border-color .2s, box-shadow .2s; }
+  .askbox:focus-within { border-color: var(--brand2); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand2) 18%, transparent); }
+  .askbox input { flex: 1; min-width: 0; width: auto; border: 0; padding: 4px 0; background: none; box-shadow: none !important; }
+  /* The field holds the picked skills as tokens, then the text: one box, wrapping when it fills up. */
+  .askbox { position: relative; }
+  .askbox .tokens { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+  .askbox .tokens input { min-width: 90px; }
+  .send { width: 28px; height: 28px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 8px; color: #fff; background: linear-gradient(135deg, var(--brand2), var(--brand)); box-shadow: 0 4px 12px -6px var(--brand); }
+  .send:hover { background: linear-gradient(135deg, #9d74f8, #6d28d9); }
+  .send:hover svg { animation: nudge .5s var(--ease); }
+  @keyframes nudge { 50% { transform: translate(2px, -2px); } }
+  .empty { color: var(--fg2); background: var(--bg2); border-radius: var(--r); padding: 16px 14px; text-align: center; }
+  .empty svg { display: block; margin: 0 auto 8px; color: var(--fg3); }
+  .empty b { display: block; color: var(--fg); font-weight: 600; margin-bottom: 2px; }
+  #emptySel { display: none; }
+
+  /* ---------- notices ---------- */
+  #update { display: none; background: color-mix(in srgb, var(--brand2) 9%, var(--bg)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand2) 30%, transparent); }
+  #update ol { margin: 6px 0 8px 16px; padding: 0; color: var(--fg2); }
+  #error { display: none; background: color-mix(in srgb, var(--bad) 9%, var(--bg)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bad) 30%, transparent); animation: enter .3s var(--ease) both; }
+  #error .row { display: flex; align-items: flex-start; gap: 8px; }
+  #error .icon { flex: none; width: 16px; height: 16px; border-radius: 50%; background: var(--bad); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 11px; margin-top: 1px; }
+  #errorText { flex: 1; color: var(--fg); word-break: break-word; }
+  #dismiss { border: 0; background: none; padding: 0 2px; color: var(--fg2); font-size: 14px; line-height: 1; }
+  #errorTech { margin: 8px 0 0 24px; font: 10px/1.45 ui-monospace, Menlo, monospace; color: var(--bad-text); opacity: .85; white-space: pre-wrap; word-break: break-word; }
+  /* Centred across the whole window (left and right edges, auto margins), so a long message gets the full width
+   *  instead of the half a "left: 50%" leaves it. */
+  #toast { position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 50; width: fit-content; max-width: calc(100% - 24px); margin: 0 auto; box-sizing: border-box;
+    display: flex; align-items: center; gap: 9px; padding: 10px 14px 10px 12px; border-radius: 12px; color: #fff; background: #17131f; box-shadow: 0 12px 30px -10px rgba(0,0,0,.5);
+    font-weight: 550; font-size: 11.5px; line-height: 1.45; transform: translateY(160%); opacity: 0; transition: transform .45s var(--spring), opacity .3s; pointer-events: none; }
+  #toast svg { flex: none; }
+  #toast span { min-width: 0; overflow-wrap: anywhere; }
+  #toast[data-show="1"] { transform: translateY(0); opacity: 1; }
+  #toast[data-kind="ok"] svg { color: #a78bfa; animation: fly .9s var(--ease) both; }
+  #toast[data-kind="bad"] { background: #3b0d0d; }
+  @keyframes fly { 0% { transform: translate(-6px, 6px) scale(.6); opacity: 0; } 60% { transform: translate(3px, -3px) scale(1.1); opacity: 1; } 100% { transform: none; } }
+
+  /* ---------- sessions ---------- */
+  #sessionsBox { display: none; }
+  #sessions { list-style: none; margin: 0; padding: 4px; background: var(--bg2); border-radius: var(--r); }
+  #sessions:empty { display: none; }
+  #sessions li { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 9px; transition: background .15s; }
+  #sessions li:hover { background: var(--hover); }
+  #sessions .who { flex: 1; min-width: 0; }
+  #sessions .who b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #sessions .who small { display: block; color: var(--fg3); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ---------- requests sent from here ---------- */
+  #requestsBox { display: none; }
+  #requests { display: flex; flex-direction: column; gap: 8px; }
+  .req { position: relative; border-radius: var(--r); padding: 10px 11px; background: var(--bg2); }
+  .req .top1 { display: flex; align-items: center; gap: 8px; }
+  .req .what { flex: 1; min-width: 0; }
+  .req .what b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .req .what small { display: block; color: var(--fg3); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .req .msg { margin-top: 8px; padding: 7px 9px; border-radius: 8px; background: var(--bg); color: var(--fg); font-size: 11px; box-shadow: inset 0 0 0 1px var(--line); word-break: break-word; }
+  .req .msg i { font-style: normal; color: var(--fg3); }
+  .track { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; margin-top: 9px; }
+  .track span { height: 3px; border-radius: 2px; background: var(--bg3); position: relative; overflow: hidden; transition: background .4s; }
+  .track span[data-on="1"] { background: color-mix(in srgb, var(--c, var(--brand2)) 85%, transparent); }
+  .track span[data-now="1"]::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,.75), transparent); animation: slide 1.2s linear infinite; }
+  .track[data-bad="1"] span[data-on="1"] { background: var(--bad); }
+  .req .tip { margin-top: 8px; display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--fg2); flex-wrap: wrap; }
+  .mini { padding: 2px 8px; font-size: 10.5px; border-radius: 6px; }
+
+  /* ---------- activity ---------- */
+  #activity { list-style: none; margin: 0; padding: 0 2px; }
+  #activity li { display: flex; align-items: center; gap: 8px; padding: 7px 2px; border-bottom: 1px solid var(--line); }
+  /* Stop and remove: a request that runs can be stopped (asks once more); anything finished can go. */
+  .label .clear { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 550; color: var(--fg2); border: 0; background: none; padding: 0 2px; font-size: 10.5px; }
+  .label .clear:hover { color: var(--fg); }
+  .x { width: 18px; height: 18px; padding: 0; flex: none; display: grid; place-items: center; border: 0; border-radius: 6px; background: none; color: var(--fg3); font-size: 13px; line-height: 1; }
+  .x:hover { background: var(--hover); color: var(--fg); }
+  #activity li .x { opacity: 0; transition: opacity .15s; }
+  #activity li:hover .x, #activity li .x:focus-visible { opacity: 1; }
+  .req .stop { flex: none; padding: 2px 8px; font-size: 10.5px; border-radius: 6px; color: var(--bad-text); border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
+  .req .stop:hover { background: color-mix(in srgb, var(--bad) 10%, var(--bg)); }
+  .req .stop[data-armed="1"] { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
+  .pill.off { background: var(--bg3); color: var(--fg2); }
+  .pill.new { padding: 0 5px; margin-left: 4px; font-size: 9px; vertical-align: 1px; background: color-mix(in srgb, var(--brand2) 14%, transparent); color: var(--brand2); }
   #activity li:last-child { border-bottom: 0; }
-  #activity .t { color: var(--muted); margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  #empty { color: var(--muted); }
-  details summary { cursor: pointer; color: var(--muted); }
-  input { width: 64px; font: inherit; padding: 2px 4px; }
-  button { font: inherit; border: 1px solid var(--line); background: var(--figma-color-bg, #fff); color: var(--fg); border-radius: 6px; padding: 3px 8px; cursor: pointer; }
-  code { font-size: 11px; background: var(--card); padding: 1px 4px; border-radius: 4px; }
-  footer { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
+  #activity .ic { flex: none; width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; font-size: 9px; font-weight: 700; }
+  #activity .ic.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 15%, transparent); }
+  #activity .ic.no { color: var(--bad); background: color-mix(in srgb, var(--bad) 15%, transparent); }
+  #activity .ic.note { color: var(--brand2); background: color-mix(in srgb, var(--brand2) 15%, transparent); }
+  #activity .tx { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #activity .t { color: var(--fg3); font-size: 10.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+  /* ---------- skills ---------- */
+  .sk-add { background: var(--bg2); border-radius: var(--r); padding: 10px 12px 12px; }
+  .sk-add .askbox { margin-top: 0; }
+  .sk-add small { display: block; margin-top: 7px; color: var(--fg2); font-size: 10.5px; }
+  .sk-add[data-busy="1"] .send { animation: turn 1s linear infinite; pointer-events: none; }
+  @keyframes turn { to { transform: rotate(360deg); } }
+  .sk-tools { display: flex; align-items: center; gap: 8px; margin: 0 2px; }
+  .sk-tools input { flex: 1; width: auto; padding: 5px 8px; border-radius: 8px; }
+  .sk-tools .badge { background: var(--bg2); }
+  .sk-group .set .row { align-items: flex-start; }
+  .sk-group .row .txt small.when { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 1px; }
+  .sk-group .row .txt .by { display: flex; align-items: center; gap: 5px; margin-top: 4px; font-size: 10px; color: var(--fg3); }
+  .sk-group .row .txt .by .pill { padding: 0 6px; font-size: 9.5px; }
+  .sk-group .row[data-on=""] .txt b { color: var(--fg2); }
+  .sk-group .row .side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: none; }
+  .sk-group .row .rm { border: 0; background: none; padding: 0 2px; font-size: 10px; color: var(--fg3); }
+  .sk-group .row .rm:hover { color: #f24822; }
+  .sk-group .row .rm[data-armed="1"] { color: #f24822; font-weight: 600; }
+
+  .sk-group .row .txt[data-open] { cursor: pointer; }
+  .sk-group .row .txt[data-open]:hover b { color: var(--brand2); }
+  .sk-group .row .txt b .go { opacity: 0; margin-left: 4px; color: var(--fg3); transition: opacity .2s, transform .2s; display: inline-block; }
+  .sk-group .row .txt[data-open]:hover b .go { opacity: 1; transform: translateX(2px); }
+
+  /* @skill in the chat box: picked skills as chips above it, the matching skills in a menu under it */
+  .sk-picked { display: contents; }
+  .sk-chip { display: inline-flex; align-items: center; gap: 4px; height: 20px; max-width: 100%; padding: 0 2px 0 7px; border-radius: 6px; font-size: 10.5px; font-weight: 600; color: var(--brand2); white-space: nowrap;
+    background: color-mix(in srgb, var(--brand2) 13%, var(--bg)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand2) 30%, transparent); animation: pop .3s var(--spring); }
+  .sk-chip svg { flex: none; }
+  .sk-chip button { border: 0; background: none; padding: 0 4px; border-radius: 999px; color: inherit; font-size: 12px; line-height: 1; opacity: .7; }
+  .sk-chip button:hover { opacity: 1; background: color-mix(in srgb, var(--brand2) 18%, transparent); }
+  /* The @ menu opens above the field, over what's there: always in view, in the full window and the compact one. */
+  .sk-menu { display: none; position: absolute; left: -1px; right: -1px; bottom: calc(100% + 6px); z-index: 40; max-height: 216px; overflow-y: auto; padding: 4px; border-radius: 12px;
+    background: var(--bg); box-shadow: 0 12px 32px -8px rgba(0,0,0,.28), 0 2px 6px rgba(0,0,0,.08), inset 0 0 0 1px var(--line); scrollbar-width: thin; }
+  .sk-menu[data-open="1"] { display: block; animation: rise .18s var(--ease) both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(4px); } }
+  .sk-opt { display: flex !important; align-items: flex-start; gap: 8px; }
+  .sk-opt .si { width: 22px; height: 22px; flex: none; border-radius: 6px; display: grid; place-items: center; color: var(--brand2); background: color-mix(in srgb, var(--brand2) 12%, transparent); margin-top: 1px; }
+  .sk-opt .sx { min-width: 0; flex: 1; }
+  .sk-menu .ft { display: flex; gap: 10px; padding: 5px 8px 3px; border-top: 1px solid var(--line); margin-top: 3px; font-size: 9.5px; color: var(--fg3); }
+  .sk-menu .ft kbd { font: inherit; padding: 0 4px; border-radius: 4px; background: var(--bg2); color: var(--fg2); }
+  .sk-menu .hd { font-size: 9.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--fg3); padding: 4px 8px 2px; }
+  .sk-opt { display: block; width: 100%; text-align: left; border: 0; border-radius: 7px; padding: 6px 8px; background: none; }
+  .sk-opt b { display: block; font-weight: 600; font-size: 11.5px; }
+  .sk-opt small { display: block; color: var(--fg2); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sk-opt[data-on="1"], .sk-opt:hover { background: color-mix(in srgb, var(--brand2) 12%, var(--bg)); }
+  .sk-opt[data-on="1"] b { color: var(--brand2); }
+  .sk-none { padding: 8px; color: var(--fg2); font-size: 11px; }
+
+  /* A skill's own page: its text, its files, on and off, use it in the chat */
+  .skpage { position: absolute; inset: 0; z-index: 30; display: none; flex-direction: column; background: var(--bg); }
+  .skpage[data-open="1"] { display: flex; animation: inR .32s var(--ease) both; }
+  .app { position: relative; }
+  .sp-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 8px; border-bottom: 1px solid var(--line); flex: none; }
+  .sp-head .back { width: 28px; height: 28px; padding: 0; display: grid; place-items: center; border-radius: 8px; flex: none; }
+  .sp-head .t { flex: 1; min-width: 0; }
+  .sp-head .t b { display: block; font-size: 13px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sp-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 2px; font-size: 10.5px; color: var(--fg2); }
+  .sp-meta .pill { padding: 0 6px; font-size: 9.5px; }
+  .sp-meta a { color: var(--brand2); cursor: pointer; text-decoration: none; }
+  .sp-meta a:hover { text-decoration: underline; }
+  .sp-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; flex: none; border-bottom: 1px solid var(--line); }
+  .sp-bar .use { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; border: 0; color: #fff; font-weight: 600; background: linear-gradient(135deg, var(--brand2), var(--brand)); }
+  .sp-bar small { color: var(--fg2); font-size: 10.5px; }
+  .sp-files { display: flex; gap: 4px; padding: 8px 12px 0; overflow-x: auto; flex: none; scrollbar-width: none; }
+  .sp-files:empty { display: none; }
+  .sp-files button { flex: none; font-size: 10.5px; padding: 3px 8px; border-radius: 999px; }
+  .sp-files button[data-on="1"] { border-color: var(--brand2); color: var(--brand2); background: color-mix(in srgb, var(--brand2) 10%, var(--bg)); font-weight: 600; }
+  .sp-body { flex: 1; min-height: 0; overflow: auto; padding: 4px 14px 24px; scrollbar-width: thin; }
+  .md { font-size: 11.5px; line-height: 1.6; color: var(--fg); word-wrap: break-word; }
+  .md h1, .md h2, .md h3, .md h4 { line-height: 1.3; margin: 16px 0 6px; font-weight: 650; }
+  .md h1 { font-size: 16px; } .md h2 { font-size: 13.5px; } .md h3 { font-size: 12.5px; } .md h4 { font-size: 11.5px; color: var(--fg2); }
+  .md p { margin: 6px 0; } .md ul, .md ol { margin: 6px 0; padding-left: 18px; } .md li { margin: 2px 0; }
+  .md li.l1 { margin-left: 14px; } .md li.l2 { margin-left: 28px; }
+  .md code { font-size: 10.5px; }
+  .md pre { margin: 8px 0; padding: 9px 10px; border-radius: 8px; background: var(--bg2); overflow-x: auto; font: 10.5px/1.5 ui-monospace, Menlo, monospace; }
+  .md pre code { background: none; padding: 0; }
+  .md blockquote { margin: 8px 0; padding: 2px 10px; border-left: 3px solid var(--brand2); color: var(--fg2); background: color-mix(in srgb, var(--brand2) 6%, transparent); border-radius: 0 6px 6px 0; }
+  .md table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 10.5px; display: block; overflow-x: auto; }
+  .md th, .md td { border: 1px solid var(--line); padding: 4px 6px; text-align: left; vertical-align: top; }
+  .md th { background: var(--bg2); font-weight: 600; }
+  .md hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+  .md a { color: var(--brand2); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+  .md .fm { margin: 10px 0 4px; padding: 8px 10px; border-radius: 8px; background: var(--bg2); color: var(--fg2); font-size: 10.5px; }
+
+  /* ---------- settings ---------- */
+  .set { background: var(--bg2); border-radius: var(--r); padding: 2px 4px; }
+  .set .row { display: flex; align-items: center; gap: 10px; padding: 10px 8px; }
+  .set .row + .row { border-top: 1px solid var(--line); }
+  .set .row .txt { flex: 1; min-width: 0; }
+  .set .row .txt b { display: block; font-weight: 600; }
+  .set .row .txt small { display: block; color: var(--fg2); font-size: 10.5px; }
+  .set .ico { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; color: var(--a, var(--brand2)); background: color-mix(in srgb, var(--a, var(--brand2)) 13%, transparent); flex: none; align-self: flex-start; }
+  .switch { position: relative; width: 34px; height: 20px; flex: none; padding: 0; border: 0; border-radius: 999px; background: var(--bg3); transition: background .25s; }
+  .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .35s var(--spring); }
+  .switch[data-on="1"] { background: linear-gradient(135deg, var(--brand2), var(--brand)); }
+  .switch[data-on="1"]::after { transform: translateX(14px); }
+  .switch:hover { background: var(--bg3); filter: brightness(.97); }
+  .switch[data-on="1"]:hover { background: linear-gradient(135deg, var(--brand2), var(--brand)); }
+  input { width: 72px; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+  input:focus { outline: none; border-color: var(--brand2); box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand2) 25%, transparent); }
+  .cmd { display: flex; align-items: center; gap: 6px; margin-top: 7px; }
+  .cmd code { flex: 1; min-width: 0; padding: 5px 8px; border-radius: 7px; background: var(--bg); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .promo { position: relative; isolation: isolate; overflow: hidden; display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px; border: 0; border-radius: 14px; text-align: left; color: #fff;
+    background: linear-gradient(135deg, #17131f, #241b3a 55%, #2b1f4d); box-shadow: 0 10px 24px -14px rgba(91, 33, 182, .9); }
+  .promo::before { content: ""; position: absolute; inset: -1px; z-index: -2; border-radius: inherit; padding: 1px; background: conic-gradient(from var(--spin, 0deg), #8b5cf6, #22d3ee, #f472b6, #facc15, #8b5cf6); animation: spin 6s linear infinite;
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
+  .promo:hover { background: linear-gradient(135deg, #1b1726, #2a1f45 55%, #33245c); transform: translateY(-1px); }
+  .promo .gh { width: 30px; height: 30px; flex: none; border-radius: 9px; display: grid; place-items: center; background: rgba(255,255,255,.08); box-shadow: inset 0 0 0 1px rgba(255,255,255,.1); }
+  .promo .txt { flex: 1; min-width: 0; line-height: 1.3; }
+  .promo .txt b { display: block; font-size: 12px; font-weight: 650; }
+  .promo .txt small { display: block; font-size: 10.5px; color: rgba(255,255,255,.62); }
+  footer { display: flex; justify-content: space-between; color: var(--fg3); font-size: 10.5px; padding: 0 2px; }
+  #build { font-family: ui-monospace, Menlo, monospace; font-size: 10px; }
   #clip { position: absolute; left: -9999px; }
+
+  /* ---------- header buttons, compact mode ---------- */
+  .top-acts { display: flex; align-items: center; gap: 6px; flex: none; }
+  /* The narrowest window: the star keeps its icons, the name keeps its room. */
+  @media (max-width: 300px) { .star-txt { display: none; } .star { gap: 4px; padding: 5px 8px; } }
+  .icon-btn { width: 26px; height: 26px; padding: 0; display: grid; place-items: center; border-radius: 8px; color: var(--fg2); }
+  .icon-btn:hover { color: var(--fg); }
+  .icon-btn svg { transition: transform .35s var(--spring); }
+  .icon-btn:hover svg { transform: scale(1.12); }
+  #mini { display: none; flex-direction: column; gap: 8px; padding: 8px 10px 10px; }
+  .app[data-mini="1"] > .top, .app[data-mini="1"] > .tabs, .app[data-mini="1"] > .fade, .app[data-mini="1"] > main { display: none; }
+  .app[data-mini="1"] { height: auto; }
+  .app[data-mini="1"] #mini { display: flex; animation: enter .38s var(--ease) both; }
+  .m-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .m-top .mark { width: 20px; height: 20px; border-radius: 6px; }
+  .m-top .mark i { width: 9px; height: 9px; border-radius: 3px; }
+  .m-top .mark .l1 { left: 4px; top: 4px; } .m-top .mark .l2 { left: 7px; top: 7px; }
+  .m-status { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; font-size: 11px; }
+  .m-status .beacon { width: 7px; height: 7px; }
+  .m-status span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg2); }
+  .m-status b { font-weight: 600; color: var(--fg); }
+  .m-to { display: inline-flex; align-items: center; gap: 5px; max-width: 120px; padding: 2px 7px 2px 3px; border-radius: 999px; font-size: 10.5px; font-weight: 600; flex: none; }
+  .m-to .avatar { width: 18px; height: 18px; border-radius: 50%; font-size: 8px; }
+  .m-to .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-to:hover { border-color: color-mix(in srgb, var(--c, var(--brand2)) 50%, var(--line)); background: var(--bg); }
+  #mMenu { display: none; flex-direction: column; gap: 2px; padding: 4px; border-radius: 10px; background: var(--bg2); }
+  #mMenu[data-open="1"] { display: flex; animation: menuIn .24s var(--ease) both; }
+  .m-sel { display: flex; align-items: center; gap: 9px; padding: 6px; border-radius: 11px; background: var(--bg2); min-width: 0; }
+  #mThumb { position: relative; width: 44px; height: 44px; flex: none; border-radius: 8px; overflow: hidden; display: grid; place-items: center; cursor: zoom-in;
+    background: conic-gradient(var(--bg3) 25%, var(--bg) 0 50%, var(--bg3) 0 75%, var(--bg) 0) 0 0 / 8px 8px; box-shadow: inset 0 0 0 1px var(--line); transition: transform .3s var(--spring), box-shadow .2s; }
+  #mThumb:hover { transform: scale(1.06); box-shadow: inset 0 0 0 1px var(--brand2), 0 6px 14px -8px var(--brand); }
+  #mThumb img { max-width: 40px; max-height: 40px; border-radius: 2px; animation: thumbIn .5s var(--ease) both; }
+  #mThumb .zoomhint { right: 2px; bottom: 2px; padding: 2px; }
+  #mThumb[data-empty="1"] { cursor: default; color: var(--fg3); }
+  #mThumb[data-empty="1"]:hover { transform: none; box-shadow: inset 0 0 0 1px var(--line); }
+  .m-sel .meta { flex: 1; min-width: 0; line-height: 1.3; }
+  .m-sel .meta b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-sel .meta small { display: block; font-size: 10.5px; color: var(--fg3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-acts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
+  .m-act { position: relative; overflow: hidden; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 6px 2px 5px; border-radius: 10px; font-size: 10px; font-weight: 550; color: var(--fg2); }
+  .m-act .ic { width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center; color: var(--a); background: color-mix(in srgb, var(--a) 13%, transparent); transition: transform .35s var(--spring); }
+  .m-act:hover { color: var(--fg); border-color: color-mix(in srgb, var(--a) 45%, var(--line)); background: var(--bg); transform: translateY(-1px); box-shadow: 0 6px 14px -10px color-mix(in srgb, var(--a) 85%, transparent); }
+  .m-act:hover .ic { transform: scale(1.14) rotate(-6deg); }
+  .m-act::after { content: ""; position: absolute; inset: 0; background: radial-gradient(circle, color-mix(in srgb, var(--a) 28%, transparent), transparent 65%); opacity: 0; transition: opacity .45s; }
+  .m-act:active::after { opacity: 1; transition: none; }
+  #mini .askbox { margin-top: 0; }
+  #mAsks:empty, #mLast:empty { display: none; }
+  .m-ask { display: flex; align-items: center; gap: 7px; padding: 7px 7px 7px 9px; border-radius: 10px; font-size: 11px; background: color-mix(in srgb, var(--c) 10%, var(--bg));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 40%, transparent); animation: enter .35s var(--ease) both, glow 2.4s ease-in-out .4s infinite; }
+  .m-ask span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-ask .primary { background: var(--c); border-color: var(--c); color: #fff; font-weight: 600; }
+  #mLast { display: flex; align-items: center; gap: 7px; font-size: 10.5px; color: var(--fg2); padding: 0 2px; min-width: 0; }
+  #mLast .tx { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #mLast .track { flex: none; width: 46px; margin: 0; }
+
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 </style>
 </head>
 <body>
-<main>
-  <div class="card">
-    <div class="row"><span id="dot" class="dot" data-state="disconnected"></span><span id="status">Connecting…</span></div>
-    <div id="detail" class="muted"></div>
-    <div id="progress"><div id="bar"></div></div>
-    <div id="help" class="muted">
-      Layerwright talks to Claude Code on this computer. To connect:
-      <ol>
-        <li>Open Claude Code in your project folder (it starts Layerwright).</li>
-        <li>Keep this window open. It connects by itself.</li>
-        <li>Still nothing? Run <code>npx layerwright doctor</code> in the project.</li>
-      </ol>
+<div id="app" class="app">
+  <!-- Compact mode: the selection, the four actions and the chat box, in a small window -->
+  <section id="mini" aria-label="Layerwright, compact">
+    <div class="m-top">
+      <span class="mark" aria-hidden="true"><i class="l1"></i><i class="l2"></i></span>
+      <div class="m-status"><span id="mDot" class="beacon" data-state="disconnected"></span><span id="mStatus"><b>Connecting…</b></span></div>
+      <button id="mTo" class="m-to" title="Who gets the selection and the requests"></button>
+      <button id="maxBtn" class="icon-btn" title="Full window" aria-label="Full window"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></svg></button>
     </div>
-  </div>
+    <div id="mMenu" role="listbox" aria-label="Which session gets the selection"></div>
+    <div id="mChat" role="alert"></div>
+    <div id="mAsks" role="alert"></div>
+    <div class="m-sel"><div id="mThumb" title="Zoom to this layer in Figma"></div><div class="meta"><b id="mName">Select something in Figma</b><small id="mMeta">A frame, a component or a few layers</small></div></div>
+    <div id="mActs" class="m-acts"></div>
+    <div class="askbox"><div id="mSkMenu" class="sk-menu" role="listbox" aria-label="Skills"></div><div class="tokens"><span id="mPicked" class="sk-picked"></span><input id="mInput" placeholder="Ask anything… @ to use a skill" maxlength="2000" /></div><button id="mSend" class="send" title="Send to the session" aria-label="Send">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3 10 14M21 3l-7 18-4-7-7-4z"/></svg></button></div>
+    <div id="mLast"></div>
+  </section>
 
-  <div id="update" class="card"></div>
-  <div id="error" class="card"><div class="row" style="align-items:flex-start"><div id="errorText" style="flex:1"></div><button id="dismiss" title="Dismiss" style="border:0;background:none;padding:0 2px">×</button></div><div id="errorTech" class="tech"></div></div>
+  <header class="top">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"><i class="l1"></i><i class="l2"></i></span>
+      <div><b>Layerwright</b><span id="conn" class="conn" data-state="disconnected"><i></i><span id="connText">Connecting</span></span></div>
+    </div>
+    <div class="top-acts">
+    <button id="miniBtn" class="icon-btn" title="Compact window: the selection, the actions and the chat box" aria-label="Compact window"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg></button>
+    <button id="star" class="star" title="Star Layerwright on GitHub">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      <span class="star-txt">Star</span>
+      <svg class="tw" width="12" height="12" viewBox="0 0 24 24" fill="#facc15" aria-hidden="true"><path d="M12 2.5l2.94 5.96 6.56.95-4.75 4.63 1.12 6.54L12 17.5l-5.87 3.08 1.12-6.54L2.5 9.41l6.56-.95z"/></svg>
+    </button>
+    </div>
+  </header>
 
-  <div>
-    <h2>Activity</h2>
-    <div id="empty">Nothing yet. Ask Claude to import a design or build a screen.</div>
-    <ul id="activity"></ul>
-  </div>
+  <nav id="tabs" class="tabs" role="tablist" data-tab="home">
+    <button id="tab-home" role="tab" data-tab="home" title="Home" aria-label="Home" data-on="1"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg><span>Home</span></button>
+    <button id="tab-activity" role="tab" data-tab="activity" title="Activity" aria-label="Activity"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>Activity</span><b id="activityBadge" class="count"></b></button>
+    <button id="tab-skills" role="tab" data-tab="skills" title="Skills" aria-label="Skills"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 4.6 5 .7-3.6 3.5.9 5L12 14.4 7.5 16.8l.9-5L4.8 8.3l5-.7z"/><path d="M5 20h14"/></svg><span>Skills</span></button>
+    <button id="tab-settings" role="tab" data-tab="settings" title="Settings" aria-label="Settings"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg><span>Settings</span></button>
+    <button id="tab-sessions" role="tab" data-tab="sessions" title="Sessions" aria-label="Sessions"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.6-3.5 3.2-5.5 6.5-5.5s5.9 2 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.8c2 .7 3.2 2.4 3.5 5.2"/></svg><span>Sessions</span><b id="sessionCount" class="count"></b></button>
+    <span id="ink" class="ink" aria-hidden="true"></span>
+  </nav>
 
-  <details>
-    <summary>Connection settings</summary>
-    <div class="row" style="margin-top:6px"><label for="port">Port</label><input id="port" inputmode="numeric" value="7331" /><span class="muted">7331–7340</span></div>
-    <div class="muted" style="margin-top:4px">Use another port only when two Claude Code sessions run at once; set the same <code>LAYERWRIGHT_PORT</code> in the project's .mcp.json.</div>
-  </details>
+  <div id="fade" class="fade" aria-hidden="true"></div>
+  <main id="panels" data-dir="right">
+    <!-- Home: status, the selection, and what to ask about it -->
+    <section id="panel-home" class="panel" role="tabpanel" data-active="1">
+      <section id="hero" class="hero" data-state="disconnected" aria-live="polite">
+        <div class="hero-row">
+          <span id="dot" class="beacon" data-state="disconnected"></span>
+          <div style="min-width:0;flex:1"><div id="status">Connecting…</div><div id="detail"></div></div>
+          <div id="avatars" class="stack"></div>
+        </div>
+        <div id="help">
+          Layerwright talks to Claude Code or Codex on this computer. To connect:
+          <ol>
+            <li>Open Claude Code (or Codex) in your project; it starts Layerwright.</li>
+            <li>Keep this window open. It connects by itself.</li>
+            <li>Still nothing? Run <code>npx layerwright doctor</code> in the project.</li>
+          </ol>
+        </div>
+        <div id="progress" data-mode="indet"><div id="bar"></div></div>
+      </section>
 
-  <footer><span id="version">Layerwright</span><span id="build"></span></footer>
+      <div id="chatAsks" role="alert" aria-live="assertive"></div>
+      <div id="asks" role="alert" aria-live="assertive"></div>
+
+      <section id="selCard" class="card" aria-live="polite">
+        <div class="head"><h2 class="label">Your selection</h2><span id="selCount" class="badge"></span></div>
+        <div id="thumb" role="button" title="Zoom to this layer in Figma" aria-label="Zoom to this layer in Figma"></div>
+        <div id="thumbMeta"></div>
+        <div id="selNames"></div>
+        <div id="toRow" class="to"><span>Send to</span><span id="toCount"></span></div>
+        <div id="picker" class="picker">
+          <button id="pickerBtn" class="picker-btn" aria-haspopup="listbox"></button>
+          <div id="selChips" class="menu" role="listbox" aria-label="Which session gets the selection"></div>
+        </div>
+        <div id="selHint"></div>
+        <div id="actions" class="acts-grid"></div>
+        <div class="askbox"><div id="skMenu" class="sk-menu" role="listbox" aria-label="Skills"></div><div class="tokens"><span id="skPicked" class="sk-picked"></span><input id="askInput" placeholder="Ask anything about it… @ to use a skill" maxlength="2000" /></div><button id="askSend" class="send" title="Send to the session" aria-label="Send">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3 10 14M21 3l-7 18-4-7-7-4z"/></svg></button></div>
+      </section>
+      <div id="emptySel" class="empty">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l7.5 17 2.2-6.8L20.5 12z"/></svg>
+        <b>Select something in Figma</b>A frame, a component or a few layers, then send it to a session: build it in code, polish it, or ask anything.
+      </div>
+
+      <div id="update" class="card"></div>
+      <div id="error" class="card"><div class="row"><span class="icon">!</span><div id="errorText"></div><button id="dismiss" title="Dismiss" aria-label="Dismiss">×</button></div><div id="errorTech"></div></div>
+    </section>
+
+    <!-- Sessions: who is connected and what each one is doing -->
+    <section id="panel-sessions" class="panel" role="tabpanel">
+      <div id="sessionsBox"><h2 class="label">Connected</h2></div>
+      <ul id="sessions"></ul>
+      <div id="noSessions" class="empty">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2.5"/><path d="M7 9l3 2.5L7 14M12.5 14H17"/></svg>
+        <b>No sessions yet</b>Start Claude Code or Codex in a project: each session shows up here with what it's working on.
+      </div>
+    </section>
+
+    <!-- Activity: requests sent from here, and what the sessions did in Figma -->
+    <section id="panel-activity" class="panel" role="tabpanel">
+      <div id="requestsBox"><h2 class="label">Your requests <button id="clearReqs" class="clear" title="Remove the finished and stopped requests">Clear finished</button></h2><div id="requests"></div></div>
+      <div><h2 class="label">In Figma <button id="clearLog" class="clear" title="Clear this list">Clear</button></h2>
+        <div id="empty" class="empty">Nothing yet. Ask Claude to import a design or build a screen.</div>
+        <ul id="activity"></ul>
+      </div>
+    </section>
+
+    <!-- Skills: what the agent reads before a job it fits; the library ships with Layerwright, the user adds their own -->
+    <section id="panel-skills" class="panel" role="tabpanel">
+      <div id="skAdd" class="sk-add">
+        <h2 class="label">Add a skill</h2>
+        <div class="askbox"><input id="skillInput" placeholder="A GitHub link, a skills page, or paste a SKILL.md…" maxlength="200000" /><button id="skillAddBtn" class="send" title="Add the skill" aria-label="Add the skill">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button></div>
+        <small id="skillAddHint">Kept on this computer with your own skills: Layerwright updates never remove them. Also from the chat box: <code>/skill &lt;link&gt;</code></small>
+      </div>
+      <div class="sk-tools"><input id="skillFilter" placeholder="Filter skills…" aria-label="Filter skills" /><span id="skillTotal" class="badge"></span></div>
+      <div id="skillList"></div>
+      <div id="noSkills" class="empty">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 4.6 5 .7-3.6 3.5.9 5L12 14.4 7.5 16.8l.9-5L4.8 8.3l5-.7z"/></svg>
+        <b>Skills load once Layerwright is connected</b>Design, UX, UI and design-to-code guidance the sessions read before a job it fits.
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section id="panel-settings" class="panel" role="tabpanel">
+      <button id="starCard" class="promo">
+        <span class="gh"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></span>
+        <span class="txt"><b>Like Layerwright?</b><small>A star on GitHub helps others find it</small></span>
+        <svg class="tw" width="16" height="16" viewBox="0 0 24 24" fill="#facc15" aria-hidden="true"><path d="M12 2.5l2.94 5.96 6.56.95-4.75 4.63 1.12 6.54L12 17.5l-5.87 3.08 1.12-6.54L2.5 9.41l6.56-.95z"/></svg>
+      </button>
+      <div>
+        <h2 class="label">Canvas</h2>
+        <div class="set"><div class="row">
+          <span class="ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M5 3v16.5l4.7-4.5 7.9-.4z"/></svg></span>
+          <div class="txt"><b>AI cursor</b><small>While a session changes the canvas, its cursor and name show where it works.</small></div>
+          <button id="cursorToggle" class="switch" role="switch" data-on="1" aria-label="AI cursor"></button>
+        </div><div class="row">
+          <span class="ico" style="--a:#0d99ff"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2M11 8.5v5M8.5 11h5"/></svg></span>
+          <div class="txt"><b>Zoom to the result</b><small>When a build lands, a change lands off screen, or a request from here is done, the view glides to it.</small></div>
+          <button id="zoomToggle" class="switch" role="switch" data-on="1" aria-label="Zoom to the result"></button>
+        </div></div>
+      </div>
+      <div>
+        <h2 class="label">Requests from Figma</h2>
+        <div class="set"><div class="row">
+          <span class="ico" style="--a:#06b6d4"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3 10 14M21 3l-7 18-4-7-7-4z"/></svg></span>
+          <div class="txt"><b>Claude Code starts on its own</b><small>With the Layerwright plugin installed, a request wakes that session and it gets to work. Codex picks it up on its next Figma step, or type <code id="liveCmd">/layer:inbox</code> there.</small>
+            <div class="cmd"><code>npx layerwright init</code><button id="copyLive" class="mini">Copy</button></div></div>
+        </div><div class="row">
+          <span class="ico" style="--a:#14ae5c"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></span>
+          <div class="txt"><b>Pairing</b><small id="pairing">Connect first.</small></div>
+        </div></div>
+      </div>
+      <div>
+        <h2 class="label">Connection</h2>
+        <div class="set"><div class="row">
+          <span class="ico" style="--a:#e8a200"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7H6a5 5 0 0 0 0 10h3M15 7h3a5 5 0 0 1 0 10h-3M8 12h8"/></svg></span>
+          <div class="txt"><b>Port</b><small>Every session shares this one connection. Change it only if <code>LAYERWRIGHT_PORT</code> is set to something else.</small></div>
+          <input id="port" inputmode="numeric" value="7331" aria-label="Port" />
+        </div></div>
+      </div>
+      <footer><span id="version">Layerwright</span><span id="build"></span></footer>
+    </section>
+  </main>
+  <!-- A skill's own page (from the Skills tab) -->
+  <section id="skillPage" class="skpage" role="dialog" aria-label="Skill">
+    <div class="sp-head">
+      <button id="spBack" class="back" title="Back to the skills" aria-label="Back"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <div class="t"><b id="spTitle"></b><div id="spMeta" class="sp-meta"></div></div>
+    </div>
+    <div class="sp-bar"><button id="spToggle" class="switch" role="switch" aria-label="Skill on"></button><small id="spState"></small>
+      <button id="spUse" class="mini use" title="Pick it for your next request"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3 10 14M21 3l-7 18-4-7-7-4z"/></svg>Use in chat</button></div>
+    <div id="spFiles" class="sp-files"></div>
+    <div id="spBody" class="sp-body md"></div>
+  </section>
+
+  <div id="toast" role="status"></div>
+  <button id="resultBar" title="Zoom Figma to what was just made or changed"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2M11 8.5v5M8.5 11h5"/></svg>Show the result</button>
   <textarea id="clip" aria-hidden="true"></textarea>
-</main>
+</div>
 <script>
   // The UI iframe is a transport relay (WebSocket on localhost <-> plugin main thread) and the status window.
-  // No secrets, no model calls, no network beyond ws://localhost.
+  // Nothing secret beyond this computer's pairing key, no model calls, no network beyond ws://localhost.
+  const KEY = "__LAYERWRIGHT_KEY__"; // init writes this computer's key here (pluginKey in the server)
   let ws = null, gen = 0, timer = null, hello = null, failures = 0, server = null;
-  const running = new Map(); // request id -> { method, started, label }
+  let sessions = [];           // from the hub: { id, name, color, client, workdir, titled }
+  let desk = { count: 0, names: [], owner: null, asks: [] }; // from the plugin: who has the selection, who is waiting
+  let noteAsks = [];          // from the plugin: notes on the canvas whose @name isn't a session { key, text, name }
+  let thumb = null;            // from the plugin: a small picture of the selection { name, kind, w, h, png? }
+  let settings = { cursor: true, zoom: true, mini: false };
+  let miniH = 0;               // the compact window's height, as last asked of Figma
+  let paired = null;           // from the hub: may this window send requests into sessions?
+  let tab = "home", tabIndex = 0, unseen = 0;
+  let kickArmed = null;        // a session whose remove button was pressed once (press again to remove)
+  let skills = null, skillCats = [], skillBusy = false, skillRmArmed = null; // the Skills tab, from the hub
+  let picked = [];             // skills picked for the next request (@name in the chat box); the agent reads them first
+  let skMenu = null;           // the @ menu: { which: "ask" | "m", q, items, i }
+  let page = null;             // a skill's page: { id, file, files, skill, text, loading, error }
+  const running = new Map(); // request id -> { method, started, session }
+  const asking = new Map();  // session id -> { kind, text, at }: it asked the user something in its chat
+  let resultIds = null, resultTimer = null; // a result the view didn't glide to (the user was busy)
   const events = [];         // newest first: { ok, text, at }
+  const requests = [];       // sent from here, newest first: { id, session, kind, text, layers, status, message, at }
+  const firstSeen = new Map(); // key -> when it first appeared, so only new things animate in
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  // Re-render only what changed: an unchanged list keeps its elements (and doesn't replay their animation).
+  const setHTML = (el, html) => { if (el.innerHTML !== html) el.innerHTML = html; };
+  const fresh = (key) => { if (!firstSeen.has(key)) firstSeen.set(key, Date.now()); return Date.now() - firstSeen.get(key) < 400 ? " enter" : ""; };
+  const post = (m) => parent.postMessage({ pluginMessage: m }, "*");
+  const withKey = (h) => Object.assign({}, h, { key: KEY });
+  const isOpen = () => !!ws && ws.readyState === 1;
 
   // What each request means to a person. Quiet ones (status checks, reading layers) don't clutter the activity.
   const LABEL = {
@@ -89,6 +744,14 @@
     cleanup: "Cleaning up", foundations: "Creating variables and styles", ensurePages: "Setting up pages", select: "Showing it on the canvas", inspect: "Reading layers",
   };
   const QUIET = { ping: 1, inspect: 1, select: 1, exportImage: 1 };
+  // The quick requests; what each asks the agent to do is in the server (inbox.ts).
+  const ACTIONS = [
+    { kind: "code", label: "Build in code", short: "Code", color: "#7c3aed", icon: '<path d="M8 7l-5 5 5 5M16 7l5 5-5 5M13.5 4l-3 16"/>' },
+    { kind: "polish", label: "Polish design", short: "Polish", color: "#e83e8c", icon: '<path d="M12 3v3M12 18v3M3 12h3M18 12h3M6 6l2 2M16 16l2 2M18 6l-2 2M8 16l-2 2"/><circle cx="12" cy="12" r="2.5"/>' },
+    { kind: "component", label: "Make component", short: "Component", color: "#0d99ff", icon: '<path d="M12 2.8l3.6 3.6L12 10 8.4 6.4zM12 14l3.6 3.6L12 21.2l-3.6-3.6zM6.4 8.4 10 12l-3.6 3.6L2.8 12zM17.6 8.4 21.2 12l-3.6 3.6L14 12z"/>' },
+    { kind: "mobile", label: "Mobile version", short: "Mobile", color: "#14ae5c", icon: '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/>' },
+  ];
+  const ACTION_LABEL = { code: "Build this in code", polish: "Polish this design", component: "Turn this into a component", mobile: "Make a mobile version", ask: "Help with this" };
   const count = (n, one, many) => n + " " + (n === 1 ? one : many);
   function summary(method, r) {
     if (!r) return LABEL[method] || method;
@@ -108,6 +771,8 @@
     INVALID_VARIANT: "That component doesn't have the requested variant.", NODE_NOT_FOUND: "A layer it needed was deleted or isn't on this page.",
     STYLE_NOT_FOUND: "A text or colour style is missing.", TOKEN_NOT_FOUND: "A variable is missing.", NOT_APPROVED: "Waiting for your approval in Claude Code.",
     FIGMA_API_ERROR: "Figma refused a change. Nothing was left half-done.", TIMEOUT: "That took too long.",
+    CONFLICT: "Another session changed this layer a moment ago, so this change was stopped before it could overwrite that work. Claude will read the layer again.",
+    SELECTION_NOT_CONFIRMED: "A session asked for your selection and didn't get it. Give it the layers from “Your selection” when you're ready.",
   };
   function friendly(err) {
     const m = String(err.message || "");
@@ -116,22 +781,71 @@
     if (/library isn't enabled|isn't available to this file|library didn't answer|timed out.*library/i.test(m)) return "The Design System library isn't enabled for this file. Open the Assets panel → Libraries (book icon), enable it, then try again.";
     return FRIENDLY[err.type] || "Something went wrong.";
   }
-  const ago = (t) => { const s = Math.round((Date.now() - t) / 1000); return s < 60 ? s + "s ago" : Math.round(s / 60) + "m ago"; };
+  const ago = (t) => { const s = Math.round((Date.now() - t) / 1000); return s < 60 ? s + "s ago" : s < 3600 ? Math.round(s / 60) + "m ago" : Math.round(s / 3600) + "h ago"; };
+
+  // ---------- tabs ----------
+  const TABS = ["home", "activity", "skills", "settings", "sessions"];
+  function setTab(t) {
+    const i = TABS.indexOf(t);
+    if (i < 0) return;
+    $("panels").dataset.dir = i >= tabIndex ? "right" : "left";
+    tabIndex = i; tab = t;
+    $("tabs").dataset.tab = t;
+    for (const x of TABS) { $("panel-" + x).dataset.active = x === t ? "1" : ""; $("tab-" + x).dataset.on = x === t ? "1" : ""; $("tab-" + x).ariaSelected = String(x === t); }
+    if (t === "activity") unseen = 0;
+    if (t === "skills") askSkills();
+    $("fade").dataset.on = $("panels").scrollTop > 2 ? "1" : "";
+    placeInk();
+    render();
+  }
+  // The highlight under the active tab follows its real size: labels and counts make tabs different widths.
+  function placeInk() {
+    const b = $("tab-" + tab);
+    if (!b || !b.offsetWidth) return;
+    $("ink").style.width = b.offsetWidth + "px";
+    $("ink").style.transform = "translateX(" + b.offsetLeft + "px)";
+  }
+  if (typeof ResizeObserver === "function") { const ro = new ResizeObserver(placeInk); for (const x of TABS) ro.observe($("tab-" + x)); }
+  $("panels").onscroll = () => { $("fade").dataset.on = $("panels").scrollTop > 2 ? "1" : ""; };
+  $("tabs").onclick = (ev) => { let el = ev && ev.target; while (el && !(el.dataset && el.dataset.tab && el.id !== "tabs")) el = el.parentElement; if (el) setTab(el.dataset.tab); };
+  $("tabs").onkeydown = (ev) => { if (ev && (ev.key === "ArrowRight" || ev.key === "ArrowLeft")) setTab(TABS[(tabIndex + (ev.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length]); };
+
+  // When work starts, Activity comes forward (not while the user is typing a request).
+  function showActivity() { if (!settings.mini && tab !== "activity" && document.activeElement !== $("askInput")) setTab("activity"); }
+
+  let toastTimer = null;
+  function toast(text, kind) {
+    const icon = kind === "bad" ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 7v6M12 17h.01"/></svg>'
+      : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3 10 14M21 3l-7 18-4-7-7-4z"/></svg>';
+    $("toast").innerHTML = icon + "<span>" + esc(text) + "</span>";
+    $("toast").dataset.kind = kind || "ok";
+    $("toast").dataset.show = "1";
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { $("toast").dataset.show = ""; }, 2600);
+  }
 
   function renderActivity() {
     $("empty").style.display = events.length ? "none" : "block";
-    $("activity").innerHTML = events.slice(0, 20).map((e) => '<li><span>' + (e.ok ? "✓" : "✗") + '</span><span>' + esc(e.text) + '</span><span class="t">' + esc(e.took || ago(e.at)) + '</span></li>').join("");
+    $("clearLog").style.display = events.length ? "" : "none";
+    setHTML($("activity"), events.slice(0, 40).map((e, i) =>
+      '<li class="' + (Date.now() - e.at < 400 ? "enter" : "") + '"><span class="ic ' + (e.note ? "note" : e.ok ? "ok" : "no") + '">' + (e.note ? "✦" : e.ok ? "✓" : "✕") + '</span>' +
+      (e.session && sessions.length > 1 ? dotFor(e.session) : "") + '<span class="tx" title="' + esc(e.text) + '">' + esc(e.text) + '</span><span class="t">' + esc(e.took || ago(e.at)) + '</span><button class="x" data-act="del-ev" data-i="' + i + '" title="Remove" aria-label="Remove">×</button></li>').join(""));
   }
   function render() {
-    const open = ws && ws.readyState === 1;
+    const open = isOpen();
     const state = !open ? "disconnected" : running.size ? "running" : "connected";
     $("dot").dataset.state = state;
+    $("hero").dataset.state = state;
+    $("conn").dataset.state = state;
+    $("connText").textContent = state === "running" ? "Working" : state === "connected" ? (sessions.length > 1 ? sessions.length + " sessions" : "Connected") : failures > 1 ? "Waiting for Claude" : "Connecting";
     if (state === "running") {
       const [r] = running.values();
       $("status").textContent = (LABEL[r.method] || r.method) + "…";
-      $("detail").textContent = Math.round((Date.now() - r.started) / 1000) + "s" + (running.size > 1 ? " · " + (running.size - 1) + " more waiting" : "");
+      $("detail").textContent = (r.session && sessions.length > 1 ? "for " + r.session.name + " · " : "") + Math.round((Date.now() - r.started) / 1000) + "s" + (running.size > 1 ? " · " + (running.size - 1) + " more waiting" : "");
+      // Always show that something is moving; a real percentage replaces the sweep when the plugin reports one.
+      if ($("progress").style.display !== "block") { $("progress").dataset.mode = "indet"; $("progress").style.display = "block"; }
     } else if (state === "connected") {
-      $("status").textContent = "Connected to Claude Code";
+      $("status").textContent = sessions.length > 1 ? "Connected · " + sessions.length + " sessions" : "Connected to Claude Code";
       const sel = hello && hello.selection ? hello.selection : 0;
       $("detail").textContent = hello ? (hello.fileName + " · " + String(hello.page || "").trim() + (sel ? " · " + count(sel, "layer", "layers") + " selected" : "")) : "Ready";
     } else {
@@ -140,6 +854,563 @@
     }
     $("help").style.display = !open && failures >= 3 ? "block" : "none";
     if (state !== "running") $("progress").style.display = "none";
+    setHTML($("avatars"), sessions.slice(0, 4).map((s) => '<span class="avatar" style="--c:' + esc(s.color) + '" title="' + esc(s.name) + '">' + esc(initials(s.name)) + '</span>').join(""));
+    $("activityBadge").textContent = unseen > 9 ? "9+" : String(unseen);
+    $("activityBadge").dataset.show = unseen && tab !== "activity" ? "1" : "";
+    renderSessions();
+    renderRequests();
+    renderSettings();
+    renderMini(state);
+  }
+
+  // ---------- sessions ----------
+  const byId = (id) => sessions.find((s) => s.id === id);
+  const dotFor = (s) => '<span class="sdot" style="background:' + esc(s.color || "#999") + '" title="' + esc(s.name || "") + '"></span>';
+  const initials = (name) => { const w = String(name || "?").split(/[^A-Za-z0-9؀-ۿ]+/).filter(Boolean); return ((w[0] || "?")[0] + (w[1] ? w[1][0] : (w[0] || "").slice(1, 2))).toUpperCase(); };
+  const short = (p) => { const parts = String(p || "").split("/").filter(Boolean); return parts.length > 2 ? "…/" + parts.slice(-2).join("/") : String(p || ""); };
+  const clientName = (c) => /claude/i.test(c || "") ? "Claude Code" : /codex/i.test(c || "") ? "Codex" : /cursor/i.test(c || "") ? "Cursor" : (c || "");
+
+  const openFor = (s) => requests.filter((x) => x.session === s.id && ["sending", "sent", "queued", "seen", "working"].includes(x.status)).length;
+  function sessionState(s) {
+    if (asking.has(s.id)) return '<span class="pill asking" style="--c:' + esc(s.color) + '">Answer in the chat</span>';
+    if (desk.asks.some((a) => a.session === s.id)) return '<span class="pill wait">Waiting for you</span>';
+    const n = openFor(s);
+    const r = [...running.values()].find((x) => x.session && x.session.id === s.id && !QUIET[x.method]);
+    if (r) return '<span class="pill busy">' + esc(LABEL[r.method] || r.method) + (n > 1 ? " · " + n + " requests" : "") + "…</span>";
+    if (n > 1) return '<span class="pill busy">On ' + n + ' requests…</span>';
+    if (requests.some((x) => x.session === s.id && (x.status === "working" || x.status === "seen"))) return '<span class="pill busy">On your request…</span>';
+    if (desk.owner === s.id && desk.count && sessions.length > 1) return '<span class="pill sel">Has your selection</span>';
+    return '<span class="pill">Idle</span>';
+  }
+  const layerTags = () => desk.names.map((n) => '<span class="tag">' + esc(n) + '</span>').join("") + (desk.count > desk.names.length ? '<span class="tag">+' + (desk.count - desk.names.length) + '</span>' : "");
+  // Who a request from here goes to: the session that has the selection, or the only one.
+  /** Who gets a request: the session picked by hand, until a newer session joins; else the newest (sessions are kept
+   *  newest first). */
+  let pinned = null; // { id, at }
+  const target = () => {
+    const p = pinned && byId(pinned.id);
+    if (p && !sessions.some((s) => (s.connectedAt || 0) > pinned.at)) return p;
+    return sessions[0] || null;
+  };
+  const CHEV = '<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+  const isBusy = (s) => [...running.values()].some((x) => x.session && x.session.id === s.id && !QUIET[x.method]) || requests.some((x) => x.session === s.id && (x.status === "working" || x.status === "seen"));
+  const stateText = (s) => asking.has(s.id) ? "asks you in the chat" : desk.asks.some((a) => a.session === s.id) ? "waiting for you" : openFor(s) > 1 ? "on " + openFor(s) + " requests" : isBusy(s) ? "working" : "idle";
+  // Remove a session from the shared Figma connection: press once to arm, again to remove.
+  const kickBtn = (s) => '<span class="x" role="button" data-act="kick" data-session="' + esc(s.id) + '"' + (kickArmed === s.id ? ' data-confirm="1">Remove?' : ' title="Remove ' + esc(s.name) + ' from Figma">✕') + '</span>';
+
+  function renderSessions() {
+    const many = sessions.length > 1;
+    $("sessionsBox").style.display = sessions.length ? "block" : "none";
+    $("noSessions").style.display = sessions.length ? "none" : "block";
+    $("sessionCount").textContent = String(sessions.length);
+    $("sessionCount").dataset.show = many ? "1" : "";
+    setHTML($("sessions"), sessions.map((s, i) => '<li class="' + fresh("s:" + s.id).trim() + '" style="--i:' + i + '"><span class="avatar" style="--c:' + esc(s.color) + '">' + esc(initials(s.name)) + '</span>' +
+      '<span class="who" title="' + esc(s.workdir || "") + '"><b>' + esc(s.name) + '</b><small>' + esc([clientName(s.client), short(s.workdir)].filter(Boolean).join(" · ")) + '</small></span>' + sessionState(s) + kickBtn(s) + '</li>').join(""));
+
+    // A session asking the user something in its chat: say so first, and where to answer.
+    const chat = [...asking.entries()].map(([id, a]) => {
+      const s = byId(id) || (sessions.length === 1 ? sessions[0] : { name: "Claude", color: "#8b5cf6" });
+      const head = a.kind === "permission" ? esc(s.name) + " needs your OK" : a.kind === "turn" ? esc(s.name) + " is waiting for you" : esc(s.name) + " asked you something";
+      return '<div class="chat-ask" style="--c:' + esc(s.color) + '"><span class="q">?</span><div class="body"><b>' + head + '</b>' +
+        (a.text ? '<div class="said">' + esc(a.text) + '</div>' : "") +
+        '<div class="go">Answer in Claude Code, in its chat <span class="dots"><i></i><i></i><i></i></span></div></div></div>';
+    });
+    setHTML($("chatAsks"), chat.join(""));
+
+    // Requests for the selection: the one thing that needs the user, so it comes first and stands out.
+    // A note on the canvas named no session: the user picks one (or lets it go).
+    const notesHTML = noteAsks.map((n) => '<div class="ask" style="--c:#8b5cf6"><div class="title"><span class="avatar" style="--c:#8b5cf6;width:22px;height:22px;border-radius:6px;font-size:11px">@</span>' +
+      '<span>A note asks @' + esc(n.name) + '</span></div>' +
+      '<div class="what" dir="auto" title="' + esc(n.text) + '">' + esc(n.text) + '</div>' +
+      '<div class="note">' + (sessions.length ? 'No session is called @' + esc(n.name) + '. Send it to:' : 'No session is connected. Start one, then pick it here.') + '</div>' +
+      '<div class="acts" style="flex-wrap:wrap">' + sessions.map((s) => '<button class="primary" style="flex:0 1 auto;max-width:100%;background:' + esc(s.color) + ';border-color:' + esc(s.color) + '" data-act="note-send" data-key="' + esc(n.key) + '" data-session="' + esc(s.id) + '">' + esc(s.name) + '</button>').join("") +
+      '<button data-act="note-dismiss" data-key="' + esc(n.key) + '">Let it go</button></div></div>').join("");
+    setHTML($("asks"), notesHTML + desk.asks.map((a) => {
+      const s = byId(a.session) || { name: "A session", color: "#8b5cf6" };
+      const what = desk.count ? count(desk.count, "layer", "layers") + ": " + desk.names.join(", ") + (desk.count > desk.names.length ? ", …" : "") : "Nothing is selected. Select the layers you mean, then confirm.";
+      return '<div class="ask" style="--c:' + esc(s.color) + '"><div class="title"><span class="avatar" style="--c:' + esc(s.color) + ';width:22px;height:22px;border-radius:6px;font-size:9.5px">' + esc(initials(s.name)) + '</span>' +
+        '<span>' + esc(s.name) + ' wants to use your selection</span></div>' +
+        '<div class="what" title="' + esc(what) + '">' + (desk.count ? layerTags() : '<span class="muted">' + esc(what) + '</span>') + '</div>' +
+        '<div class="acts"><button class="primary" data-act="approve" data-id="' + esc(a.id) + '"' + (desk.count ? "" : " disabled") + '>Use for ' + esc(s.name) + '</button>' +
+        '<button data-act="show" title="Show the selected layers">Show</button><button data-act="deny" data-id="' + esc(a.id) + '">Not now</button></div>' +
+        '<div class="note">Only this session gets these layers. The others keep working on their own.</div></div>';
+    }).join(""));
+
+    // The selection card: its picture, who gets it, and what to ask.
+    const showSel = desk.count > 0;
+    $("selCard").style.display = showSel ? "block" : "none";
+    $("emptySel").style.display = showSel || !isOpen() ? "none" : "block";
+    if (!showSel) return;
+    renderThumb();
+    const owner = byId(desk.owner);
+    const to = target();
+    $("selCount").textContent = count(desk.count, "layer", "layers");
+    setHTML($("selNames"), many && !(thumb && thumb.png) ? layerTags() : ""); // the picture already names the layer
+    $("toRow").style.display = sessions.length ? "flex" : "none";
+    $("picker").style.display = sessions.length ? "block" : "none";
+    $("toCount").textContent = many ? sessions.length + " sessions" : "";
+    const sub2 = (s) => [clientName(s.client), stateText(s)].filter(Boolean).join(" · ");
+    setHTML($("pickerBtn"), to
+      ? '<span class="avatar ring" data-live="' + (isBusy(to) ? 1 : 0) + '" style="--c:' + esc(to.color) + '">' + esc(initials(to.name)) + '</span><span class="meta"><b>' + esc(to.name) + '</b><small>' + esc(sub2(to)) + '</small></span>' + CHEV
+      : '<span class="avatar" style="--c:#8b5cf6">?</span><span class="meta"><b>Choose a session</b><small>' + count(sessions.length, "session", "sessions") + ' connected</small></span>' + CHEV);
+    $("pickerBtn").style.setProperty && to && $("pickerBtn").style.setProperty("--c", to.color);
+    setHTML($("selChips"), sessions.map((s, i) => { const on = to === s; return '<button class="opt" role="option" style="--c:' + esc(s.color) + '" data-act="assign" data-session="' + esc(s.id) + '" aria-pressed="' + on + '" title="Give the selection to ' + esc(s.name) + '">' +
+      '<span class="avatar" style="--c:' + esc(s.color) + ';width:24px;height:24px;border-radius:7px;font-size:9.5px">' + esc(initials(s.name)) + '</span><span class="meta"><b>' + esc(s.name) + (i === 0 && many ? ' <span class="pill new">Newest</span>' : "") + '</b><small>' + esc([sub2(s), short(s.workdir)].filter(Boolean).join(" · ")) + '</small></span>' +
+      (on ? '<span class="check">✓</span>' : "") + kickBtn(s) + '</button>'; }).join(""));
+    $("selHint").textContent = !sessions.length ? "No session is connected. Start Claude Code or Codex in a project to send this."
+      : !many ? "" : owner ? "Only " + owner.name + " can use it. Any other session has to ask you here first." : to ? "Goes to " + to.name + (to === sessions[0] ? ", the newest session" : "") + ". Pick another above." : "";
+    $("selHint").style.display = $("selHint").textContent ? "flex" : "none";
+    const can = !!to && paired !== false;
+    setHTML($("actions"), ACTIONS.map((a) => '<button class="act" style="--a:' + a.color + '" data-act="ask" data-kind="' + a.kind + '"' + (can ? "" : " disabled") + ' title="' + esc(ACTION_LABEL[a.kind] + (to ? " (" + to.name + ")" : "")) + '">' +
+      '<span class="ic"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + a.icon + '</svg></span>' + esc(a.label) + '</button>').join(""));
+    $("askSend").disabled = !can;
+  }
+
+  function renderThumb() {
+    const t = thumb;
+    $("thumb").style.display = t && t.png ? "grid" : "none";
+    $("thumb").dataset.loading = t && t.loading ? "1" : "";
+    // A new picture replaces the old one (and animates in); the same picture is left alone.
+    setHTML($("thumb"), t && t.png ? '<img alt="" src="data:image/png;base64,' + t.png + '"><span class="zoomhint">' + ZOOM + 'Zoom to layer</span>' : "");
+    setHTML($("thumbMeta"), t && t.name ? "<b>" + esc(t.name) + (desk.count > 1 ? ' <span>+' + (desk.count - 1) + "</span>" : "") + "</b><span>" + esc(String(t.kind || "").toLowerCase().replace(/_/g, " ")) + " · " + t.w + "×" + t.h + "</span>" : "");
+  }
+
+  // Click the picture: Figma zooms to that layer.
+  const ZOOM = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2M11 8.5v5M8.5 11h5"/></svg>';
+  function zoomTo() { if (thumb && (thumb.id || desk.count)) post({ type: "zoom-to", id: thumb.id }); }
+  $("thumb").onclick = zoomTo;
+  $("mThumb").onclick = zoomTo;
+
+  // ---------- compact mode ----------
+  // A small window with what is used most: who gets it, the selection, the four actions, the chat box and the last
+  // request. Figma sizes the window to fit it.
+  function setMini(on, save) {
+    settings.mini = !!on;
+    $("app").dataset.mini = on ? "1" : "";
+    $("mMenu").dataset.open = "";
+    miniH = 0;
+    if (save) post({ type: "set-mini", on: !!on });
+    render();
+  }
+  $("miniBtn").onclick = () => setMini(true, true);
+  $("maxBtn").onclick = () => setMini(false, true);
+  $("mTo").onclick = () => { $("mMenu").dataset.open = $("mMenu").dataset.open === "1" ? "" : "1"; fitMini(); };
+  function fitMini() {
+    if (!settings.mini) return;
+    const box = $("mini");
+    const h = Math.ceil(box.offsetHeight || 0);
+    if (h > 0 && Math.abs(h - miniH) >= 1) { miniH = h; post({ type: "resize", width: 300, height: h }); }
+  }
+  const openAll = () => requests.filter((x) => ["sending", "sent", "queued", "seen", "working"].includes(x.status)).length;
+  function renderMini(state) {
+    if (!settings.mini) return;
+    const to = target();
+    $("mDot").dataset.state = state;
+    const sel = hello && hello.selection ? hello.selection : 0;
+    const [r] = running.values();
+    setHTML($("mStatus"), state === "running" ? "<b>" + esc((LABEL[r.method] || r.method) + "…") + "</b> " + esc(Math.round((Date.now() - r.started) / 1000) + "s")
+      : state === "connected" ? "<b>" + esc(hello ? String(hello.page || "").trim() || hello.fileName : "Connected") + "</b>" + (sessions.length > 1 ? " · " + sessions.length + " sessions" : "")
+      : "<b>" + (failures > 1 ? "Waiting for Claude Code" : "Connecting…") + "</b>");
+    $("mTo").style.display = sessions.length ? "inline-flex" : "none";
+    if (to) $("mTo").style.setProperty && $("mTo").style.setProperty("--c", to.color);
+    setHTML($("mTo"), to ? '<span class="avatar ring" data-live="' + (isBusy(to) ? 1 : 0) + '" style="--c:' + esc(to.color) + '">' + esc(initials(to.name)) + '</span><span class="n">' + esc(to.name) + '</span>' + CHEV
+      : '<span class="avatar" style="--c:#8b5cf6">?</span><span class="n">Choose</span>' + CHEV);
+    setHTML($("mMenu"), sessions.map((s) => { const on = to === s; return '<button class="opt" role="option" style="--c:' + esc(s.color) + '" data-act="assign" data-session="' + esc(s.id) + '" aria-pressed="' + on + '">' +
+      '<span class="avatar" style="--c:' + esc(s.color) + ';width:22px;height:22px;border-radius:7px;font-size:9px">' + esc(initials(s.name)) + '</span><span class="meta"><b>' + esc(s.name) + '</b><small>' + esc([clientName(s.client), stateText(s)].filter(Boolean).join(" · ")) + '</small></span>' +
+      (on ? '<span class="check">✓</span>' : "") + '</button>'; }).join(""));
+    setHTML($("mChat"), [...asking.entries()].slice(0, 1).map(([id, a]) => { const s = byId(id) || (sessions.length === 1 ? sessions[0] : { name: "Claude", color: "#8b5cf6" });
+      return '<div class="m-ask" style="--c:' + esc(s.color) + '"><span><b>' + esc(s.name) + '</b> ' + (a.kind === "permission" ? "needs your OK" : "asks you") + ' in Claude Code' + (a.text ? ": " + esc(a.text) : "") + '</span><span class="dots" style="color:' + esc(s.color) + '"><i></i><i></i><i></i></span></div>'; }).join(""));
+    setHTML($("mAsks"), desk.asks.slice(0, 1).map((a) => { const s = byId(a.session) || { name: "A session", color: "#8b5cf6" };
+      return '<div class="m-ask" style="--c:' + esc(s.color) + '"><span><b>' + esc(s.name) + '</b> wants your selection</span><button class="mini primary" data-act="approve" data-id="' + esc(a.id) + '"' + (desk.count ? "" : " disabled") + '>Use</button><button class="mini" data-act="deny" data-id="' + esc(a.id) + '">Not now</button></div>'; }).join(""));
+    const t = thumb;
+    $("mThumb").dataset.empty = desk.count ? "" : "1";
+    setHTML($("mThumb"), t && t.png ? '<img alt="" src="data:image/png;base64,' + t.png + '"><span class="zoomhint">' + ZOOM + '</span>'
+      : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l7.5 17 2.2-6.8L20.5 12z"/></svg>');
+    $("mName").textContent = desk.count ? (t && t.name ? t.name : count(desk.count, "layer", "layers")) + (desk.count > 1 ? " +" + (desk.count - 1) : "") : "Select something in Figma";
+    $("mMeta").textContent = desk.count ? (t && t.name ? String(t.kind || "").toLowerCase().replace(/_/g, " ") + " · " + t.w + "×" + t.h : "") + (to ? " → " + to.name : "") : !isOpen() ? "Not connected yet" : "Then send it to a session";
+    const can = !!to && paired !== false && isOpen();
+    setHTML($("mActs"), ACTIONS.map((a) => '<button class="m-act" style="--a:' + a.color + '" data-act="ask" data-kind="' + a.kind + '"' + (can && desk.count ? "" : " disabled") + ' title="' + esc(ACTION_LABEL[a.kind] + (to ? " (" + to.name + ")" : "")) + '">' +
+      '<span class="ic"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + a.icon + '</svg></span>' + esc(a.short) + '</button>').join(""));
+    $("mSend").disabled = !can;
+    const q = requests[0];
+    if (q) {
+      const s = byId(q.session) || { name: q.sessionName || "a session", color: "#8b5cf6" };
+      const step = q.status === "failed" || q.status === "stopped" ? 4 : q.status === "queued" || q.status === "sending" ? 0 : STEPS.indexOf(q.status) + 1;
+      const pill = q.status === "done" ? "ok" : q.status === "failed" ? "bad" : q.status === "stopped" ? "off" : q.status === "queued" ? "wait" : "busy";
+      setHTML($("mLast"), '<span class="pill ' + pill + '">' + esc(STATUS_TEXT[q.status] || q.status) + '</span><span class="tx" title="' + esc(q.message || "") + '">' +
+        esc(q.message ? s.name + ": " + q.message : reqLabel(q) + " · " + s.name) + (openAll() > 1 ? " · +" + (openAll() - 1) + " more" : "") + '</span>' +
+        '<span class="track" style="--c:' + esc(s.color) + '"' + (q.status === "failed" ? ' data-bad="1"' : "") + '>' + [0, 1, 2, 3].map((k) => '<span data-on="' + (k < step ? 1 : 0) + '"' + (k === step - 1 && q.status !== "done" && q.status !== "failed" ? ' data-now="1"' : "") + '></span>').join("") + '</span>');
+    } else setHTML($("mLast"), "");
+    fitMini();
+  }
+
+  // ---------- requests sent from here ----------
+  const STEPS = ["sent", "seen", "working", "done"];
+  const STATUS_TEXT = { sending: "Sending…", queued: "Waiting", sent: "Sent", seen: "Picked up", working: "Working…", done: "Done", failed: "Failed", stopped: "Stopped" };
+  const FINISHED = { done: 1, failed: 1, stopped: 1 };
+  /** What a request is called in the lists: a skill sent on its own reads "Apply <skill>". */
+  const reqLabel = (q) => q.kind === "ask" && !q.text && q.skills && q.skills.length
+    ? "Apply " + q.skills.map((id) => { const s = (skills || []).find((x) => x.id === id); return s ? s.name : id; }).join(" + ")
+    : ACTION_LABEL[q.kind] || q.kind;
+  let stopArmed = null;          // a request whose Stop was pressed once (press again to stop it)
+  function renderRequests() {
+    $("requestsBox").style.display = requests.length ? "block" : "none";
+    $("clearReqs").style.display = requests.some((q) => FINISHED[q.status]) ? "" : "none";
+    setHTML($("requests"), requests.slice(0, 20).map((q, i) => {
+      const s = byId(q.session) || { name: q.sessionName || "a session", color: "#8b5cf6" };
+      const step = q.status === "failed" ? 4 : q.status === "queued" || q.status === "sending" ? 0 : STEPS.indexOf(q.status) + 1;
+      const pill = q.status === "done" ? "ok" : q.status === "failed" ? "bad" : q.status === "queued" ? "wait" : "busy";
+      const stale = (q.status === "queued" || q.status === "sent") && Date.now() - q.at > 20000;
+      const silent = q.status === "sending" && Date.now() - q.at > 8000; // its server never acknowledged it
+      const tip = silent ? s.name + " didn't answer: it may run an older Layerwright. Restart that session, or type /layer:inbox there after updating."
+        : q.status === "queued" ? s.name + " gets it on its next Figma step, or type /layer:inbox there."
+        : stale ? "No answer yet. If " + s.name + " is Codex or has no Layerwright plugin, type /layer:inbox there." : "";
+      return '<div class="req' + fresh("q:" + q.id) + '" style="--c:' + esc(s.color) + ';--i:' + i + '"><div class="top1"><span class="avatar" style="--c:' + esc(s.color) + ';width:24px;height:24px;border-radius:7px;font-size:9.5px">' + esc(initials(s.name)) + '</span>' +
+        '<span class="what"><b>' + esc(reqLabel(q)) + ' · ' + esc(s.name) + '</b><small>' + esc(q.layers.join(", ") || "no layers") + (q.more ? " +" + q.more : "") + " · " + esc(ago(q.at)) + '</small></span>' +
+        '<span class="pill ' + pill + '">' + esc(STATUS_TEXT[q.status] || q.status) + '</span>' +
+        (FINISHED[q.status] ? '<button class="x" data-act="del-req" data-id="' + esc(q.id) + '" title="Remove from the list" aria-label="Remove">×</button>'
+          : '<button class="mini stop" data-act="stop-req" data-id="' + esc(q.id) + '"' + (stopArmed === q.id ? ' data-armed="1" title="Press again to stop it">Stop?' : ' title="Stop this request: the session stops working on it">Stop') + '</button>') + '</div>' +
+        '<div class="track"' + (q.status === "failed" || q.status === "stopped" ? ' data-bad="1"' : "") + '>' + [0, 1, 2, 3].map((k) => '<span data-on="' + (k < step ? 1 : 0) + '"' + (k === step - 1 && !FINISHED[q.status] ? ' data-now="1"' : "") + '></span>').join("") + '</div>' +
+        (q.text ? '<div class="msg"><i>You: </i>' + esc(q.text) + '</div>' : "") +
+        (q.skills && q.skills.length ? '<div class="msg"><i>Skills: </i>' + esc(q.skills.map((id) => { const s = (skills || []).find((x) => x.id === id); return s ? s.name : id; }).join(", ")) + '</div>' : "") +
+        (q.message ? '<div class="msg"><i>' + esc(s.name) + ': </i>' + esc(q.message) + '</div>' : "") +
+        (tip ? '<div class="tip">' + esc(tip) + ' <button class="mini" data-act="copy" data-text="/layer:inbox">Copy /layer:inbox</button></div>' : "") + '</div>';
+    }).join(""));
+  }
+
+  function renderSettings() {
+    $("cursorToggle").dataset.on = settings.cursor ? "1" : "";
+    $("cursorToggle").ariaChecked = String(!!settings.cursor);
+    $("zoomToggle").dataset.on = settings.zoom ? "1" : "";
+    $("zoomToggle").ariaChecked = String(!!settings.zoom);
+    $("pairing").textContent = paired === true ? "This window is paired with Layerwright on this computer, so requests from here reach your sessions."
+      : paired === false ? "Not paired: run npx layerwright init, then reopen this plugin. Until then, requests from here can't reach sessions."
+      : isOpen() ? "Checking…" : "Connect first.";
+  }
+
+  // Clicks inside the drawn areas (buttons are HTML strings, so they're handled here).
+  function act(ev) {
+    let t = ev && ev.target;
+    while (t && !(t.dataset && t.dataset.act)) t = t.parentElement;
+    if (!t || t.disabled) return;
+    const d = t.dataset;
+    if (d.act === "stop-req") {
+      const q = requests.find((x) => x.id === d.id);
+      if (!q || FINISHED[q.status]) return;
+      if (stopArmed !== q.id) { stopArmed = q.id; render(); setTimeout(() => { if (stopArmed === q.id) { stopArmed = null; render(); } }, 3000); return; }
+      stopArmed = null;
+      q.status = "stopped"; q.message = "You stopped it";
+      if (isOpen()) ws.send(JSON.stringify({ type: "action-stop", id: q.id }));
+      post({ type: "session-activity", id: q.id, session: q.session, status: "stopped", kind: q.kind }); // its cursor goes
+      const s = byId(q.session);
+      toast("Stopped. " + (s ? s.name : "The session") + " stops working on it; what's already done stays (undo it in Figma if needed)", "ok");
+      render(); return;
+    }
+    if (d.act === "del-req") { const i = requests.findIndex((x) => x.id === d.id); if (i >= 0) requests.splice(i, 1); render(); return; }
+    if (d.act === "del-ev") { events.splice(Number(d.i), 1); renderActivity(); render(); return; }
+    if (d.act === "kick") {
+      if (kickArmed !== d.session) { kickArmed = d.session; setTimeout(() => { if (kickArmed === d.session) { kickArmed = null; render(); } }, 3000); render(); return; }
+      kickArmed = null;
+      const s = byId(d.session);
+      if (isOpen()) ws.send(JSON.stringify({ type: "kick", session: d.session }));
+      toast("Removed " + (s ? s.name : "the session") + ". It can join again from its own chat.");
+      render();
+      return;
+    }
+    if (d.act === "note-send") { post({ type: "note-send", key: d.key, session: d.session }); return; }
+    if (d.act === "note-dismiss") { post({ type: "note-dismiss", key: d.key }); return; }
+    if (d.act === "assign") { pinned = { id: d.session, at: Date.now() }; render(); post({ type: "assign-selection", session: d.session }); $("picker").dataset.open = ""; $("mMenu").dataset.open = ""; }
+    if (d.act === "approve" || d.act === "deny") post({ type: "answer-selection", id: d.id, ok: d.act === "approve" });
+    if (d.act === "show") post({ type: "show-selection" });
+    if (d.act === "ask") sendRequest(d.kind);
+    if (d.act === "copy") { copy(d.text); toast("Copied " + d.text); }
+  }
+  $("asks").onclick = act;
+  $("selChips").onclick = act;
+  $("actions").onclick = act;
+  $("requests").onclick = act;
+  $("activity").onclick = act;
+  $("clearReqs").onclick = () => { for (let i = requests.length - 1; i >= 0; i--) if (FINISHED[requests[i].status]) requests.splice(i, 1); render(); toast("Cleared the finished requests"); };
+  $("clearLog").onclick = () => { events.length = 0; unseen = 0; renderActivity(); render(); };
+  $("sessions").onclick = act;
+  $("mMenu").onclick = act;
+  $("mAsks").onclick = act;
+  $("mActs").onclick = act;
+  $("pickerBtn").onclick = () => { $("picker").dataset.open = $("picker").dataset.open === "1" ? "" : "1"; };
+  if (window.addEventListener) window.addEventListener("click", (ev) => {
+    const p = $("picker"); if (p.contains && !p.contains(ev.target)) p.dataset.open = "";
+    const m = $("mMenu"), b = $("mTo"); if (m.dataset.open && m.contains && !m.contains(ev.target) && !b.contains(ev.target)) { m.dataset.open = ""; fitMini(); }
+  }, true);
+
+  // A request for the session that gets the selection: the plugin adds the layers and hands it back to send.
+  function sendRequest(kind) {
+    // "/skill <link or SKILL.md>" in the chat box adds a skill (no session needed); "/skills" opens the tab.
+    const typed = String((settings.mini ? $("mInput") : $("askInput")).value || "").trim();
+    const sk = /^\/skills?\b\s*([\s\S]*)$/i.exec(typed);
+    if (kind === "ask" && sk) { (settings.mini ? $("mInput") : $("askInput")).value = ""; if (sk[1].trim()) addSkill(sk[1].trim()); else { if (settings.mini) setMini(false, true); setTab("skills"); } return; }
+    const to = target();
+    if (!to) { toast("Pick a session first", "bad"); return; }
+    const box = settings.mini ? $("mInput") : $("askInput");
+    const text = String(box.value || "").trim();
+    // @name typed without the menu counts too, when it names a skill.
+    const known = new Set((skills || []).map((s) => s.id));
+    for (const m of text.matchAll(/(^|\s)@([\w-]+)/g)) if (known.has(m[2]) && !picked.includes(m[2])) picked.push(m[2]);
+    if (kind === "ask" && !text && !picked.length) { toast("Write what you'd like first", "bad"); return; }
+    post({ type: "compose-action", session: to.id, kind, text, ...(picked.length ? { skills: picked.slice() } : {}) });
+    box.value = "";
+    picked = []; closeSkMenu(); renderPicked();
+  }
+  $("askSend").onclick = () => sendRequest("ask");
+  $("askInput").onkeydown = (ev) => { if (!menuKey(ev) && ev && ev.key === "Enter" && !ev.shiftKey) sendRequest("ask"); };
+  $("askInput").oninput = () => onType("ask");
+  $("mSend").onclick = () => sendRequest("ask");
+  $("mInput").onkeydown = (ev) => { if (!menuKey(ev) && ev && ev.key === "Enter" && !ev.shiftKey) sendRequest("ask"); };
+  $("mInput").oninput = () => onType("m");
+  $("cursorToggle").onclick = () => { settings.cursor = !settings.cursor; post({ type: "set-cursor", on: settings.cursor }); renderSettings(); toast(settings.cursor ? "AI cursor on" : "AI cursor off"); };
+  $("zoomToggle").onclick = () => { settings.zoom = !settings.zoom; post({ type: "set-zoom", on: settings.zoom }); renderSettings(); toast(settings.zoom ? "Zoom to the result on" : "Zoom to the result off"); };
+  $("resultBar").onclick = () => { if (resultIds) post({ type: "show-result", ids: resultIds }); $("resultBar").dataset.show = ""; resultIds = null; };
+  $("copyLive").onclick = () => { copy("npx layerwright init"); toast("Copied: run it in your project to install the plugin"); };
+  $("star").onclick = () => post({ type: "open-repo" });
+  $("starCard").onclick = () => post({ type: "open-repo" });
+
+  // ---------- skills ----------
+  function askSkills() { if (isOpen()) ws.send(JSON.stringify({ type: "skills-get" })); }
+  function addSkill(source) {
+    if (!isOpen()) { toast("Connect first: skills are kept by Layerwright on this computer", "bad"); return; }
+    if (paired === false) { toast("This window isn't paired: run npx layerwright init, then reopen the plugin", "bad"); return; }
+    skillBusy = true; renderSkills();
+    ws.send(JSON.stringify({ type: "skills-add", source }));
+    toast("Adding the skill…");
+  }
+  function onSkills(m) {
+    skills = Array.isArray(m.skills) ? m.skills : [];
+    skillCats = Array.isArray(m.categories) ? m.categories : [];
+    skillBusy = false;
+    if (m.error) toast(m.error, "bad");
+    if (m.added) { toast("Skill added: " + m.added.name + ". Sessions use it from their next step", "ok"); $("skillInput").value = ""; $("skillFilter").value = ""; }
+    if (m.removed) toast("Skill removed");
+    renderSkills();
+  }
+  function renderSkills() {
+    $("skAdd").dataset.busy = skillBusy ? "1" : "";
+    const list = skills || [];
+    $("noSkills").style.display = skills && skills.length ? "none" : "block";
+    const q = String($("skillFilter").value || "").trim().toLowerCase();
+    const shown = q ? list.filter((s) => (s.name + " " + s.when + " " + s.description + " " + (s.author || "")).toLowerCase().includes(q)) : list;
+    const on = list.filter((s) => s.enabled).length;
+    $("skillTotal").textContent = skills ? on + " of " + list.length + " on" : "";
+    const cats = skillCats.length ? skillCats : [{ id: "yours", name: "Yours" }];
+    const known = new Set(cats.map((c) => c.id));
+    const groups = cats.map((c) => ({ c, items: shown.filter((s) => (known.has(s.category) ? s.category : "yours") === c.id) })).filter((g) => g.items.length);
+    setHTML($("skillList"), groups.map((g) => '<div class="sk-group"><h2 class="label">' + esc(g.c.name) + ' <span class="badge">' + g.items.length + '</span></h2><div class="set">' +
+      g.items.map((s) => {
+        const by = s.origin === "yours" ? '<span class="pill">Yours</span>' + (s.source && s.source !== "pasted" ? '<span>' + esc(String(s.source).replace(/^https:\/\/(www\.)?/, "").slice(0, 48)) + '</span>' : "<span>pasted</span>")
+          : '<span>' + esc(s.author || "") + '</span>' + (s.license ? '<span class="pill">' + esc(s.license) + '</span>' : "");
+        return '<div class="row" data-on="' + (s.enabled ? "1" : "") + '"><div class="txt" data-open="' + esc(s.id) + '" title="Open the skill"><b>' + esc(s.name) + '<span class="go">›</span></b><small class="when" title="' + esc(s.description || s.when) + '">' + esc(s.when) + '</small><div class="by">' + by + '</div></div>' +
+          '<div class="side"><button class="switch" role="switch" data-on="' + (s.enabled ? "1" : "") + '" data-skill="' + esc(s.id) + '" aria-checked="' + (s.enabled ? "true" : "false") + '" aria-label="' + esc(s.name) + '"></button>' +
+          (s.origin === "yours" ? '<button class="rm" data-skill-rm="' + esc(s.id) + '"' + (skillRmArmed === s.id ? ' data-armed="1">Remove?' : '>Remove') + '</button>' : "") + '</div></div>';
+      }).join("") + '</div></div>').join("") || (skills && skills.length ? '<div class="empty">No skill matches “' + esc(q) + '”.</div>' : ""));
+  }
+  $("skillList").onclick = (ev) => {
+    let el = ev && ev.target;
+    while (el && el.id !== "skillList" && !(el.dataset && (el.dataset.skill || el.dataset.skillRm || el.dataset.open))) el = el.parentElement;
+    if (!el || el.id === "skillList" || !isOpen()) return;
+    if (el.dataset.open) { openSkill(el.dataset.open); return; }
+    if (el.dataset.skill) {
+      const s = (skills || []).find((x) => x.id === el.dataset.skill);
+      if (!s) return;
+      s.enabled = !s.enabled; renderSkills(); // at once; the hub's list follows
+      ws.send(JSON.stringify({ type: "skills-set", id: s.id, on: s.enabled }));
+      toast(s.name + (s.enabled ? " on" : " off: sessions won't read it"));
+      return;
+    }
+    const id = el.dataset.skillRm;
+    if (skillRmArmed !== id) { skillRmArmed = id; renderSkills(); setTimeout(() => { if (skillRmArmed === id) { skillRmArmed = null; renderSkills(); } }, 3000); return; }
+    skillRmArmed = null;
+    ws.send(JSON.stringify({ type: "skills-remove", id }));
+  };
+  $("skillAddBtn").onclick = () => { const v = String($("skillInput").value || "").trim(); if (!v) { toast("Paste a link to a skill, or its SKILL.md", "bad"); return; } addSkill(v); };
+  $("skillInput").onkeydown = (ev) => { if (ev && ev.key === "Enter" && !ev.shiftKey) $("skillAddBtn").onclick(); };
+  $("skillFilter").oninput = () => renderSkills();
+
+  // ---------- @skill in the chat box ----------
+  const STAR = '<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3l2.2 4.6 5 .7-3.6 3.5.9 5L12 14.4 7.5 16.8l.9-5L4.8 8.3l5-.7z"/></svg>';
+  const boxOf = (which) => (which === "m" ? $("mInput") : $("askInput"));
+  const inputOf = () => (settings.mini ? $("mInput") : $("askInput"));
+  /** The "@word" being typed at the end of the box, or null. */
+  const mentionAt = (v) => { const m = /(^|\s)@([\w-]*)$/.exec(v); return m ? m[2] : null; };
+  function onType(which) {
+    const q = mentionAt(String(boxOf(which).value || ""));
+    if (q === null) { closeSkMenu(); return; }
+    if (!skills) askSkills();
+    const ql = q.toLowerCase();
+    const items = (skills || []).filter((s) => s.enabled && !picked.includes(s.id) && (!ql || s.id.includes(ql) || s.name.toLowerCase().includes(ql) || String(s.when || "").toLowerCase().includes(ql))).slice(0, 6);
+    skMenu = { which, q, items, i: 0 };
+    renderSkMenu();
+  }
+  function closeSkMenu() { if (!skMenu) return; skMenu = null; renderSkMenu(); }
+  function renderSkMenu() {
+    for (const w of ["ask", "m"]) {
+      const el = $(w === "m" ? "mSkMenu" : "skMenu");
+      const open = !!skMenu && skMenu.which === w;
+      el.dataset.open = open ? "1" : "";
+      setHTML(el, !open ? "" : '<div class="hd">Use a skill</div>' + (skMenu.items.length
+        ? skMenu.items.map((s, i) => '<button class="sk-opt" role="option" data-pick="' + esc(s.id) + '" data-on="' + (i === skMenu.i ? "1" : "") + '"><span class="si">' + STAR + '</span><span class="sx"><b>' + esc(s.name) + '</b><small>' + esc(s.when || "") + '</small></span></button>').join("") +
+          '<div class="ft"><span><kbd>↑↓</kbd> choose</span><span><kbd>↵</kbd> add</span><span><kbd>esc</kbd> close</span></div>'
+        : '<div class="sk-none">' + (skills ? "No skill matches “" + esc(skMenu.q) + "”" : "Loading skills…") + '</div>'));
+    }
+    renderPicked(); roomForMenu(); fitMini();
+  }
+  /** The compact window is only as tall as its content: while the @ menu is open there, it grows at the top by what
+   *  the menu needs beyond the space above the field, so the menu is never cut off. */
+  function roomForMenu() {
+    const mini = $("mini");
+    if (!mini || !mini.style) return;
+    let pad = 0;
+    if (settings.mini && skMenu && skMenu.which === "m") {
+      const menu = $("mSkMenu"), box = menu.parentElement;
+      const above = box && typeof box.offsetTop === "number" ? box.offsetTop : 0;
+      pad = Math.max(0, Math.ceil((menu.offsetHeight || 0) + 10 - above));
+    }
+    mini.style.paddingTop = pad ? 8 + pad + "px" : "";
+  }
+  /** Arrow keys, Enter/Tab and Escape while the @ menu is open; true when the key was the menu's. */
+  function menuKey(ev) {
+    // Backspace in an empty field takes the last skill token back out.
+    if (ev && ev.key === "Backspace" && picked.length && !String(((ev.target && ev.target.value !== undefined) ? ev.target : inputOf()).value || "")) { picked.pop(); renderPicked(); fitMini(); return true; }
+    if (!skMenu || !ev) return false;
+    const n = skMenu.items.length;
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") { if (n) skMenu.i = (skMenu.i + (ev.key === "ArrowDown" ? 1 : n - 1)) % n; renderSkMenu(); ev.preventDefault && ev.preventDefault(); return true; }
+    if ((ev.key === "Enter" || ev.key === "Tab") && n) { pick(skMenu.items[skMenu.i].id); ev.preventDefault && ev.preventDefault(); return true; }
+    if (ev.key === "Escape") { closeSkMenu(); return true; }
+    return false;
+  }
+  function pick(id, which) {
+    const box = boxOf(which || (skMenu ? skMenu.which : settings.mini ? "m" : "ask"));
+    box.value = String(box.value || "").replace(/(^|\s)@[\w-]*$/, "$1");
+    if (!picked.includes(id)) picked.push(id);
+    skMenu = null; renderSkMenu();
+    try { box.focus(); } catch (e) {}
+  }
+  function renderPicked() {
+    const html = picked.map((id) => { const s = (skills || []).find((x) => x.id === id); return '<span class="sk-chip" title="' + esc(s ? s.when : id) + '">' + STAR + esc(s ? s.name : id) + '<button data-unpick="' + esc(id) + '" aria-label="Don\'t use ' + esc(s ? s.name : id) + '">×</button></span>'; }).join("");
+    setHTML($("skPicked"), html); setHTML($("mPicked"), html);
+    // With a skill picked, words are optional: sending applies the skill to the selection.
+    $("askInput").placeholder = picked.length ? "Add a note (optional) — or just send" : "Ask anything about it… @ to use a skill";
+    $("mInput").placeholder = picked.length ? "Note (optional) — or just send" : "Ask anything… @ to use a skill";
+    $("askSend").title = $("mSend").title = picked.length ? "Apply " + (picked.length === 1 ? "the skill" : "the skills") + " to the selection" : "Send to the session";
+  }
+  const pickClick = (ev) => {
+    let el = ev && ev.target;
+    while (el && !(el.dataset && (el.dataset.pick || el.dataset.unpick))) el = el.parentElement;
+    if (!el) return;
+    if (el.dataset.pick) pick(el.dataset.pick);
+    else { picked = picked.filter((x) => x !== el.dataset.unpick); renderPicked(); fitMini(); }
+  };
+  $("skMenu").onclick = pickClick; $("mSkMenu").onclick = pickClick; $("skPicked").onclick = pickClick; $("mPicked").onclick = pickClick;
+
+  // ---------- a skill's page ----------
+  function openSkill(id, file) {
+    if (!isOpen()) { toast("Connect first", "bad"); return; }
+    const keep = page && page.id === id ? page : null;
+    page = { id, file: file || "SKILL.md", files: keep ? keep.files : null, skill: keep ? keep.skill : null, loading: true };
+    renderPage();
+    ws.send(JSON.stringify({ type: "skills-read", id, file: page.file }));
+  }
+  function onSkillText(m) {
+    if (!page || m.id !== page.id) return;
+    page.loading = false;
+    if (m.error) page.error = m.error;
+    else { page.error = null; page.file = m.file; page.files = m.files; page.skill = m.skill; page.text = m.text; }
+    renderPage();
+    $("spBody").scrollTop = 0;
+  }
+  function closeSkill() { page = null; renderPage(); }
+  function renderPage() {
+    $("skillPage").dataset.open = page ? "1" : "";
+    if (!page) return;
+    const s = page.skill || (skills || []).find((x) => x.id === page.id) || { id: page.id, name: page.id };
+    const live = (skills || []).find((x) => x.id === page.id);
+    const on = live ? live.enabled : s.enabled !== false;
+    $("spTitle").textContent = s.name || page.id;
+    setHTML($("spMeta"), (s.origin === "yours" ? '<span class="pill">Yours</span>' : s.author ? '<span>' + esc(s.author) + '</span>' : "") + (s.license ? '<span class="pill">' + esc(s.license) + '</span>' : "") +
+      (s.source && /^https:\/\//.test(s.source) ? '<a data-url="' + esc(String(s.source).split(" ")[0]) + '">Source ↗</a>' : s.source === "pasted" ? "<span>pasted</span>" : ""));
+    $("spToggle").dataset.on = on ? "1" : "";
+    $("spState").textContent = on ? "Sessions read it when it fits" : "Off: sessions don't read it";
+    setHTML($("spFiles"), page.files && page.files.length > 1 ? page.files.map((f) => '<button data-file="' + esc(f) + '" data-on="' + (f === page.file ? "1" : "") + '">' + esc(f.replace(/\.md$/, "")) + '</button>').join("") : "");
+    $("spBody").innerHTML = page.loading && !page.text ? '<p class="muted">Loading…</p>' : page.error ? '<p class="muted">' + esc(page.error) + '</p>' : md(page.text || "");
+  }
+  $("spBack").onclick = closeSkill;
+  $("spToggle").onclick = () => {
+    if (!page || !isOpen()) return;
+    const live = (skills || []).find((x) => x.id === page.id);
+    const on = !(live ? live.enabled : true);
+    if (live) live.enabled = on;
+    ws.send(JSON.stringify({ type: "skills-set", id: page.id, on }));
+    renderPage(); renderSkills();
+  };
+  $("spUse").onclick = () => { if (!page) return; const id = page.id; closeSkill(); if (!picked.includes(id)) picked.push(id); renderPicked(); setTab("home"); toast("Picked for your next request: write it, or press an action"); try { $("askInput").focus(); } catch (e) {} };
+  $("spFiles").onclick = (ev) => { let el = ev && ev.target; while (el && !(el.dataset && el.dataset.file)) el = el.parentElement; if (el && page) openSkill(page.id, el.dataset.file); };
+  const linkClick = (ev) => {
+    let el = ev && ev.target;
+    while (el && !(el.dataset && (el.dataset.href || el.dataset.url))) el = el.parentElement;
+    if (!el || !page) return;
+    const href = el.dataset.url || el.dataset.href;
+    if (/^https:\/\//.test(href)) { post({ type: "open-url", url: href }); return; }
+    // A link to another file of the skill: open it here.
+    const base = page.file.includes("/") ? page.file.replace(/[^/]+$/, "") : "";
+    const parts = (base + href.replace(/[#?].*$/, "")).split("/"), out = [];
+    for (const x of parts) { if (x === "..") out.pop(); else if (x && x !== ".") out.push(x); }
+    const f = out.join("/");
+    if (page.files && page.files.includes(f)) openSkill(page.id, f);
+  };
+  $("spMeta").onclick = linkClick; $("spBody").onclick = linkClick;
+
+  /** Markdown for a skill's page: escaped first, so nothing in a skill becomes HTML; headings, lists, quotes, code,
+   *  tables, links (opened by the plugin, https only, or to the skill's own files). The front matter shows as a note. */
+  function md(src) {
+    const fm = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(src);
+    const lines = String(fm ? src.slice(fm[0].length) : src).split(/\r?\n/);
+    const inline = (s) => esc(s)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+      .replace(/(^|[\s(])[*_]([^*_\s][^*_]*)[*_](?=[\s).,:;!?]|$)/g, "$1<i>$2</i>")
+      .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, t, h) => '<a data-href="' + h + '">' + t + '</a>');
+    const out = [];
+    if (fm) { const d = /(^|\n)description:\s*([\s\S]*?)(\n[\w-]+:|$)/.exec(fm[1]); if (d) out.push('<div class="fm" dir="auto">' + esc(d[2].replace(/^[>|]-?\s*/, "").replace(/\s+/g, " ").replace(/^["']|["']$/g, "")) + '</div>'); }
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      if (/^\s*```/.test(l)) { const code = []; while (++i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i]); out.push("<pre><code>" + esc(code.join("\n")) + "</code></pre>"); continue; }
+      const h = /^(#{1,6})\s+(.*)$/.exec(l);
+      if (h) { const n = Math.min(4, h[1].length); out.push("<h" + n + ' dir="auto">' + inline(h[2]) + "</h" + n + ">"); continue; }
+      if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(l)) { out.push("<hr>"); continue; }
+      if (/^\s*\|/.test(l) && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}/.test(lines[i + 1])) {
+        const row = (x) => x.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+        const head = row(l); i++;
+        const body = [];
+        while (i + 1 < lines.length && /^\s*\|/.test(lines[i + 1])) body.push(row(lines[++i]));
+        out.push("<table><thead><tr>" + head.map((c) => "<th>" + inline(c) + "</th>").join("") + "</tr></thead><tbody>" + body.map((r) => "<tr>" + r.map((c) => "<td>" + inline(c) + "</td>").join("") + "</tr>").join("") + "</tbody></table>");
+        continue;
+      }
+      if (/^\s*>/.test(l)) { const q = []; i--; while (i + 1 < lines.length && /^\s*>/.test(lines[i + 1])) q.push(lines[++i].replace(/^\s*>\s?/, "")); out.push('<blockquote dir="auto">' + q.map(inline).join("<br>") + "</blockquote>"); continue; }
+      const li = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(l);
+      if (li) {
+        const ordered = /\d/.test(li[2]), items = []; i--;
+        while (i + 1 < lines.length) {
+          const m = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(lines[i + 1]);
+          if (m) { i++; items.push({ lvl: Math.min(2, Math.floor(m[1].length / 2)), t: m[3] }); continue; }
+          if (/^\s{2,}\S/.test(lines[i + 1]) && items.length) { items[items.length - 1].t += " " + lines[++i].trim(); continue; }
+          break;
+        }
+        out.push((ordered ? "<ol>" : "<ul>") + items.map((x) => '<li dir="auto"' + (x.lvl ? ' class="l' + x.lvl + '"' : "") + ">" + inline(x.t) + "</li>").join("") + (ordered ? "</ol>" : "</ul>"));
+        continue;
+      }
+      if (!l.trim()) continue;
+      const para = [l];
+      while (i + 1 < lines.length && lines[i + 1].trim() && !/^(\s*```|#{1,6}\s|\s*>|\s*([-*+]|\d+[.)])\s|\s*\|)/.test(lines[i + 1])) para.push(lines[++i]);
+      out.push('<p dir="auto">' + inline(para.join(" ")) + "</p>");
+    }
+    return out.join("");
   }
 
   function connect() {
@@ -148,33 +1419,80 @@
     let sock;
     try { sock = new WebSocket("ws://localhost:" + $("port").value); } catch (e) { failures++; render(); return retry(); }
     ws = sock;
-    sock.onopen = () => { if (my !== gen) return sock.close(); failures = 0; if (hello) sock.send(JSON.stringify(hello)); render(); };
-    sock.onclose = () => { if (my !== gen) return; failures++; running.clear(); render(); retry(); };
+    sock.onopen = () => { if (my !== gen) return sock.close(); failures = 0; if (hello) sock.send(JSON.stringify(withKey(hello))); render(); };
+    sock.onclose = () => { if (my !== gen) return; failures++; running.clear(); sessions = []; paired = null; post({ type: "sessions", sessions }); render(); retry(); };
     sock.onerror = () => {};
     sock.onmessage = (ev) => {
       if (my !== gen) return;
       let req; try { req = JSON.parse(ev.data); } catch { return; }
       if (req.type === "server-info") { server = req; renderServer(); return; }
-      running.set(req.id, { method: req.method, started: Date.now() });
+      if (req.type === "pairing") { paired = !!req.paired; render(); askSkills(); return; }
+      if (req.type === "skills") { onSkills(req); return; }
+      if (req.type === "skills-busy") { skillBusy = true; renderSkills(); return; }
+      if (req.type === "skill-text") { onSkillText(req); return; }
+      if (req.type === "sessions") {
+        sessions = (Array.isArray(req.sessions) ? req.sessions : []).slice().sort((a, b) => (b.connectedAt || 0) - (a.connectedAt || 0)); // newest first
+        for (const id of [...asking.keys()]) if (id !== "solo" && !sessions.some((x) => x.id === id)) asking.delete(id);
+        post({ type: "sessions", sessions });
+        render();
+        return;
+      }
+      if (req.type === "action-update") { onActionUpdate(req); return; }
+      if (req.type === "session-state") { onSessionState(req); return; }
+      if (!req.method) return; // something this window doesn't know: never forward it as a request
+      running.set(req.id, { method: req.method, started: Date.now(), session: req.session });
+      if (!QUIET[req.method]) showActivity(); // something is happening in Figma: show it
       render();
-      parent.postMessage({ pluginMessage: { type: "request", req } }, "*");
+      post({ type: "request", req });
     };
     render();
   }
   function retry() { clearTimeout(timer); timer = setTimeout(connect, Math.min(1500 * Math.max(1, failures), 6000)); }
+
+  // A session asked the user something in its chat, or got the answer. With one session (or the old one-session
+  // bridge) it may come without a session id.
+  function onSessionState(u) {
+    const id = u.session || (sessions.length === 1 ? sessions[0].id : "solo");
+    const had = asking.get(id);
+    if (u.waiting) {
+      asking.set(id, { kind: u.kind || "question", text: u.text || "", at: Date.now() });
+      if (!had || had.text !== u.text) { const s = byId(id); toast((s ? s.name : "Claude") + (u.kind === "permission" ? " needs your OK in Claude Code" : " asked you something in Claude Code"), "ok"); if (!settings.mini && tab !== "home") setTab("home"); }
+    } else asking.delete(id);
+    post({ type: "session-state", session: id, waiting: !!u.waiting, kind: u.kind, text: u.text });
+    render();
+  }
+
+  function onActionUpdate(u) {
+    const q = requests.find((x) => x.id === u.id);
+    const s = byId(u.session);
+    if (!q) {
+      // A note a session posted to this window (figma_reply without a request).
+      if (u.message) { events.unshift({ ok: true, note: true, text: (s ? s.name + ": " : "") + u.message, at: Date.now(), session: s }); if (tab !== "activity") unseen++; renderActivity(); render(); }
+      return;
+    }
+    if (q.status === "stopped") return; // the user stopped it: a late update from the session doesn't revive it
+    q.status = u.status || q.status;
+    if (u.message) q.message = u.message;
+    if ((q.status === "done" || q.status === "failed") && asking.has(q.session)) { asking.delete(q.session); post({ type: "session-state", session: q.session, waiting: false }); }
+    post({ type: "session-activity", id: q.id, session: q.session, status: q.status, kind: q.kind, message: q.message || undefined });
+    if (q.status === "done") toast((s ? s.name : "The session") + " finished: " + reqLabel(q), "ok");
+    if (q.status === "failed") toast(u.message || "The request didn't go through", "bad");
+    if (tab !== "activity" && (q.status === "done" || q.status === "failed")) unseen++;
+    render();
+  }
 
   function renderServer() {
     $("version").textContent = "Layerwright " + (server && server.version ? server.version : "");
     const u = server && server.update;
     if (u && u.updateAvailable) {
       $("update").style.display = "block";
-      $("update").innerHTML = "<b>Layerwright " + esc(u.latest) + " is available</b> <span class='muted'>(you have " + esc(u.current) + ")</span><ol style='margin:6px 0 6px 16px;padding:0'>" +
+      $("update").innerHTML = "<b>Layerwright " + esc(u.latest) + " is available</b> <span class='muted'>(you have " + esc(u.current) + ")</span><ol>" +
         (u.steps || []).map((s) => "<li>" + esc(s) + "</li>").join("") + "</ol><button id='copy'>Copy update command</button>";
-      const b = $("copy"); if (b) b.onclick = () => copy(u.command);
+      const b = $("copy"); if (b) b.onclick = () => { copy(u.command); b.textContent = "Copied"; };
     } else $("update").style.display = "none";
   }
   function copy(text) {
-    const c = $("clip"); c.value = text; try { c.select(); document.execCommand("copy"); const b = $("copy"); if (b) b.textContent = "Copied"; } catch (e) {}
+    const c = $("clip"); c.value = text; try { c.select(); document.execCommand("copy"); } catch (e) {}
   }
 
   function setPort(p, save) {
@@ -182,7 +1500,7 @@
     // The manifest only allows localhost ports 7331–7340; anything else could never connect.
     if (!Number.isInteger(n) || n < 7331 || n > 7340) { $("port").value = String((hello && hello.port) || 7331); $("detail").textContent = "Use a port from 7331 to 7340"; return; }
     $("port").value = String(n);
-    if (save) parent.postMessage({ pluginMessage: { type: "set-port", port: n } }, "*");
+    if (save) post({ type: "set-port", port: n });
     failures = 0;
     const old = ws; ws = null;
     gen++; // invalidate the old socket's handlers before closing it
@@ -195,27 +1513,50 @@
   window.onmessage = (ev) => {
     const msg = ev.data && ev.data.pluginMessage;
     if (!msg) return;
-    if (msg.type === "hello") { hello = msg.hello; $("build").textContent = hello.pluginBuild ? "plugin " + String(hello.pluginBuild).slice(0, 16).replace("T", " ") : ""; if (ws && ws.readyState === 1) ws.send(JSON.stringify(hello)); render(); }
-    if (msg.type === "selection") { if (hello) hello.selection = msg.count; render(); }
+    if (msg.type === "hello") { hello = msg.hello; $("build").textContent = hello.pluginBuild ? "plugin " + String(hello.pluginBuild).slice(0, 16).replace("T", " ") : ""; if (isOpen()) ws.send(JSON.stringify(withKey(hello))); render(); }
+    if (msg.type === "selection") { if (hello) hello.selection = msg.count; if (thumb) thumb.loading = msg.count > 0; render(); }
+    if (msg.type === "thumb") { thumb = msg.count ? { id: msg.id, name: msg.name, kind: msg.kind, w: msg.w, h: msg.h, png: msg.png } : null; render(); }
+    if (msg.type === "note-asks") { noteAsks = Array.isArray(msg.asks) ? msg.asks : []; if (noteAsks.length && !settings.mini && tab !== "home") setTab("home"); render(); }
+    if (msg.type === "desk") { desk = { count: msg.count || 0, names: msg.names || [], owner: msg.owner || null, asks: msg.asks || [] }; render(); }
+    if (msg.type === "settings") { settings.cursor = msg.cursor !== false; settings.zoom = msg.zoom !== false; renderSettings(); if (!!msg.mini !== settings.mini) setMini(!!msg.mini, false); }
     if (msg.type === "port") setPort(msg.port, false);
+    if (msg.type === "action-error") toast(msg.message || "Couldn't send that", "bad");
+    if (msg.type === "result-ready" && Array.isArray(msg.ids) && msg.ids.length) {
+      // The view stayed where the user had it (they were working): offer to go and see.
+      resultIds = msg.ids;
+      $("resultBar").dataset.show = "1";
+      clearTimeout(resultTimer);
+      resultTimer = setTimeout(() => { $("resultBar").dataset.show = ""; }, 12000);
+    }
+    if (msg.type === "send-action") {
+      // The plugin added the layers: send it to the session through the hub, and follow it in Activity.
+      const a = msg.action, s = byId(msg.session), ok = isOpen();
+      requests.unshift({ id: a.id, session: msg.session, sessionName: s && s.name, kind: a.kind, text: a.text, skills: a.skills, layers: (a.nodes || []).map((n) => n.name), more: a.more, status: ok ? "sending" : "failed", message: ok ? "" : "Not connected to Layerwright.", at: Date.now() });
+      if (ok) { ws.send(JSON.stringify({ type: "action", session: msg.session, action: a })); post({ type: "session-activity", id: a.id, session: msg.session, status: "sent", kind: a.kind, nodes: (a.nodes || []).map((n) => n.id) }); }
+      toast(ok ? "Sent to " + (s ? s.name : "the session") : "Not connected", ok ? "ok" : "bad");
+      if (tab !== "activity") unseen++;
+      render();
+      setTimeout(showActivity, 700); // after the toast: follow it in Activity
+    }
     if (msg.type === "progress") {
       // The server extends its deadline while progress arrives: long work isn't a timeout.
-      if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "progress", label: msg.label, done: msg.done, total: msg.total }));
-      $("progress").style.display = msg.total ? "block" : "none";
+      if (isOpen()) ws.send(JSON.stringify({ type: "progress", label: msg.label, done: msg.done, total: msg.total }));
+      $("progress").dataset.mode = msg.total ? "det" : "indet";
+      $("progress").style.display = msg.total || running.size ? "block" : "none";
       if (msg.total) $("bar").style.width = Math.round(((msg.done || 0) / msg.total) * 100) + "%";
       if (running.size) $("detail").textContent = msg.label + (msg.total ? " · " + Math.round(((msg.done || 0) / msg.total) * 100) + "%" : "");
     }
     if (msg.type === "response") {
       const r = running.get(msg.res.id);
       running.delete(msg.res.id);
-      if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg.res));
+      if (isOpen()) ws.send(JSON.stringify(msg.res));
       const method = r ? r.method : "";
       const took = r ? Math.round((Date.now() - r.started) / 1000) + "s" : "";
       if (!msg.res.ok && msg.res.error) {
         $("error").style.display = "block";
-        $("errorText").textContent = friendly(msg.res.error);
+        $("errorText").textContent = (r && r.session && sessions.length > 1 ? r.session.name + ": " : "") + friendly(msg.res.error);
         $("errorTech").textContent = msg.res.error.type + ": " + msg.res.error.message;
-        events.unshift({ ok: false, text: (LABEL[method] || method) + " failed", at: Date.now(), took });
+        events.unshift({ ok: false, text: (LABEL[method] || method) + " failed", at: Date.now(), took, session: r && r.session });
       } else {
         const failed = msg.res.ok && msg.res.result && Array.isArray(msg.res.result.failed) ? msg.res.result.failed : [];
         if (failed.length) {
@@ -224,16 +1565,17 @@
           $("errorText").textContent = count(failed.length, "change", "changes") + " couldn't be applied. " + friendly({ message: failed[0].error });
           $("errorTech").textContent = failed[0].error;
         } else if (msg.res.ok) $("error").style.display = "none";
-        if (!QUIET[method]) events.unshift({ ok: !failed.length, text: summary(method, msg.res.result), at: Date.now(), took });
+        if (!QUIET[method]) events.unshift({ ok: !failed.length, text: summary(method, msg.res.result), at: Date.now(), took, session: r && r.session });
       }
       renderActivity();
       render();
     }
   };
-  setInterval(() => { if (running.size) render(); }, 1000);
-  parent.postMessage({ pluginMessage: { type: "ui-ready" } }, "*");
+  setInterval(() => { if (running.size || requests.some((q) => q.status === "queued" || q.status === "sent" || q.status === "sending")) render(); }, 1000);
+  post({ type: "ui-ready" });
   renderActivity();
-  connect();
+  // Only inside Figma: opened anywhere else (a browser, a preview), this page must not take the plugin's place.
+  if (window.parent !== window) connect(); else render();
 </script>
 </body>
 </html>

@@ -3,6 +3,8 @@ import type { ImportNode, ImportPaint, ImportSwapRef } from "@cde/core";
 import { ExecError, tag, withTimeout } from "./execute.ts";
 import { progress } from "./progress.ts";
 import { blurEffects, gradientPaint } from "./paints.ts";
+import { commitUndo } from "./undo.ts";
+import { isOverlay } from "./cursor.ts";
 
 const rgb = (hex: string) => ({ r: parseInt(hex.slice(1, 3), 16) / 255, g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255 });
 const solid = (p: ImportPaint): SolidPaint => ({ type: "SOLID", color: rgb(p.hex), opacity: p.a });
@@ -241,8 +243,9 @@ export async function importTree(p: { page?: string; section?: string; gap?: num
   if (p.replace && p.section) old = page.children.find((c): c is SectionNode => c.type === "SECTION" && c.name === p.section);
   const oldPos = old && { x: old.x, y: old.y };
   const gap = p.gap ?? 80, pad = 80;
-  const right = page.children.reduce((m, c) => Math.max(m, c.x + c.width), 0);
-  const top = page.children.length ? Math.min(...page.children.map((c) => c.y)) : 0;
+  const content = page.children.filter((c) => !isOverlay(c)); // not the AI cursor
+  const right = content.reduce((m, c) => Math.max(m, c.x + c.width), 0);
+  const top = content.length ? Math.min(...content.map((c) => c.y)) : 0;
   let container: BaseNode & ChildrenMixin = page;
   let section: SectionNode | undefined;
   if (p.section) {
@@ -250,13 +253,13 @@ export async function importTree(p: { page?: string; section?: string; gap?: num
     section.name = p.section;
     section.fills = [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }]; // the API default is dark grey
     page.appendChild(section);
-    section.x = oldPos ? oldPos.x : page.children.length > 1 ? right + 200 : 0;
+    section.x = oldPos ? oldPos.x : content.length ? right + 200 : 0;
     section.y = oldPos ? oldPos.y : top;
     container = section;
   }
   const created: SceneNode[] = [];
   try {
-    let x = section ? pad : page.children.length ? right + 200 : 0;
+    let x = section ? pad : content.length ? right + 200 : 0;
     const y0 = section ? pad : top;
     // Components: "Set/Prop=Value" roots become variants of one component set, laid out in a row.
     const groups = new Map<string, SceneNode[]>();
@@ -299,7 +302,7 @@ export async function importTree(p: { page?: string; section?: string; gap?: num
   }
   old?.remove();
   tag(section ? [section] : created, p.meta);
-  figma.commitUndo();
+  commitUndo();
   const shown = section ? [section] : created;
   figma.currentPage.selection = shown;
   figma.viewport.scrollAndZoomIntoView(shown);
@@ -384,6 +387,6 @@ export async function foundations(p: { collection?: string; colors?: Record<stri
     st.layoutGrids = lanes;
     grid++;
   }
-  figma.commitUndo();
+  commitUndo();
   return { collection: col.name, colors, numbers, textStyles: styles, paintStyles: paint, effectStyles: effect, gridStyles: grid, warnings };
 }

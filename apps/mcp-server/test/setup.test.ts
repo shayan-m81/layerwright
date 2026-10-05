@@ -18,6 +18,9 @@ const fakePlugin = () => {
 };
 process.env.LAYERWRIGHT_HOME = tmp();
 process.env.LAYERWRIGHT_PLUGIN_SRC = fakePlugin();
+// Never this computer's own Claude Code or Codex setup: an installed plugin there would change what doctor says.
+process.env.CLAUDE_CONFIG_DIR = tmp();
+process.env.CODEX_HOME = tmp();
 const { init, doctor } = await import("../src/setup.ts");
 const { BIN, pluginHome } = await import("../src/meta.ts");
 

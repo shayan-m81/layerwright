@@ -2,6 +2,7 @@
 import { progress } from "./progress.ts";
 import { readAnnotations } from "./annotate.ts";
 import type { ComponentDefinition, ComponentSetDefinition, NodeSnapshot, PropertyDefinition, StyleDefinition, TypographyDefinition, VariableCollectionDefinition, VariableDefinition } from "@cde/core";
+import { isOverlay } from "./cursor.ts";
 
 const h2 = (n: number) => Math.round(Math.max(0, Math.min(1, n)) * 255).toString(16).padStart(2, "0");
 export const toHex = (c: RGB | RGBA, opacity = 1) => {
@@ -196,17 +197,21 @@ export async function scanDesignSystem(opts: { includeLibraries?: boolean; maxIn
   const sampleFont = new Map<string, FontName>();
   const known = new Set([...styles.map((x) => x.id), ...variables.map((v) => v.id)]);
   const layers = figma.root.findAllWithCriteria({ types: ["TEXT", "FRAME", "RECTANGLE", "ELLIPSE", "VECTOR", "COMPONENT", "INSTANCE"] });
+  const sample = (n: TextNode) => {
+    if (typeof n.textStyleId !== "string" || !n.textStyleId || sampleFont.has(n.textStyleId)) return;
+    try {
+      const f = n.fontName !== figma.mixed ? n.fontName : n.characters.length ? n.getRangeFontName(0, 1) : undefined;
+      if (f && f !== figma.mixed && (f as FontName).family) sampleFont.set(n.textStyleId, f as FontName);
+    } catch { /* unreadable */ }
+  };
   for (const n of layers.slice(0, opts.maxInstances ?? 60000)) {
     const any = n as unknown as { textStyleId?: unknown; fillStyleId?: unknown; strokeStyleId?: unknown; effectStyleId?: unknown; boundVariables?: Record<string, unknown> };
     for (const id of [any.textStyleId, any.fillStyleId, any.strokeStyleId, any.effectStyleId]) if (typeof id === "string" && id && !known.has(id)) styleIds.add(id);
-    if (n.type === "TEXT" && typeof n.textStyleId === "string" && n.textStyleId && !sampleFont.has(n.textStyleId)) {
-      try {
-        const f = n.fontName !== figma.mixed ? n.fontName : n.characters.length ? n.getRangeFontName(0, 1) : undefined;
-        if (f && f !== figma.mixed && typeof (f as FontName).family === "string") sampleFont.set(n.textStyleId, f as FontName);
-      } catch { /* unreadable */ }
-    }
+    if (n.type === "TEXT") sample(n);
     for (const v of Object.values(any.boundVariables ?? {})) for (const a of Array.isArray(v) ? v : [v]) { const id = (a as VariableAlias | undefined)?.id; if (id && !known.has(id)) varIds.add(id); }
   }
+  // Fonts of the styles found: from every text in the file, past the cap (a style's first layers may not say it).
+  for (const n of layers) if (n.type === "TEXT" && typeof n.textStyleId === "string" && styleIds.has(n.textStyleId)) sample(n);
   lap("findUsedStyles");
   const gotStyles = await Promise.all([...styleIds].map((id) => figma.getStyleByIdAsync(id).catch(() => null)));
   for (const st of gotStyles) {
@@ -373,7 +378,7 @@ export async function snapshot(node: BaseNode, opts: { depth?: number; maxNodes?
       if (Object.keys(ov).length) s.instance.overrides = ov;
     }
     if ("children" in n && (CONTAINER_TYPES.has(n.type) || n.type === "INSTANCE")) {
-      const kids = (n as ChildrenMixin).children;
+      const kids = n.type === "PAGE" ? (n as PageNode).children.filter((c) => !isOverlay(c)) : (n as ChildrenMixin).children; // not the AI cursor
       if (depth <= 0 || budget <= 0) { if (kids.length) s.truncated = kids.length; return s; }
       s.children = [];
       for (const c of kids) {

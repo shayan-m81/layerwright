@@ -3,7 +3,8 @@
 import type { AnnotationSpec, ResolvedInteraction } from "@cde/core";
 import { annotate } from "./annotate.ts";
 import { progress } from "./progress.ts";
-import { ExecError, checkDestination, clearStyleLookups, findPage, fitSection, getComponent, loose, pageOf, styleOf, tag, textStyleOf, toReaction, variableOf } from "./execute.ts";
+import { ExecError, checkDestination, clearStyleLookups, findPage, fitSection, getComponent, loose, pageOf, setTextStyle, styleOf, tag, textStyleOf, toReaction, variableOf } from "./execute.ts";
+import { commitUndo } from "./undo.ts";
 
 export type NodeRef = string; // a node id, or "$n": the node produced by op n of this call
 
@@ -363,8 +364,7 @@ export async function editNodes(p: { ops: EditOp[]; approved?: boolean; meta?: {
             const found = await textStyleOf(o.styleId, o.styleKey, o.font);
             if (!found.style) throw new Error(`Text style "${o.styleName ?? o.styleId}" can't be applied: ${found.reason}.`);
             for (const f of n.characters.length ? n.getRangeAllFontNames(0, n.characters.length) : n.fontName === figma.mixed ? [] : [n.fontName]) await figma.loadFontAsync(f);
-            await figma.loadFontAsync(found.font);
-            await n.setTextStyleIdAsync(found.style.id).catch((e) => { throw new Error(`Text style "${o.styleName ?? o.styleId}" can't be applied: Figma refused it: ${e instanceof Error ? e.message : e}.`); });
+            await setTextStyle(n, found).catch((e) => { throw new Error(`Text style "${o.styleName ?? o.styleId}" can't be applied: ${e instanceof Error ? e.message : e}.`); });
           } else {
             const st = await styleOf(o.styleId, o.styleKey);
             const setter = { fill: "setFillStyleIdAsync", stroke: "setStrokeStyleIdAsync", effect: "setEffectStyleIdAsync" }[o.kind];
@@ -429,7 +429,7 @@ export async function editNodes(p: { ops: EditOp[]; approved?: boolean; meta?: {
     }
   }
   for (const s of touchedSections) if (!s.removed) fitSection(s);
-  figma.commitUndo();
+  commitUndo();
   return { applied: results, failed, note: failed ? `Stopped at op ${failed.op}; ops before it were applied (one undo reverts them).` : "One undo reverts every op in this call." };
 }
 
@@ -449,6 +449,6 @@ export async function cleanup(p: { session?: string; run?: string; nodeIds?: str
   const ids = new Set(found.map((n) => n.id));
   const top = found.filter((n) => { let q = n.parent; while (q) { if (ids.has(q.id)) return false; q = q.parent; } return true; });
   const list = top.map((n) => ({ id: n.id, name: n.name, type: n.type, page: pageOf(n)?.name }));
-  if (p.approved) { for (const n of top) if (!n.removed) n.remove(); figma.commitUndo(); }
+  if (p.approved) { for (const n of top) if (!n.removed) n.remove(); commitUndo(); }
   return { removed: !!p.approved, nodes: list };
 }

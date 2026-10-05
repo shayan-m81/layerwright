@@ -1,7 +1,7 @@
 // MCP tool surface. Claude reasons; these tools validate, resolve and execute deterministically.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
   AnnotationDsl, Resolver, accessibilityFindings, analyzeDesign, compilePlan, designMetrics, emptyDesignSystem, enrichDesignSystem, Interaction, resolveInteraction, retrieve, snapshotToPlan, summarize, validatePlan, verifyAgainstPlan,
@@ -11,12 +11,16 @@ import { BridgeError, type FigmaTransport } from "./bridge.ts";
 import { MappingStore, scanCodebase, verifyCodeUsage } from "./code.ts";
 import { diffImages, importHtml, renderToPlan, screenshotHtml } from "@cde/html-import";
 import { inlineImages } from "./images.ts";
-import { PKG_VERSION } from "./meta.ts";
+import { PKG_VERSION, inboxFile, stateFile } from "./meta.ts";
+import { withTask } from "./task.ts";
 import { cachedUpdate, checkForUpdate, type UpdateInfo } from "./update.ts";
 import { MemoryStore } from "./memory.ts";
+import { readPrefs, writePrefs } from "./prefs.ts";
 import { fontFix, groupFailures } from "./problems.ts";
 import { INSTRUCTIONS, registerPrompts } from "./prompts.ts";
+import { ACTION_LABELS, FigmaInbox, actionMeta, actionPrompt, layersLine, stopPrompt, waitingFor } from "./inbox.ts";
 import { duplicateNames } from "@cde/core";
+import { SkillStore, skillIndex, skillPreamble } from "./skills.ts";
 
 type ToolResult = { content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[]; isError?: boolean };
 const ok = (data: unknown): ToolResult => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
@@ -29,7 +33,8 @@ async function guard(fn: () => Promise<ToolResult>): Promise<ToolResult> {
   }
 }
 
-export interface ServerOptions { workdir?: string; noUpdateCheck?: boolean }
+/** watchChat: follow this session's chat (the plugin's hooks) to tell the Figma window when it waits for the user. */
+export interface ServerOptions { workdir?: string; noUpdateCheck?: boolean; watchChat?: boolean; skills?: SkillStore }
 
 export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
   const workdir = resolve(opts.workdir ?? process.env.LAYERWRIGHT_WORKDIR ?? process.cwd());
@@ -37,6 +42,7 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
   const cacheDir = join(home, "cache");
   const mappings = new MappingStore(join(home, "mapping.json"));
   const memory = new MemoryStore(join(home, "memory.json"));
+  const skills = opts.skills ?? new SkillStore();
   const plans = new Map<string, { plan: ResolvedPlan; summary: PlanSummary; report?: ExecutionReport; sources?: Record<string, { w: number; h?: number }>; webFonts?: Record<string, string[]> }>();
   const analyses = new Map<string, AnalysisResult>();
   let ds: DesignSystem | undefined;
@@ -47,6 +53,16 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
   let lastPage: string | undefined;
 
   const cacheFile = (fileName: string) => join(cacheDir, `${fileName.replace(/[^\w.-]+/g, "_")}.json`);
+  /** Write an exported image where the user can open it: true → .layerwright/exports/<node>.<ext>; a path → that file, or that folder. */
+  const saveExport = (save: true | string, img: { base64: string; format: string; name: string }) => {
+    const ext = img.format === "jpg" ? "jpg" : "png";
+    const fileName = `${img.name.replace(/[^\p{L}\p{N}._]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "export"}.${ext}`;
+    let file = save === true ? join(home, "exports", fileName) : resolve(workdir, save);
+    if (save !== true && (/[\\/]$/.test(save) || (existsSync(file) && statSync(file).isDirectory()) || !/\.(png|jpe?g)$/i.test(file))) file = join(file, fileName);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, Buffer.from(img.base64, "base64"));
+    return file;
+  };
   const loadDs = (): DesignSystem | undefined => {
     if (ds) return ds;
     const name = bridge.info()?.fileName;
@@ -63,17 +79,92 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
     return ds && f && ds.fileName !== f ? [`Cached Design System is from "${ds.fileName}" but Figma has "${f}" open. Rescan if this file has its own components.`] : undefined;
   };
 
-  const server = new McpServer({ name: "layerwright", version: PKG_VERSION }, { instructions: INSTRUCTIONS });
+  // claude/channel: Claude Code (started with channels) shows requests from the Figma window in the conversation.
+  const server = new McpServer({ name: "layerwright", version: PKG_VERSION }, { instructions: INSTRUCTIONS, capabilities: { experimental: { "claude/channel": {} } } });
   registerPrompts(server);
+  // The plugin window names each session; the client's own name (claude-code, cursor…) helps tell them apart.
+  server.server.oninitialized = () => { const c = server.server.getClientVersion(); if (c?.name) bridge.setClient?.(c.name); };
+
+  // Requests the user sends from the Figma window to this session (inbox.ts). Claude Code gets them pushed as a
+  // channel message; every client also finds them in its next tool result, or with figma_inbox.
+  let watchTold = false;
+  /** This server's own command line, to run one of its subcommands (inbox-watch). */
+  const selfCommand = (sub: string) => [process.execPath, ...process.execArgv, process.argv[1], sub].filter(Boolean).map((a) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`)).join(" ");
+  const inbox = new FigmaInbox((id, status, message) => bridge.actionUpdate?.(id, status, message));
+  bridge.onActionDrop = (id, by) => inbox.drop(id, by);
+  bridge.onActionStop = (id) => {
+    if (!inbox.stop(id)) return;
+    // Wake the session the same ways a request does: the channel, and the monitor's file.
+    const push = /claude/i.test(server.server.getClientVersion()?.name ?? "");
+    if (push) server.server.notification({ method: "notifications/claude/channel", params: { content: stopPrompt(id), meta: { request_id: id, action: "stop" } } }).catch(() => {});
+    const file = push ? inboxFile() : undefined;
+    if (file) { try { mkdirSync(dirname(file), { recursive: true }); appendFileSync(file, JSON.stringify({ id, stop: true }) + "\n"); } catch { /* the next tool result says it too */ } }
+  };
+  bridge.onAction = (a) => {
+    const client = server.server.getClientVersion()?.name ?? "";
+    const push = /claude/i.test(client);
+    if (push) server.server.notification({ method: "notifications/claude/channel", params: { content: actionPrompt(a), meta: actionMeta(a) } }).catch(() => {});
+    // Claude Code's plugin monitor (layerwright inbox-watch) reads this file and wakes the session: no channel needed.
+    const file = push ? inboxFile() : undefined;
+    if (file) { try { mkdirSync(dirname(file), { recursive: true }); appendFileSync(file, JSON.stringify({ id: a.id, kind: a.kind, text: a.text, skills: a.skills, layers: layersLine(a) }) + "\n"); } catch { /* the channel or the next tool result still carries it */ } }
+    inbox.add(a, push);
+  };
+  // Asking the user in the chat. The plugin's hooks (layerwright hook-event) write what this session does there: it
+  // asked a question, needs a permission, or ended its turn. When it is waiting for the user (and it works in Figma),
+  // the Figma window and its cursor say "answer in Claude Code"; any next tool call means it's working again.
+  let waiting: { kind: string; text?: string } | undefined;
+  let figmaAt = 0;
+  const tellWaiting = (w?: { kind: string; text?: string }) => {
+    if (JSON.stringify(w) === JSON.stringify(waiting)) return;
+    waiting = w;
+    bridge.notify?.({ type: "session-state", waiting: !!w, kind: w?.kind, text: w?.text });
+  };
+  const chatState = stateFile();
+  if (chatState && opts.watchChat !== false) {
+    let seen = 0;
+    const poll = setInterval(() => {
+      let at = 0;
+      try { at = statSync(chatState).mtimeMs; } catch { return; }
+      if (at === seen) return;
+      seen = at;
+      let ev: { event?: string; text?: string } = {};
+      try { ev = JSON.parse(readFileSync(chatState, "utf8")); } catch { return; }
+      const decided = waitingFor(ev, inbox.pendingCount() > 0);
+      // Only sessions that work in Figma (lately, or on a request from the window) bother the user there.
+      if (decided && !(inbox.pendingCount() > 0 || Date.now() - figmaAt < 20 * 60_000)) return;
+      tellWaiting(decided);
+    }, 700);
+    poll.unref?.();
+  }
+
+  // Requests from the Figma window can run side by side (in background subagents): a Figma tool call that names its
+  // `requestId` (the request from the window it works for) is drawn with that request's own cursor (task.ts).
+  const REQUEST_ID = z.string().max(40).optional().describe("The id of the request from the Figma window this call is for (from figma_inbox, or the message that brought it). With several requests running at once, each shows its own cursor in Figma");
+  const NO_TASK = new Set(["figma_status", "figma_inbox", "figma_reply"]);
   // Every failed tool call is remembered for this project (see memory.ts), so recurring problems surface with a hint.
   const register = server.registerTool.bind(server) as (...a: any[]) => unknown;
-  (server as any).registerTool = (name: string, cfg: unknown, handler: (...a: any[]) => Promise<ToolResult>) => register(name, cfg, async (...a: any[]) => {
-    const r = await handler(...a);
+  (server as any).registerTool = (name: string, cfg: any, handler: (...a: any[]) => Promise<ToolResult>) => {
+    const tasked = /^figma_/.test(name) && !NO_TASK.has(name) && !!cfg?.inputSchema && typeof cfg.inputSchema === "object" && !("requestId" in cfg.inputSchema);
+    return register(name, tasked ? { ...cfg, inputSchema: { ...cfg.inputSchema, requestId: REQUEST_ID } } : cfg, async (...a: any[]) => {
+    let task: string | undefined;
+    if (tasked && a[0] && typeof a[0] === "object") { const { requestId: t, ...rest } = a[0]; task = typeof t === "string" && t ? t : undefined; a = [rest, ...a.slice(1)]; }
+    if (/^figma_/.test(name)) figmaAt = Date.now();
+    tellWaiting(undefined); // it is working again: not waiting for the user
+    // Work for a request the user stopped in the window goes no further.
+    if (task && inbox.isStopped(task)) return fail([{ type: "STOPPED", message: stopPrompt(task) }]);
+    const r = await withTask(task, () => handler(...a));
     if (r.isError) {
       try { const d = JSON.parse((r.content[0] as { text: string }).text); for (const e of (d.errors ?? []).slice(0, 3)) memory.problem(name, e.type, e.path ? `${e.path}: ${e.message}` : e.message); } catch { /* not JSON */ }
     }
+    // A request from the Figma window that this session hasn't seen yet rides along with whatever it called.
+    const halted = inbox.takeStopped();
+    if (halted.length) r.content.push({ type: "text", text: JSON.stringify({ stoppedInFigma: halted.map((x) => x.id), note: halted.map((x) => stopPrompt(x.id)).join(" ") }) });
+    const fresh = name === "figma_inbox" || name === "figma_reply" ? [] : inbox.takeUntold();
+    if (fresh.length) r.content.push({ type: "text", text: JSON.stringify({ fromFigma: fresh.map((x) => ({ id: x.id, request: actionPrompt(x) })),
+      note: "The user sent this from the Figma window while you were working. Don't drop what you're doing: if it touches other layers, start it in a background subagent now (it passes requestId: \"<id>\" on its Figma calls); if it's about the same layers, do it right after (if it already arrived as a <channel> or Monitor message with the same request id, it's the same request)." }) });
     return r;
-  });
+    });
+  };
   /** Choices made by id between same-named components are remembered and reused. */
   const rememberChoices = (plan: any) => {
     const d = loadDs();
@@ -99,17 +190,81 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
   bridge.onHello = () => bridge.notify?.(serverInfo());
 
   server.registerTool("figma_status", {
-    description: "Check whether the Figma bridge plugin is connected, which file/page is open, the current selection, and whether a Design System scan is cached. Cheap; call first.",
-    inputSchema: {},
-  }, async () => guard(async () => {
-    const base = { connected: bridge.connected(), file: bridge.info()?.fileName, designSystemCached: !!loadDs(), designSystemScannedAt: ds?.scannedAt, workdir };
-    if (!bridge.connected()) return ok({ ...base, hint: "Open Figma desktop → Plugins → Development → Layerwright." });
+    description: "Check whether the Figma bridge plugin is connected, which file/page is open, the current selection, and whether a Design System scan is cached. Cheap; call first, with a title for this session.",
+    inputSchema: {
+      title: z.string().trim().min(2).max(40).optional().describe("2–4 words naming what this session is doing (e.g. \"Checkout redesign\", \"Login bug fix\"), in the user's language. The Figma plugin window shows it, so the user can tell sessions apart and give the right one their selection. Set it on the first call; again only when the task changes"),
+      listen: z.boolean().optional().describe("Return doFirst (the watcher that wakes this session when the user sends a request from the Figma window) even if it was returned before: /layer:connect"),
+    },
+  }, async ({ title, listen }) => guard(async () => {
+    if (bridge.kicked) await bridge.rejoin?.();
+    if (title) bridge.setTitle?.(title);
+    // The language the user chose to be told things in (every project, every session): layerwright_memory language.
+    const language = readPrefs().language;
+    const base = { connected: bridge.connected(), file: bridge.info()?.fileName, designSystemCached: !!loadDs(), designSystemScannedAt: ds?.scannedAt, workdir,
+      ...(language ? { language, languageNote: `Explain things to the user in ${language} (their saved choice), here and in figma_reply messages.` } : {}) };
+    // Requests from the Figma window should start this session by themselves. The plugin's monitor does that in a
+    // terminal; where plugin monitors don't run (the desktop app), the agent starts the same watcher once.
+    const watch = (!watchTold || listen) && /claude/i.test(server.server.getClientVersion()?.name ?? "") && inboxFile()
+      ? { doFirst: { tool: "Monitor", command: selfCommand("inbox-watch"), description: "Requests from the Layerwright window in Figma", timeout_ms: 1800000 },
+          requestsFromFigma: "Before you answer the user, start the Monitor in doFirst (silently, no need to mention it). It wakes this session when the user sends a request from the Figma window, so they never have to type /layer:inbox. It exits at once if a watcher already runs for this session. When it expires, start it again. When it reports a request, call figma_inbox and do it." }
+      : undefined;
+    if (watch) watchTold = true;
+    // Skills help with every job, Figma open or not (Figma → code, a spec, a critique of a screenshot).
+    let skillList: ReturnType<typeof skillIndex>;
+    try { skillList = skillIndex(skills); } catch { /* skills are a help, never a reason figma_status fails */ }
+    if (!bridge.connected()) return ok({ ...base, ...watch, skills: skillList, hint: "Open Figma desktop → Plugins → Development → Layerwright." });
     const ping = await bridge.request<{ page: string; dsChangedSinceScan?: boolean; watchingSince?: string }>("ping", { scannedAt: ds?.scannedAt }, 10_000);
     const warnings = [...(staleWarning() ?? [])];
     if (ds && ping.dsChangedSinceScan) warnings.push("Components or styles changed in Figma since the last scan. Rescan (figma_scan_design_system refresh: true) before planning.");
     if (update?.updateAvailable) warnings.push(`Layerwright ${update.latest} is available (this is ${update.current}). Tell the user once: ${update.steps?.join(" → ")}.`);
     if (lastPage && ping.page !== lastPage) warnings.push(`Figma now shows page "${ping.page}", but the last build went to "${lastPage}". Plans build on the current page unless target.page is set.`);
-    return ok({ ...base, ...ping, session, version: PKG_VERSION, memory: memory.summary(), update: update?.updateAvailable ? update : undefined, warnings: warnings.length ? warnings : undefined });
+    const shared = bridge.session && (bridge.sessionCount ?? 1) > 1
+      ? { sharedFigma: { thisSession: bridge.session.name, sessions: bridge.sessionCount, note: "Other Claude/Cursor sessions use this Figma file too. Work on layers by id; a selection is yours only when the user gives it to this session in the Layerwright window (figma_inspect target 'selection' asks them)." } }
+      : undefined;
+    if (bridge.session && !bridge.session.titled) warnings.push(`The plugin window calls this session "${bridge.session.name}" (its folder). Call figma_status again with title: 2–4 words naming the task, so the user can tell sessions apart.`);
+    return ok({ ...base, ...ping, ...shared, ...watch, session, version: PKG_VERSION, memory: memory.summary(), skills: skillList, update: update?.updateAvailable ? update : undefined, warnings: warnings.length ? warnings : undefined });
+  }));
+
+  server.registerTool("figma_inbox", {
+    description: "Requests the user sent from the Figma window to this session (they select layers, pick this session and an action such as \"Build this in code\", or write their own words), plus open ones no other session is handling, which this session takes over. Returns each with what to do and the layers. Do them, and report each with figma_reply. /layer:inbox calls this.",
+    inputSchema: {
+      takeOver: z.boolean().optional().describe("true only when the user typed /layer:inbox in this session: that moves here requests sent to other sessions that haven't started on them. Leave it off when a Monitor event or fromFigma brought you here: then only requests whose session left or never picked them up come here"),
+    },
+  }, async ({ takeOver }) => guard(async () => {
+    // Requests sent to other sessions: taken only when nobody is on them (the hub decides, see Hub.takeable); the
+    // rest are listed so this session leaves them alone.
+    const elsewhere: { id: string; session?: string; status?: string; what: string }[] = [];
+    for (const r of (await bridge.inboxList?.()) ?? []) {
+      if (inbox.get(r.action.id)) continue;
+      const got = bridge.inboxTake ? await bridge.inboxTake(r.action.id, !!takeOver) : { action: await bridge.inboxClaim?.(r.action.id, !!takeOver) };
+      if (got.action) inbox.adopt(got.action);
+      else elsewhere.push({ id: r.action.id, session: got.heldBy ?? r.sessionName, status: got.status ?? r.status, what: `${ACTION_LABELS[r.action.kind] ?? r.action.kind} on ${layersLine(r.action)}` });
+    }
+    const others = elsewhere.length ? { elsewhere, elsewhereNote: "Sent to other sessions, which have them: leave these alone (the user can move one here with /layer:inbox in this session, unless it's already being worked on)." } : {};
+    const open = inbox.takeOpen();
+    if (!open.length) return ok({ requests: [], ...others, note: "Nothing from the Figma window for this session. The user sends requests from the Layerwright plugin: select layers → choose this session → pick an action." });
+    return ok({ requests: open.map((x) => ({ id: x.action.id, status: x.status, request: actionPrompt(x.action) })), ...others, next: "Do them in order; figma_reply({ id, status: \"working\" }) when you start one, and status \"done\" with a one-line message when it's finished." });
+  }));
+
+  server.registerTool("figma_reply", {
+    description: "Tell the user in the Figma window how a request from there is going (status working, done or failed, with a one-line message: what you did and where, or what you need). Without an id it posts a note to the window.",
+    inputSchema: {
+      id: z.string().max(40).optional().describe("The request id (from the <channel> message, fromFigma or figma_inbox)"),
+      status: z.enum(["working", "done", "failed"]).optional(),
+      message: z.string().max(400).optional().describe("One line for the user, in their language"),
+    },
+  }, async ({ id, status, message }) => guard(async () => {
+    if (id) {
+      if (inbox.isStopped(id)) return fail([{ type: "STOPPED", message: stopPrompt(id) }]);
+      if (!inbox.reply(id, status ?? "working", message)) {
+        const by = inbox.takenBy(id);
+        return fail([{ type: "INVALID_PLAN", message: by ? `Request ${id} was taken over by ${by}, which handles it now: stop working on it here.` : `No request ${id} from the Figma window in this session. figma_inbox lists them.` }]);
+      }
+      return ok({ success: true, id, status: status ?? "working" });
+    }
+    if (!message) return fail([{ type: "INVALID_PLAN", message: "Give a message (or an id and a status)." }]);
+    bridge.actionUpdate?.(`note-${Date.now().toString(36)}`, "done", message);
+    return ok({ success: true });
   }));
 
   server.registerTool("figma_scan_design_system", {
@@ -427,6 +582,7 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
       scale: z.number().min(0.05).max(4).optional().describe("Default 1; capped so the longest side stays within maxDimension"),
       maxDimension: z.number().int().min(100).max(4000).optional().describe("Default 1600 px"),
       format: z.enum(["png", "jpg"]).optional(),
+      save: z.union([z.boolean(), z.string()]).optional().describe("Also write the image to disk and return its path, so it can be shown to the user or attached: true saves to .layerwright/exports/<node>.png; a string is a file or folder (relative to the workdir). The image you see is only visible to you, not to the user"),
       compareWith: z.object({
         html: z.string().optional().describe("The .html file (or folder) the node was built from"),
         nodeId: z.string().optional().describe("Another Figma node to compare with (before/after, original/clone)"),
@@ -434,13 +590,15 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
         viewport: z.number().int().min(200).max(4000).optional().describe("Viewport width (default: the node's width)"),
       }).optional(),
     },
-  }, async ({ nodeId, scale, maxDimension, format, compareWith }) => guard(async () => {
+  }, async ({ nodeId, scale, maxDimension, format, save, compareWith }) => guard(async () => {
     const maxDim = maxDimension ?? 1600;
     const exp = (s?: number) => bridge.request<{ base64: string; format: string; width: number; height: number; scale: number; name: string }>("exportImage", { nodeId, scale: s, format, maxDimension: maxDim }, 120_000);
     const mime = (f: string) => (f === "jpg" ? "image/jpeg" : "image/png");
     if (!compareWith) {
       const img = await exp(scale);
-      return { content: [{ type: "image", data: img.base64, mimeType: mime(img.format) }, { type: "text", text: JSON.stringify({ node: img.name, width: img.width, height: img.height, scale: img.scale }) }] };
+      const file = save ? saveExport(save, img) : undefined;
+      return { content: [{ type: "image", data: img.base64, mimeType: mime(img.format) }, { type: "text", text: JSON.stringify({ node: img.name, width: img.width, height: img.height, scale: img.scale, file,
+        next: file ? undefined : "Only you can see this image. To show it to the user, call again with save: true and send them the file." }) }] };
     }
     if (compareWith.nodeId) {
       const [a, b] = await Promise.all([exp(scale), bridge.request<{ base64: string; format: string; width: number; height: number }>("exportImage", { nodeId: compareWith.nodeId, scale, format, maxDimension: maxDim }, 120_000)]);
@@ -601,14 +759,35 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
   }));
 
   server.registerTool("layerwright_memory", {
-    description: "What Layerwright remembers in this project (.layerwright/memory.json, shareable with the team): font substitutions and component mappings reused by imports, which of several same-named components the user chose, the user's notes, and recurring problems with hints. Save a note whenever the user corrects you ('use the Fa styles for Persian text'), so the next session starts from it.",
-    inputSchema: { action: z.enum(["get", "note", "forget"]), note: z.string().max(500).optional().describe("note: the user's correction or preference, in their words"),
+    description: "What Layerwright remembers in this project (.layerwright/memory.json, shareable with the team): font substitutions and component mappings reused by imports, which of several same-named components the user chose, the user's notes, and recurring problems with hints. Save a note whenever the user corrects you ('use the Fa styles for Persian text'), so the next session starts from it. action language saves the language the user wants explanations in, for every project (figma_status returns it as language).",
+    inputSchema: { action: z.enum(["get", "note", "forget", "language"]), note: z.string().max(500).optional().describe("note: the user's correction or preference, in their words"),
+      language: z.string().trim().max(40).optional().describe("language: the language the user wants explanations in (\"Persian\", \"English\"…); empty clears it. Kept for this user in every project"),
       forget: z.object({ note: z.number().int().min(0).optional(), component: z.string().optional(), font: z.string().optional(), selector: z.string().optional(), all: z.boolean().optional() }).optional() },
-  }, async ({ action, note, forget }) => guard(async () => {
+  }, async ({ action, note, forget, language }) => guard(async () => {
+    if (action === "language") return ok({ language: writePrefs({ language: language ?? "" }).language ?? null, note: "Every Layerwright session explains things in this language from now on (figma_status returns it)." });
     if (action === "note") { if (!note) return fail([{ type: "INVALID_PLAN", message: "note needs text." }]); memory.note(note); }
     if (action === "forget") memory.forget(forget ?? {});
     const m = memory.read();
     return ok({ ...m, problems: m.problems.slice(-20), summary: memory.summary() });
+  }));
+
+  server.registerTool("layerwright_skills", {
+    description: "Skills: guidance for design, UX, UI and design-to-code jobs (a design critique, a handoff spec with every state, layout, typography, colour, accessibility, motion…). figma_status lists the enabled ones with when each fits: before such a job, read the closest one (action read) and follow it. The library ships with Layerwright; the user adds their own (action add, from a link or the text of a SKILL.md) and they stay across updates. The user also manages them in the Skills tab of the Figma window.",
+    inputSchema: {
+      action: z.enum(["list", "read", "add", "remove", "enable", "disable"]),
+      id: z.string().max(80).optional().describe("read/remove/enable/disable: the skill"),
+      file: z.string().max(200).optional().describe("read: another file of the skill that its SKILL.md points to (default SKILL.md)"),
+      source: z.string().max(200_000).optional().describe("add: a link (GitHub folder, file or repository; a .md link; a skills page that links to one) or the full text of a SKILL.md"),
+      name: z.string().max(60).optional().describe("add: the skill's id, when its own name doesn't fit"),
+    },
+  }, async ({ action, id, file, source, name }) => guard(async () => {
+    const need = (v: string | undefined, what: string) => { if (!v) throw new Error(`${action} needs ${what}.`); return v; };
+    if (action === "list") return ok({ categories: skills.categories(), skills: skills.list().map(({ files, ...s }) => ({ ...s, files: files.length })) });
+    if (action === "read") { const r = skills.read(need(id, "an id"), file); return { content: [{ type: "text" as const, text: `${skillPreamble(r.skill)}\n\n--- ${r.file} ---\n${r.text}` }] }; }
+    if (action === "add") { const s = await skills.add(need(source, "a source (a link or the SKILL.md text)"), { name }); return ok({ added: { id: s.id, name: s.name, when: s.when, files: s.files, source: s.source }, note: "Saved with the user's own skills (~/.layerwright/skills), enabled; updates don't touch it. It shows in the Skills tab of the Figma window." }); }
+    if (action === "remove") { skills.remove(need(id, "an id")); return ok({ removed: id }); }
+    const s = skills.setEnabled(need(id, "an id"), action === "enable");
+    return ok({ id: s.id, enabled: s.enabled });
   }));
 
   server.registerTool("figma_cleanup", {

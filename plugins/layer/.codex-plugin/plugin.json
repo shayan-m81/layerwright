@@ -1,0 +1,50 @@
+{
+  "name": "layer",
+  "version": "1.0.0",
+  "description": "Figma from your coding agent: HTML or a Claude Design export into editable Figma, new screens with your Design System, Figma frames into your code, and requests you send from the Figma window. Start with /layer:help.",
+  "author": {
+    "name": "Shayan Montazeri",
+    "url": "https://github.com/shayan-m81"
+  },
+  "homepage": "https://github.com/shayan-m81/layerwright",
+  "license": "MIT",
+  "keywords": [
+    "figma",
+    "design",
+    "design-system",
+    "html-to-figma",
+    "figma-to-code",
+    "mcp"
+  ],
+  "skills": "./skills/",
+  "mcpServers": {
+    "layerwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "layerwright@latest"
+      ]
+    }
+  },
+  "interface": {
+    "displayName": "Layerwright",
+    "shortDescription": "Figma from Codex: import, design, build in code, check.",
+    "longDescription": "Bring HTML or a Claude Design export into Figma as editable layers, design screens with the file's Design System, implement Figma frames in your code and check them against the design, and pick up requests sent from the Layerwright window in Figma. Needs Figma desktop with the Layerwright plugin open.",
+    "developerName": "Shayan Montazeri",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/shayan-m81/layerwright",
+    "defaultPrompt": [
+      "/layer:help",
+      "Implement the selected Figma frame in code",
+      "Import ./design.html into Figma"
+    ],
+    "brandColor": "#7C3AED",
+    "logo": "./assets/layerwright-mark.svg",
+    "composerIcon": "./assets/layerwright-mark.svg"
+  }
+}

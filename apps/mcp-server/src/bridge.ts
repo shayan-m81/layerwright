@@ -1,7 +1,8 @@
 // Local transport: a WebSocket server on localhost that the Figma plugin UI connects to.
 // Swappable: tools only depend on the `FigmaTransport` interface.
 import { WebSocketServer, WebSocket } from "ws";
-import type { BridgeHello, BridgeMethod, BridgeResponse, StructuredError } from "@cde/core";
+import type { BridgeHello, BridgeMethod, BridgeResponse, FigmaAction, FigmaActionStatus, StructuredError } from "@cde/core";
+import { currentTask } from "./task.ts";
 
 export interface FigmaTransport {
   connected(): boolean;
@@ -11,6 +12,28 @@ export interface FigmaTransport {
   notify?(msg: Record<string, unknown>): void;
   /** Called when the plugin (re)announces itself. */
   onHello?: () => void;
+  /** Shared bridge only: the MCP client's name, shown next to this session in the plugin window. */
+  setClient?(name: string): void;
+  /** Shared bridge only: a meaningful name for this session (the agent's task), replacing the folder name in the plugin window. */
+  setTitle?(title: string): void;
+  /** Shared bridge only: a request the user sent from the Figma window to this session. */
+  onAction?: (action: FigmaAction) => void;
+  /** Shared bridge only: another session took one of this session's requests. */
+  onActionDrop?: (id: string, by?: string) => void;
+  /** Shared bridge only: the user stopped one of this session's requests in the Figma window. */
+  onActionStop?: (id: string) => void;
+  /** Shared bridge only: every open request from the Figma window, and taking one sent to another session. */
+  inboxList?(): Promise<{ action: FigmaAction; status: string; session: string; sessionName?: string }[]>;
+  inboxClaim?(id: string, force?: boolean): Promise<FigmaAction | undefined>;
+  inboxTake?(id: string, force?: boolean): Promise<{ action?: FigmaAction; heldBy?: string; status?: string }>;
+  /** Shared bridge only: removed in the Figma window, and joining again. */
+  kicked?: boolean;
+  rejoin?(): Promise<void>;
+  /** Shared bridge only: how a request from the Figma window is going, shown in the window. */
+  actionUpdate?(id: string, status: FigmaActionStatus, message?: string): void;
+  /** Shared bridge only: this session as the plugin window shows it, and how many sessions share Figma. */
+  session?: { name: string; color: string; titled?: boolean };
+  sessionCount?: number;
 }
 
 export class BridgeError extends Error {
@@ -109,7 +132,7 @@ export class WsBridge implements FigmaTransport {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => this.expire(id), timeoutMs);
       this.pending.set(id, { resolve, reject, timer, method, timeoutMs, started: Date.now() });
-      this.socket!.send(JSON.stringify({ id, method, params }));
+      this.socket!.send(JSON.stringify({ id, method, params, task: currentTask() }));
     });
   }
 

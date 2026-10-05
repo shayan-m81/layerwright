@@ -1,0 +1,29 @@
+{
+  "name": "layer",
+  "displayName": "Layerwright",
+  "version": "1.0.0",
+  "description": "Figma from your coding agent: HTML or a Claude Design export into editable Figma, new screens with your Design System, Figma frames into your code, and requests you send from the Figma window. Start with /layer:help.",
+  "author": {
+    "name": "Shayan Montazeri",
+    "url": "https://github.com/shayan-m81"
+  },
+  "homepage": "https://github.com/shayan-m81/layerwright",
+  "repository": "https://github.com/shayan-m81/layerwright",
+  "license": "MIT",
+  "keywords": [
+    "figma",
+    "design",
+    "design-system",
+    "html-to-figma",
+    "figma-to-code",
+    "claude-design",
+    "mcp"
+  ],
+  "icon": "./assets/layerwright-mark.svg",
+  "channels": [
+    {
+      "server": "layerwright",
+      "displayName": "Layerwright (Figma window)"
+    }
+  ]
+}

@@ -8,12 +8,12 @@
     "source": "github"
   },
   "websiteUrl": "https://github.com/shayan-m81/layerwright#readme",
-  "version": "0.2.2",
+  "version": "1.0.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "layerwright",
-      "version": "0.2.2",
+      "version": "1.0.0",
       "transport": {
         "type": "stdio"
       }

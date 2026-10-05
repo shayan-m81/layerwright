@@ -1,0 +1,28 @@
+{
+  "name": "layerwright",
+  "description": "Layerwright: Figma from Claude Code and Codex. /layer commands, the Figma MCP server, and requests from the Figma window.",
+  "owner": {
+    "name": "Shayan Montazeri",
+    "url": "https://github.com/shayan-m81"
+  },
+  "plugins": [
+    {
+      "name": "layer",
+      "displayName": "Layerwright",
+      "description": "Figma from your coding agent: import HTML or a Claude Design export, design with your Design System, build Figma frames in code, check them, and do what you ask from the Figma window. /layer:help lists the commands.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Shayan Montazeri"
+      },
+      "keywords": [
+        "figma",
+        "design",
+        "design-system",
+        "html-to-figma",
+        "figma-to-code",
+        "mcp"
+      ],
+      "source": "./plugins/layer"
+    }
+  ]
+}
