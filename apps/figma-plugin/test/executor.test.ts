@@ -72,7 +72,7 @@ test("a text style that can't be applied keeps the text (own font, the style's s
 test("a library style that reports no font gets it from a layer that uses it, and is applied", async () => {
   const page = resetFigma();
   // Like a library style reached by id: its fontName is a placeholder, but a layer in the file uses it.
-  const user = Object.assign(new T(), { fontName: { family: "Inter", style: "Bold" } });
+  const user = Object.assign(new T(), { _f: { family: "Inter", style: "Bold" } }); // a layer as it is in the file (not written now)
   styles.set("S:lib", { id: "S:lib", type: "TEXT", fontName: { family: "", style: "" }, realFont: { family: "Inter", style: "Bold" }, getStyleConsumersAsync: async () => [{ node: user, fields: ["textStyleId"] }] });
   const plan = compiledLogin();
   const h = (plan.roots[0] as any).children[0];

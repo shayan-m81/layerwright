@@ -56,7 +56,7 @@ Layerwright closes that gap locally:
 - **Design System automation.** After a Design System scan, buttons, inputs and links become your real Figma components when they clearly match, and you can map any element yourself (`mappings: [{ selector, component }]`).
 - **Design System sync.** After an import, `figma_analyze_design({ mode: "sync" })` swaps buttons and pills for your DS components (the variant that looks closest), gives text your text styles by size and weight, and binds colours to your variables and styles. You approve it; originals are kept hidden.
 - **Audit and fix existing frames.** Hard-coded colours become variables, raw text gets text styles, and custom buttons become component instances, in groups you can pick. Originals are hidden, never deleted.
-- **Work on existing designs** (`figma_edit`). Rename, move, duplicate, delete, and turn existing frames into components or variant sets with text properties, in one undo step.
+- **Work on existing designs** (`figma_edit`). Rename, move, duplicate, delete, restyle (font weight, size and family, text and fill colours), and turn existing frames into components or variant sets with text properties, in one undo step.
 - **Figma back to a plan.** Any subtree exports as an editable Design Plan to clone, refactor or implement in code: layout, tokens, text styles, instances, gradients, shadows, blurs, shapes, and vectors or boolean shapes as SVG icons.
 
 ### Figma to code

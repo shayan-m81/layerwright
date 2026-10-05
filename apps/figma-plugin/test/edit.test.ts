@@ -313,3 +313,28 @@ test("group, boolean (subtract) and ungroup keep layer order; boolean refuses a 
   const apart = await editNodes({ approved: true, ops: [{ op: "group", nodes: [bg.id, other.id] }] });
   assert.match(apart.failed!.error, /same parent/);
 });
+
+test("set changes a text's weight, size, family and colour, and a frame's background, with the fonts loaded first (one undo step)", async () => {
+  const { items } = board(1);
+  const frame = items[0], title = frame.children[0];
+  loaded.clear(); // nothing loaded yet: set must load what it uses (the strict mock refuses otherwise)
+  let r = await editNodes({ ops: [{ op: "set", node: title.id, weight: "semibold", fontSize: 18, fill: "#1a7f37" }, { op: "set", node: frame.id, fill: "#dff5e1" }], approved: true });
+  assert.equal(r.failed, undefined, JSON.stringify(r.failed));
+  assert.deepEqual(title.fontName, { family: "Inter", style: "Semi Bold" });
+  assert.equal(title.fontSize, 18);
+  assert.equal(title.fills[0].type, "SOLID");
+  assert.ok(Math.abs(title.fills[0].color.g - 0x7f / 255) < 1e-6);
+  assert.ok(Math.abs(frame.fills[0].color.r - 0xdf / 255) < 1e-6, "the frame's background");
+  assert.match(r.applied[0].note, /font Inter Semi Bold/, "the agent learns which style was used");
+  // The closest style a family has: Vazirmatn writes "SemiBold"; 800 has no exact match there, so Bold.
+  r = await editNodes({ ops: [{ op: "set", node: title.id, fontFamily: "vazirmatn", weight: "extrabold" }], approved: true });
+  assert.equal(r.failed, undefined, JSON.stringify(r.failed));
+  assert.deepEqual(title.fontName, { family: "Vazirmatn", style: "Bold" });
+  r = await editNodes({ ops: [{ op: "set", node: title.id, fontFamily: "Inter", italic: true }], approved: true });
+  assert.deepEqual(title.fontName, { family: "Inter", style: "Italic" }, "upright Bold has no italic here: the closest italic");
+  // Clear errors, nothing half-done.
+  r = await editNodes({ ops: [{ op: "set", node: title.id, fontFamily: "Comic Neue", weight: "bold" }], approved: true });
+  assert.match(r.failed!.error, /"Comic Neue" isn't available/);
+  r = await editNodes({ ops: [{ op: "set", node: frame.id, weight: "bold" }], approved: true });
+  assert.match(r.failed!.error, /need a text layer/);
+});

@@ -74,7 +74,7 @@ export class N {
   clone(attach = true): any {
     const c: any = new (this.constructor as any)(...(this.type === "TEXT" ? [] : [this.type]));
     for (const k of ["name", "x", "y", "width", "height", "fills", "strokes", "layoutMode", "itemSpacing", "visible", "cornerRadius"]) c[k] = (this as any)[k];
-    if (this.type === "TEXT") { c.fontName = (this as any).fontName; c._c = (this as any)._c; }
+    if (this.type === "TEXT") { c._f = (this as any)._f; c._s = (this as any)._s; c._c = (this as any)._c; }
     for (const ch of [...this.children]) c.appendChild(ch.clone(false));
     if (attach) this.parent?.appendChild(c);
     return c;
@@ -102,7 +102,13 @@ export class N {
 }
 
 export class T extends N {
-  fontName: any = { family: "Inter", style: "Regular" }; fontSize = 12; lineHeight: any = { unit: "AUTO" }; letterSpacing: any = { unit: "PERCENT", value: 0 }; textAutoResize = "NONE"; textAlignHorizontal = "LEFT"; textStyleId = ""; hyperlink: any = null;
+  // Like Figma: a new font must be loaded before it is set, and the text's fonts before its size changes.
+  _f: any = { family: "Inter", style: "Regular" }; _s = 12;
+  get fontName() { return this._f; }
+  set fontName(v: any) { if (v !== MIXED && !loaded.has(`${v.family}::${v.style}`)) throw new Error(`in set_fontName: Cannot use unloaded font "${v.family} ${v.style}". Please call figma.loadFontAsync({ family: "${v.family}", style: "${v.style}" }) and await the returned promise first.`); this._f = v; }
+  get fontSize() { return this._s; }
+  set fontSize(v: number) { for (const f of this.getRangeAllFontNames()) if (f !== MIXED && !loaded.has(`${f.family}::${f.style}`)) throw new Error(`in set_fontSize: Cannot write to node with unloaded font "${f.family} ${f.style}"`); this._s = v; }
+  lineHeight: any = { unit: "AUTO" }; letterSpacing: any = { unit: "PERCENT", value: 0 }; textAutoResize = "NONE"; textAlignHorizontal = "LEFT"; textStyleId = ""; hyperlink: any = null;
   private _c = "";
   constructor(id?: string) { super("TEXT", id); }
   get characters() { return this._c; }
@@ -115,11 +121,12 @@ export class T extends N {
   }
   ranges: any[] = [];
   getRangeAllFontNames() { return [this.fontName, ...this.ranges.filter((r) => r.font).map((r) => r.font)]; }
+  getRangeFontName(start: number, end: number) { const r = this.ranges.find((x) => x.font && x.start <= start && x.end >= end); return r ? r.font : this.fontName; }
   setRangeFontName(start: number, end: number, font: any) { if (!loaded.has(`${font.family}::${font.style}`)) throw new Error("range font not loaded"); this.ranges.push({ start, end, font }); }
   setRangeFontSize(start: number, end: number, size: number) { this.ranges.push({ start, end, size }); }
   setRangeFills(start: number, end: number, fills: any[]) { this.ranges.push({ start, end, fills }); }
   setRangeHyperlink(start: number, end: number, link: any) { this.ranges.push({ start, end, link }); }
-  async setTextStyleIdAsync(id: string) { const s = styles.get(id); const f = s.realFont ?? s.fontName; if (!s.silent && !loaded.has(`${f.family}::${f.style}`)) throw new Error(`in setTextStyleIdAsync: Cannot write to node with unloaded font "${f.family} ${f.style}". Please call figma.loadFontAsync({ family: "${f.family}", style: "${f.style}" }) and await the returned promise first.`); this.textStyleId = id; this.fontName = f; }
+  async setTextStyleIdAsync(id: string) { const s = styles.get(id); const f = s.realFont ?? s.fontName; if (!s.silent && !loaded.has(`${f.family}::${f.style}`)) throw new Error(`in setTextStyleIdAsync: Cannot write to node with unloaded font "${f.family} ${f.style}". Please call figma.loadFontAsync({ family: "${f.family}", style: "${f.style}" }) and await the returned promise first.`); this.textStyleId = id; this._f = f; }
 }
 
 class C extends N {
