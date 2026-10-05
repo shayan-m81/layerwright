@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-06
+
 ### Fixed
 - Removing a session in the plugin window: the ✕ shared a style with Activity's 18 px ×, so "Remove?" overflowed the row and the window edge. It is a real button now, sized to its label, and once pressed it reads **Remove** in place of the session's state. A double-click no longer removes a session (the confirming press must come a moment after the first), and the session list no longer redraws under the pointer while it's pressed, which lost clicks while a session was working.
 - The plugin window said "Connected to Claude Code" while no session was connected (only the hub was), so requests had nowhere to go. It now says **Connected · no session** with what to do, and names the session's own app (Claude Code, Codex, Cursor) when there is one.
@@ -199,7 +201,8 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 - The plugin no longer opens a duplicate connection after the port is changed.
 
-[Unreleased]: https://github.com/shayan-m81/layerwright/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/shayan-m81/layerwright/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/shayan-m81/layerwright/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/shayan-m81/layerwright/compare/v0.2.2...v1.0.0
 [0.2.2]: https://github.com/shayan-m81/layerwright/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/shayan-m81/layerwright/compare/v0.2.0...v0.2.1
