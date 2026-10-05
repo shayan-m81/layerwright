@@ -118,7 +118,7 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
     if (push) server.server.notification({ method: "notifications/claude/channel", params: { content: actionPrompt(a), meta: actionMeta(a) } }).catch(() => {});
     // Claude Code's plugin monitor (layerwright inbox-watch) reads this file and wakes the session: no channel needed.
     const file = push ? inboxFile() : undefined;
-    if (file) { try { mkdirSync(dirname(file), { recursive: true }); appendFileSync(file, JSON.stringify({ id: a.id, kind: a.kind, text: a.text, skills: a.skills, layers: layersLine(a) }) + "\n"); } catch { /* the channel or the next tool result still carries it */ } }
+    if (file) { try { mkdirSync(dirname(file), { recursive: true }); appendFileSync(file, JSON.stringify({ id: a.id, kind: a.kind, text: a.text, skills: a.skills, layers: layersLine(a), via: a.via }) + "\n"); } catch { /* the channel or the next tool result still carries it */ } }
     inbox.add(a, push);
   };
   // Asking the user in the chat. The plugin's hooks (layerwright hook-event) write what this session does there: it

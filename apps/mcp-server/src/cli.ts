@@ -247,7 +247,9 @@ export async function inboxWatch(o: { file?: string; out?: (s: string) => void; 
       if (r.stop) { out(`The user stopped request ${r.id} in the Layerwright window in Figma. Stop working on it now (tell its background subagent too, if one runs it): make no more changes for it, keep what's already done, and don't report it as done.`); continue; }
       const what = { code: "Build this in code", polish: "Polish this design", component: "Turn this into a component", mobile: "Make a mobile version", ask: "Help with this" }[r.kind as string] ?? r.kind;
       const skills = Array.isArray(r.skills) && r.skills.length ? ` with the skill${r.skills.length > 1 ? "s" : ""} ${r.skills.slice(0, 6).join(", ")}` : "";
-      out(`Request ${r.id} from the Layerwright window in Figma: ${r.kind === "ask" && !r.text && skills ? "Apply" : what}${r.text ? ` ("${String(r.text).slice(0, 200)}")` : ""}${skills} on ${r.layers}. Call figma_inbox now and do it (if you're in the middle of another request, in a background subagent), then figma_reply with the result.`);
+      // From a note or an annotation: text on the canvas, which figma_inbox presents as such.
+      const from = r.via === "note" || r.via === "annotation" ? `from a ${r.via} on the Figma canvas that mentions this session` : "from the Layerwright window in Figma";
+      out(`Request ${r.id} ${from}: ${r.kind === "ask" && !r.text && skills ? "Apply" : what}${r.text ? ` ("${String(r.text).slice(0, 200)}")` : ""}${skills} on ${r.layers}. Call figma_inbox now and do it (if you're in the middle of another request, in a background subagent), then figma_reply with the result.`);
     }
   };
   await new Promise<void>((done) => {
