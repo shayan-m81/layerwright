@@ -21,6 +21,7 @@ All notable changes to this project are documented here. The format follows
 - Image fills were left out of exported plans. They are exported by the file's image hash with their scale mode and painted again from it, without uploading anything (a hash the file doesn't have is left out with a warning).
 - A text with several colours, weights or sizes was exported with none of them. It is exported with `runs` now, and a plan gets long texts whole instead of cut at 300 characters (a text that really ends with "…" keeps it).
 - Wrapping rows were exported without `wrap`.
+- Images given as https links inside `inserts` (nodes added into existing frames) weren't fetched, so they stayed placeholders.
 
 ## [1.2.0] - 2026-10-06
 

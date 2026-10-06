@@ -20,3 +20,10 @@ test("unsupported or failed images drop to a placeholder with a warning", async 
     assert.equal(r.warnings.length, 1);
   }
 });
+
+test("images inside inserts (nodes added into existing frames) are inlined too", async () => {
+  const p: ResolvedPlan = { ...plan("https://example.com/a.png"), inserts: [{ parentId: "1:2", roots: [{ kind: "rect", role: "image", path: "inserts[0].i", name: "I", src: "https://example.com/b.png", fit: "FILL" }] }] };
+  const r = await inlineImages(p, fake(200, "image/png"));
+  assert.equal((r.plan.inserts![0].roots[0] as any).src, "data:image/png;base64,iVA=");
+  assert.equal(r.plan.inserts![0].parentId, "1:2");
+});

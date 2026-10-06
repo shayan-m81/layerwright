@@ -32,5 +32,7 @@ export async function inlineImages(plan: ResolvedPlan, fetcher: typeof fetch = f
     if (n.kind === "frame") return { ...n, children: await Promise.all(n.children.map(walk)) };
     return n;
   };
-  return { plan: { ...plan, roots: await Promise.all(plan.roots.map(walk)) }, warnings };
+  // Nodes inserted into existing frames (inserts) carry images too.
+  const inserts = plan.inserts && await Promise.all(plan.inserts.map(async (x) => ({ ...x, roots: await Promise.all(x.roots.map(walk)) })));
+  return { plan: { ...plan, roots: await Promise.all(plan.roots.map(walk)), ...(inserts ? { inserts } : {}) }, warnings };
 }
