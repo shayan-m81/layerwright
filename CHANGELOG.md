@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-06
+
 ### Fixed
 - The AI cursor showed only for slow work: a quick change (a fill, a text, a rename) ended before the cursor was drawn, so it never appeared. The ending now waits for the cursor (at most 1.5 s, never for a cursor that can't be drawn) and keeps it on screen for at least 0.7 s, still inside the change's own undo step, so nothing of it is left in the file or the undo history. The work itself still starts at once.
 - The plugin window listed every Claude Code session on the computer, because the agent plugin is installed for all of them and each joined Figma when it started. Now only sessions in a project that uses Layerwright (its `.layerwright` folder: `init` makes it, and a session's first real Figma work there does; a status check doesn't) join at once; any other session joins on its first Figma call, with its title. The SessionStart hint (watch for requests from Figma) is given only in those projects too.
@@ -211,7 +213,8 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 - The plugin no longer opens a duplicate connection after the port is changed.
 
-[Unreleased]: https://github.com/shayan-m81/layerwright/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/shayan-m81/layerwright/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/shayan-m81/layerwright/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/shayan-m81/layerwright/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/shayan-m81/layerwright/compare/v0.2.2...v1.0.0
 [0.2.2]: https://github.com/shayan-m81/layerwright/compare/v0.2.1...v0.2.2

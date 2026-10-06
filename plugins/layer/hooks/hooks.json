@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx -y --prefer-offline layerwright@1.1.0 session-hint",
+            "command": "npx -y --prefer-offline layerwright@1.2.0 session-hint",
             "timeout": 15
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx -y --prefer-offline layerwright@1.1.0 hook-event",
+            "command": "npx -y --prefer-offline layerwright@1.2.0 hook-event",
             "timeout": 5
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx -y --prefer-offline layerwright@1.1.0 hook-event",
+            "command": "npx -y --prefer-offline layerwright@1.2.0 hook-event",
             "timeout": 5
           }
         ]
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx -y --prefer-offline layerwright@1.1.0 hook-event",
+            "command": "npx -y --prefer-offline layerwright@1.2.0 hook-event",
             "timeout": 5
           }
         ]
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx -y --prefer-offline layerwright@1.1.0 hook-event",
+            "command": "npx -y --prefer-offline layerwright@1.2.0 hook-event",
             "timeout": 5
           }
         ]

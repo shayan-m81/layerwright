@@ -1,7 +1,7 @@
 [
   {
     "name": "figma-requests",
-    "command": "npx -y --prefer-offline layerwright@1.1.0 inbox-watch",
+    "command": "npx -y --prefer-offline layerwright@1.2.0 inbox-watch",
     "description": "Requests you send to this session from the Layerwright window in Figma"
   }
 ]
