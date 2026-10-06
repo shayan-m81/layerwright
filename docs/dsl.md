@@ -31,13 +31,14 @@ to it. A nested `section` is a vertical stack.
 | `name` | string | Layer name |
 | `width`, `height` | number \| `"hug"` \| `"fill"` | Children of vertical containers fill by default |
 | `minWidth`, `maxWidth` | number | Auto Layout frames and their children only |
-| `layout` | `{ direction, gap, padding, align, crossAlign, wrap }` | `direction`: vertical \| horizontal \| none. `padding`: n \| `{x,y}` \| `{top,right,bottom,left}`. `align`: start \| center \| end \| space-between. `crossAlign`: start \| center \| end \| baseline |
+| `layout` | `{ direction, gap, padding, align, crossAlign, wrap, counterGap }` | `direction`: vertical \| horizontal \| none. `padding`: n \| `{x,y}` \| `{top,right,bottom,left}`. `align`: start \| center \| end \| space-between. `crossAlign`: start \| center \| end \| baseline. `wrap`: a horizontal layout flows onto more rows. `counterGap` (number \| token): the gap between those rows; it needs `direction: "horizontal"` and `wrap: true`, and is ignored with a warning otherwise |
 | `fill` | color | Variable name, paint style name or hex (`#RRGGBB[AA]`) |
+| `image` | `{ hash, fit }` | An image already in this Figma file, by its hash (as `figma_inspect` exports it), painted over `fill` and under `gradient`. `fit`: fill (default) \| fit \| crop \| tile. Nothing is uploaded; a hash the file doesn't have is left out with a warning |
 | `gradient` | `{ angle, stops: [{ color, position }] }` | Linear. CSS angles (180 = top to bottom) |
 | `stroke`, `strokeWeight` | color, number | |
 | `strokeSides` | `["top" \| "right" \| "bottom" \| "left"]` | Draw only these sides |
 | `strokeWeights` | `{ top, right, bottom, left }` | Per-side widths |
-| `radius` | number \| token | |
+| `radius` | number \| token | A number above 9999 is taken as 9999 (fully round): Figma reports a pill's radius as 33554400 |
 | `effect` | string | An effect style name |
 | `shadows` | `[{ type: drop \| inner, x, y, blur, spread, color }]` | Raw shadows when no style fits |
 | `opacity` | 0–1 | |
@@ -69,7 +70,9 @@ Fonts are matched to what is installed: "Semi Bold" and "SemiBold" are treated a
 
 **`icon`**: either a DS icon (`component`/`role`), or `svg` (inline `<svg>…</svg>` markup) plus an optional `color` that recolours every vector.
 
-**`image`**: `src` (a `data:image/png|jpeg|gif;base64,…` URL, or an https URL that the **server** fetches, so the plugin never goes online), `fit` (fill \| fit \| crop), `alt`, `radius`, `fill` (the placeholder colour). If an image fails to load, it stays a placeholder and you get a warning.
+**`image`**: `src` (a `data:image/png|jpeg|gif;base64,…` URL, or an https URL that the **server** fetches, so the plugin never goes online) or `imageHash` (an image already in this Figma file, reused without uploading it), `fit` (fill \| fit \| crop \| tile), `alt`, `radius`, `fill` (the placeholder colour). If an image fails to load, or the file has no image with that hash, it stays a placeholder and you get a warning.
+
+**`shape`**: `shape` (ellipse \| line \| polygon \| star), `fill`, `stroke`, `strokeWeight`, `gradient`, `image` (as on containers; not on a line), `effect` \| `shadows`, `blur`, `backgroundBlur`, `pointCount`, `innerRadius`, `arc: { start, end, innerRadius }`.
 
 **`divider`**: the DS divider component, or a 1px rule.
 
@@ -99,6 +102,23 @@ page. Overlays open centred: their position can't be set through the Plugin API.
 A numeric field takes a number or a variable name (`"spacing/md"`). A colour takes a variable name,
 a paint style name or a hex value. Shadow and gradient colours must be hex values or colour
 variables with a plain value.
+
+## Plans from Figma
+
+`figma_inspect({ format: "plan" })` writes an existing frame as a plan, to edit and build again with
+`figma_preview_plan`:
+
+- `values: "tokens"` (the default when a Design System scan is cached) keeps the variables and text styles
+  layers are bound to, by name. A token the scan doesn't know is written as its value instead, with a
+  warning. `values: "raw"` (the default without a scan) writes hex colours, px and font fields, so the plan
+  previews without a scan. Component instances always need one.
+- `save: true` writes the plan to `.layerwright/exports/<name>.plan.json` instead of returning it (a path
+  inside the project works too: a `.json` file or a folder). Preview it with
+  `figma_preview_plan({ planFile: ".layerwright/exports/<name>.plan.json" })`. Paths outside the project are refused.
+- What changes on the way: a grid layout becomes a fixed frame with its children at their positions;
+  images are kept by their hash (`image: { hash, fit }`), so they show only in the file they came from, and a
+  cropped image comes back as `fit: "fill"`; a text whose colour, font, size or link changes inside it gets
+  `runs`; a wrapping row keeps `wrap` and `counterGap`.
 
 ## Example
 

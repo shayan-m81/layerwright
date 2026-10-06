@@ -1,6 +1,6 @@
 // Resolver: maps semantic requirements (component names, roles, variants, tokens) to real
 // Design System entities, and compiles a validated DesignPlan into an executable ResolvedPlan.
-import type { ComponentDefinition, ComponentSetDefinition, DesignSystem, Num, Paint, ResolvedFrame, ResolvedInstance, ResolvedInteraction, ResolvedNode, ResolvedPlan, ResolvedShadow, Sizing, StructuredError, TypographyDefinition, VariableDefinition } from "./types.ts";
+import { MAX_RADIUS, type ComponentDefinition, type ComponentSetDefinition, type DesignSystem, type Num, type Paint, type ResolvedFrame, type ResolvedImageFill, type ResolvedInstance, type ResolvedInteraction, type ResolvedNode, type ResolvedPlan, type ResolvedShadow, type Sizing, type StructuredError, type TypographyDefinition, type VariableDefinition } from "./types.ts";
 import type { DesignPlan } from "./dsl.ts";
 import { norm } from "./semantics.ts";
 
@@ -330,6 +330,11 @@ const PRESETS: Record<string, any> = {
 const ALIGN: Record<string, "MIN" | "CENTER" | "MAX" | "SPACE_BETWEEN" | "BASELINE"> = { start: "MIN", center: "CENTER", end: "MAX", "space-between": "SPACE_BETWEEN", baseline: "BASELINE" };
 const WEIGHT = { thin: "Thin", extralight: "Extra Light", light: "Light", regular: "Regular", medium: "Medium", semibold: "Semi Bold", bold: "Bold", extrabold: "Extra Bold", black: "Black" } as const;
 const LH_UNIT = { px: "PIXELS", percent: "PERCENT" } as const;
+const SCALE_MODE = { fill: "FILL", fit: "FIT", crop: "CROP", tile: "TILE" } as const;
+/** An image already in the file, as the plugin paints it. */
+const imageFill = (img: { hash: string; fit?: keyof typeof SCALE_MODE } | undefined): ResolvedImageFill | undefined => img && { hash: img.hash, scaleMode: SCALE_MODE[img.fit ?? "fill"] };
+/** A raw radius above MAX_RADIUS (Figma's "full" pill value, 33554400) is fully round all the same: clamp it. */
+const clampRadius = (n: Num | undefined): Num | undefined => (n && !n.variableId && !n.variableKey && n.value !== undefined && n.value > MAX_RADIUS ? { value: MAX_RADIUS } : n);
 const ROLE_FALLBACK: Record<string, { size: number; weight: "Regular" | "Medium" | "Semi Bold" | "Bold" }> = {
   display: { size: 40, weight: "Bold" }, heading: { size: 28, weight: "Bold" }, title: { size: 22, weight: "Semi Bold" }, subheading: { size: 18, weight: "Semi Bold" },
   body: { size: 16, weight: "Regular" }, label: { size: 14, weight: "Medium" }, caption: { size: 12, weight: "Regular" }, overline: { size: 11, weight: "Medium" }, code: { size: 14, weight: "Regular" },
@@ -478,6 +483,9 @@ export function compilePlan(ds: DesignSystem, plan: DesignPlan, opts: { preferre
       const preset = PRESETS[t] ?? {};
       const layoutIn = { ...(preset.layout ?? {}), ...(node.layout ?? {}) };
       const dir = layoutIn.direction === "horizontal" ? "HORIZONTAL" : layoutIn.direction === "none" ? "NONE" : "VERTICAL";
+      // Figma has a row gap only for a horizontal layout that wraps (counterAxisSpacing).
+      const rowGap = layoutIn.counterGap !== undefined && layoutIn.wrap === true && dir === "HORIZONTAL";
+      if (layoutIn.counterGap !== undefined && !rowGap) warnings.push(`${path}: layout.counterGap only applies to a horizontal layout with wrap: true; ignored.`);
       // Side-by-side form fields have labels/hints of different heights; centring misaligns them.
       if (dir === "HORIZONTAL" && !node.layout?.crossAlign && (node.children ?? []).some((c: any) => c.type === "input")) layoutIn.crossAlign = "start";
       summary.frames++;
@@ -492,12 +500,14 @@ export function compilePlan(ds: DesignSystem, plan: DesignPlan, opts: { preferre
           primaryAlign: layoutIn.align ? (ALIGN[layoutIn.align] as any) : undefined,
           counterAlign: layoutIn.crossAlign ? (ALIGN[layoutIn.crossAlign] as any) : undefined,
           wrap: layoutIn.wrap,
+          counterGap: rowGap ? noteNum(r.resolveNum(layoutIn.counterGap, `${path}.layout.counterGap`, errors)) : undefined,
         },
         fill,
+        image: imageFill(node.image),
         stroke: notePaint(r.resolvePaint(node.stroke, `${path}.stroke`, errors)),
         strokeWeight: node.strokeWeight,
         strokeSides: node.strokeSides,
-        radius: noteNum(r.resolveNum(node.radius ?? preset.radius, `${path}.radius`, errors, "radius")),
+        radius: clampRadius(noteNum(r.resolveNum(node.radius ?? preset.radius, `${path}.radius`, errors, "radius"))),
         strokeWeights: node.strokeWeights,
         ...effectsOf(node, path),
         gradient: gradientOf(node.gradient, path),
@@ -586,18 +596,20 @@ export function compilePlan(ds: DesignSystem, plan: DesignPlan, opts: { preferre
       const line = node.shape === "line";
       // A line is its stroke; other shapes are filled (a grey placeholder when nothing is given).
       const stroke = notePaint(r.resolvePaint(node.stroke ?? (line ? node.fill ?? r.findVariable("border", "COLOR")?.name ?? "#E5E7EB" : undefined), `${path}.stroke`, errors));
-      const fill = line ? undefined : notePaint(r.resolvePaint(node.fill ?? (node.gradient || node.stroke ? undefined : "#E5E7EB"), `${path}.fill`, errors));
+      const fill = line ? undefined : notePaint(r.resolvePaint(node.fill ?? (node.gradient || node.stroke || node.image ? undefined : "#E5E7EB"), `${path}.fill`, errors));
+      if (line && node.image) warnings.push(`${path}: a line has no fill, so its image is left out.`);
       return { kind: "shape", shape: node.shape, path, name: node.name ?? node.shape[0].toUpperCase() + node.shape.slice(1),
         width: w.size ?? (line ? (w.mode || stretch ? undefined : 100) : 24), height: line ? undefined : h.size ?? 24,
         sizingH: w.mode ?? (line ? stretch : undefined) ?? "fixed", sizingV: line ? undefined : h.mode ?? "fixed",
-        fill, stroke, strokeWeight: node.strokeWeight ?? (line ? 1 : undefined), gradient: gradientOf(node.gradient, path), ...effectsOf(node, path),
+        fill, stroke, strokeWeight: node.strokeWeight ?? (line ? 1 : undefined), gradient: gradientOf(node.gradient, path), image: line ? undefined : imageFill(node.image), ...effectsOf(node, path),
         pointCount: node.pointCount, innerRadius: node.innerRadius, arc: node.arc };
     }
 
     if (t === "image") {
       summary.primitives++;
       if (node.src && !/^(data:image\/|https:\/\/)/.test(node.src)) errors.push({ type: "INVALID_PLAN", path: `${path}.src`, message: "Image src must be a data:image/… URL or an https URL." });
-      return { kind: "rect", role: "image", src: node.src, fit: node.src ? ({ fill: "FILL", fit: "FIT", crop: "CROP" } as const)[node.fit as "fill"] ?? "FILL" : undefined, path, name: node.name ?? `Image${node.alt ? ` – ${node.alt}` : ""}`, width: w.size ?? 120, height: h.size ?? 120, sizingH: w.mode ?? stretch ?? "fixed", sizingV: h.mode ?? "fixed", fill: notePaint(r.resolvePaint(node.fill ?? "#E5E7EB", `${path}.fill`, errors)), radius: noteNum(r.resolveNum(node.radius, `${path}.radius`, errors, "radius")) };
+      if (node.src && node.imageHash) errors.push({ type: "INVALID_PLAN", path: `${path}.imageHash`, message: "Give src (new image bytes) or imageHash (an image already in this file), not both." });
+      return { kind: "rect", role: "image", src: node.src, imageHash: node.imageHash, fit: node.src || node.imageHash ? SCALE_MODE[node.fit as keyof typeof SCALE_MODE] ?? "FILL" : undefined, path, name: node.name ?? `Image${node.alt ? ` – ${node.alt}` : ""}`, width: w.size ?? 120, height: h.size ?? 120, sizingH: w.mode ?? stretch ?? "fixed", sizingV: h.mode ?? "fixed", fill: notePaint(r.resolvePaint(node.fill ?? "#E5E7EB", `${path}.fill`, errors)), radius: clampRadius(noteNum(r.resolveNum(node.radius, `${path}.radius`, errors, "radius"))) };
     }
 
     // component / component-instance / button / input / icon / link(component) / divider(component)

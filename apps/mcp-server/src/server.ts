@@ -55,16 +55,30 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
   let lastPage: string | undefined;
 
   const cacheFile = (fileName: string) => join(cacheDir, `${fileName.replace(/[^\w.-]+/g, "_")}.json`);
-  /** Where `save` points, refused when it leaves the project (an absolute path elsewhere, ../, or a link out of it):
-   *  an export never creates folders or overwrites files outside it. */
-  const saveTarget = (save: string) => {
-    const file = resolve(workdir, save);
-    const within = (root: string, p: string) => { const r = relative(root, p); return r !== ".." && !r.startsWith(`..${sep}`) && !isAbsolute(r); };
+  /** Where `save` (or a `planFile` to read) points, refused when it leaves the project (an absolute path elsewhere, ../,
+   *  or a link out of it): an export never creates folders or overwrites files outside it, nor reads files outside it. */
+  const projectPath = (p: string, field: "save" | "planFile" = "save", example = "exports/hero.png") => {
+    const file = resolve(workdir, p);
+    const within = (root: string, x: string) => { const r = relative(root, x); return r !== ".." && !r.startsWith(`..${sep}`) && !isAbsolute(r); };
     let real = file;
     while (!existsSync(real)) real = dirname(real);
     let ok = within(workdir, file);
     try { ok &&= within(realpathSync(workdir), realpathSync(real)); } catch { ok = false; }
-    if (!ok) throw new BridgeError({ type: "UNSUPPORTED_PROPERTY", path: "save", message: `save must be a file or folder inside the project (${workdir}), relative to it, e.g. "exports/hero.png"; or true for .layerwright/exports. "${save}" is outside it.` });
+    if (!ok) throw new BridgeError({ type: "UNSUPPORTED_PROPERTY", path: field, message: field === "save"
+      ? `save must be a file or folder inside the project (${workdir}), relative to it, e.g. "${example}"; or true for .layerwright/exports. "${p}" is outside it.`
+      : `planFile must be a file inside the project (${workdir}), relative to it, e.g. "${example}". "${p}" is outside it.` });
+    return file;
+  };
+  const saveTarget = (save: string) => projectPath(save);
+  /** A layer name as a file name. */
+  const fileStem = (name: string) => name.replace(/[^\p{L}\p{N}._]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "export";
+  /** Write a plan from figma_inspect as JSON: true → .layerwright/exports/<name>.plan.json; a path → that .json file, or that folder. */
+  const savePlan = (save: true | string, plan: { name: string }) => {
+    const fileName = `${fileStem(plan.name)}.plan.json`;
+    let file = save === true ? join(home, "exports", fileName) : projectPath(save, "save", `exports/${fileName}`);
+    if (save !== true && (/[\\/]$/.test(save) || (existsSync(file) && statSync(file).isDirectory()) || !/\.json$/i.test(file))) file = join(file, fileName);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(plan, null, 2));
     return file;
   };
   /** Write an exported image where the user can open it: true → .layerwright/exports/<node>.<ext>; a path → that file, or that folder. */
@@ -321,15 +335,18 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
   }));
 
   server.registerTool("figma_inspect", {
-    description: "Read Figma nodes: the selection (default), the current page (top level) or a node id. format: tree (default; compact snapshot of layout, fills, bound variables, text styles, instances), summary (counts, instances per component, top-level children; cheap for big frames), text (every text layer, flat), instances (every instance with variants, props and overrides, flat), plan (the subtree as a Design Plan you can edit and send to figma_preview_plan: clone, refactor, or implement in code). Big answers are capped; use summary, a smaller depth, or offset/limit.",
+    description: "Read Figma nodes: the selection (default), the current page (top level) or a node id. format: tree (default; compact snapshot of layout, fills, bound variables, text styles, instances), summary (counts, instances per component, top-level children; cheap for big frames), text (every text layer, flat), instances (every instance with variants, props and overrides, flat), plan (the subtree as a Design Plan you can edit and send to figma_preview_plan: clone, refactor, or implement in code; images are kept by their hash in this file, and grid layouts become fixed frames with their children placed). For a big plan pass save, then figma_preview_plan with planFile. Big answers are capped; use summary, a smaller depth, or offset/limit.",
     inputSchema: { target: z.string().optional().describe("'selection' (default) | 'page' | a node id"), depth: z.number().int().min(0).max(20).optional(), maxNodes: z.number().int().min(1).max(5000).optional(),
       expandInstances: z.boolean().optional().describe("tree: descend into instances (their text, hidden layers, overrides)"),
       format: z.enum(["tree", "summary", "text", "instances", "plan"]).optional(),
+      values: z.enum(["tokens", "raw"]).optional().describe("plan: \"tokens\" writes the variables and text styles layers are bound to, by name, so the rebuild stays bound to the Design System (previewing it needs a scan; a token the scan doesn't know is written as its value); \"raw\" writes their values (hex, px, font fields), so the plan previews without a scan. Default: tokens when a Design System scan is cached, raw otherwise"),
+      save: z.union([z.boolean(), z.string().min(1)]).optional().describe("plan: write the plan to a JSON file in the project instead of returning it inline (a big frame's plan is too long to pass around): true → .layerwright/exports/<name>.plan.json, or a .json file or folder inside the project. Edit the file, then pass it to figma_preview_plan as planFile"),
       offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(500).optional().describe("text/instances: page through the list (default 100)") },
-  }, async ({ target, depth, maxNodes, expandInstances, format, offset, limit }) => guard(async () => {
+  }, async ({ target, depth, maxNodes, expandInstances, format, values, save, offset, limit }) => guard(async () => {
     const f = format ?? "tree";
     const deep = f !== "tree";
-    const res = await bridge.request<{ page: string; nodes: NodeSnapshot[] }>("inspect", { target, svg: f === "plan", depth: depth ?? (deep ? 20 : undefined), maxNodes: maxNodes ?? (deep ? 5000 : undefined), expandInstances: deep || expandInstances }, 120_000);
+    if (f === "plan" && typeof save === "string") projectPath(save, "save", "exports/home.plan.json"); // refused before Figma is asked
+    const res = await bridge.request<{ page: string; nodes: NodeSnapshot[] }>("inspect", { target, svg: f === "plan", plan: f === "plan", depth: depth ?? (deep ? 20 : undefined), maxNodes: maxNodes ?? (deep ? 5000 : undefined), expandInstances: deep || expandInstances }, 120_000);
     if (!res.nodes.length) return fail([{ type: "NODE_NOT_FOUND", message: "Nothing selected. Pass a node id or ask the user to select a frame." }]);
     const flat: { n: NodeSnapshot; path: string; inInstance: boolean }[] = [];
     const walk = (n: NodeSnapshot, path: string, inInstance: boolean) => { flat.push({ n, path, inInstance }); (n.children ?? []).forEach((c) => walk(c, `${path} / ${c.name}`, inInstance || n.type === "INSTANCE")); };
@@ -343,9 +360,21 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
     if (f === "text") return ok({ page: res.page, ...page(flat.filter((x) => x.n.type === "TEXT").map(({ n, path, inInstance }) => ({ id: n.id, path, text: n.text?.chars, style: n.text?.style ?? n.text?.font, size: n.text?.fontSize, inInstance: inInstance || undefined, hidden: n.visible === false || undefined }))) });
     if (f === "instances") return ok({ page: res.page, ...page(flat.filter((x) => x.n.type === "INSTANCE").map(({ n, path }) => ({ id: n.id, path, componentSet: n.instance?.componentSet, componentSetId: n.instance?.componentSetId, component: n.instance?.component, componentId: n.instance?.componentId, variants: n.instance?.variants, props: n.instance?.props, overrides: n.instance?.overrides }))) });
     if (f === "plan") {
-      const out = res.nodes.map((n) => snapshotToPlan(n, loadDs()));
+      // Token names only resolve against a scan: without one, the values themselves make a plan that builds as is.
+      const scanned = !!loadDs();
+      const v = values ?? (scanned ? "tokens" : "raw");
+      const out = res.nodes.map((n) => snapshotToPlan(n, loadDs(), { values: v }));
       const plan = { ...out[0].plan, screens: out.flatMap((o) => o.plan.screens) };
-      return ok({ plan, warnings: out.flatMap((o) => o.warnings).slice(0, 30), next: "Edit the plan (or reuse it as is), then figma_preview_plan. Instances point at their component set by id." });
+      const warnings = out.flatMap((o) => o.warnings).slice(0, 30);
+      const valuesNote = !values && !scanned ? "No Design System scan is cached, so the plan has raw values (hex, px, fonts) and previews without one; the rebuild isn't bound to variables or text styles. To keep them: figma_scan_design_system, then export again with values: \"tokens\"." : undefined;
+      const about = "Instances point at their component set by id (they need a Design System scan); images are reused by their hash, so they only show in this file.";
+      if (save !== undefined && save !== false) {
+        const file = savePlan(save, plan);
+        return ok({ file, bytes: statSync(file).size, screens: plan.screens.length, values: v, valuesNote, warnings,
+          next: `Edit the file (the plan as JSON), then figma_preview_plan({ planFile: ${JSON.stringify(relative(workdir, file))} }). ${about}` });
+      }
+      const kb = Math.round(JSON.stringify(plan).length / 1000);
+      return ok({ plan, values: v, valuesNote, warnings, next: `Edit the plan (or reuse it as is), then figma_preview_plan.${kb > 50 ? ` This plan is ${kb} KB: export it with save: true and preview it with planFile rather than pasting it.` : ""} ${about}` });
     }
     const text = JSON.stringify(res);
     if (text.length > 80_000) return ok({ truncated: true, chars: text.length, hint: "This tree is too big to return whole. Use format: \"summary\" first, then inspect a child by id, lower depth, or format text/instances with offset/limit.", preview: text.slice(0, 20_000) });
@@ -354,9 +383,18 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
 
   server.registerTool("figma_preview_plan", {
     description: "Validate a Design Plan (Design DSL JSON) with Zod, resolve every component/variant/property/token against the cached Design System, and return a planId + human-readable summary WITHOUT touching Figma. Invalid plans or unresolved components return structured errors with suggestions — fix the plan and preview again.",
-    inputSchema: { plan: z.any().describe("DesignPlan object: { name, screens: DesignNode[], target?, screenGap? }. See the figma-design skill for the DSL.") },
-  }, async ({ plan }) => guard(async () => {
-    const v = validatePlan(plan);
+    inputSchema: { plan: z.any().optional().describe("DesignPlan object: { name, screens: DesignNode[], target?, screenGap? }. See the figma-design skill for the DSL."),
+      planFile: z.string().min(1).optional().describe("Instead of plan: a plan saved as JSON in the project (figma_inspect format \"plan\" with save writes one), relative to the project or absolute inside it") },
+  }, async ({ plan, planFile }) => guard(async () => {
+    if ((plan === undefined) === (planFile === undefined)) return fail([{ type: "INVALID_PLAN", path: "plan", message: "Give plan (the plan itself) or planFile (a plan saved as JSON in the project), one of them." }]);
+    let input: unknown = plan;
+    if (planFile !== undefined) {
+      const file = projectPath(planFile, "planFile", ".layerwright/exports/home.plan.json");
+      if (!existsSync(file) || !statSync(file).isFile()) return fail([{ type: "INVALID_PLAN", path: "planFile", message: `No plan file at ${file}.` }]);
+      if (statSync(file).size > 50_000_000) return fail([{ type: "INVALID_PLAN", path: "planFile", message: `${file} is over 50 MB; that's not a plan.` }]);
+      input = readFileSync(file, "utf8");
+    }
+    const v = validatePlan(input);
     if (!v.success) return fail(v.errors);
     // A plan with only raw values needs no scan; one that references components or tokens gets a clear hint.
     const cachedDs = loadDs();
@@ -365,7 +403,7 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
     const c = compilePlan(d, v.plan, { preferred: preferred() });
     if (!c.ok || !c.plan) {
       const needsScan = !cachedDs && c.errors.some((e) => ["COMPONENT_NOT_FOUND", "TOKEN_NOT_FOUND", "STYLE_NOT_FOUND", "INVALID_VARIANT"].includes(e.type));
-      return fail(needsScan ? [{ type: "DESIGN_SYSTEM_NOT_SCANNED", message: "This plan uses components, tokens or styles; call figma_scan_design_system first." }, ...c.errors] : c.errors, { warnings: c.warnings, summary: c.summary });
+      return fail(needsScan ? [{ type: "DESIGN_SYSTEM_NOT_SCANNED", message: "This plan uses components, tokens or styles; call figma_scan_design_system first. (A plan from figma_inspect can instead be exported again with values: \"raw\", which needs no scan for colours, spacing and text; components always do.)" }, ...c.errors] : c.errors, { warnings: c.warnings, summary: c.summary });
     }
     plans.set(c.plan.planId, { plan: c.plan, summary: c.summary });
     const destructive = !!c.plan.target.parentId || !!c.plan.inserts?.length;

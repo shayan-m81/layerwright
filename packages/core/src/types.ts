@@ -153,6 +153,10 @@ export interface DesignSystem {
   semanticTokens: SemanticToken[];
 }
 
+/** Largest corner radius a plan writes. Figma reports a fully round ("pill") corner as a huge number (33554400): any
+ *  radius above this is fully round, so plans clamp it here instead of rejecting it. */
+export const MAX_RADIUS = 9999;
+
 // ---------- Compact node snapshot (inspection) ----------
 export interface NodeSnapshot {
   id: string;
@@ -168,13 +172,22 @@ export interface NodeSnapshot {
     counterAlign?: string;
     sizingH?: string;
     sizingV?: string;
+    /** Horizontal Auto Layout that wraps, and the gap between its rows (counterAxisSpacing). */
+    wrap?: boolean;
+    counterGap?: number;
   };
+  /** Absolutely positioned inside its Auto Layout parent (layoutPositioning ABSOLUTE). */
+  absolute?: boolean;
+  /** The top visible image fill: the file's image hash (the bytes stay in Figma) and its scale mode. */
+  image?: { hash: string; scaleMode: string };
   fills?: string[];
   strokes?: string[];
   radius?: number;
   bound?: Record<string, string>; // field -> variable name/id
   fillStyle?: string;
-  text?: { chars: string; fontSize?: number; font?: string; lineHeight?: number | "AUTO" | string; styleId?: string; style?: string; align?: string; letterSpacing?: number; autoResize?: string };
+  text?: { chars: string; fontSize?: number; font?: string; lineHeight?: number | "AUTO" | string; styleId?: string; style?: string; align?: string; letterSpacing?: number; autoResize?: string;
+    /** Styled pieces of a text whose font, size, colour or link changes inside it (inspect for a plan only). */
+    runs?: { chars: string; font?: string; fontSize?: number; fill?: string; href?: string }[] };
   strokeWeight?: number;
   opacity?: number;
   clip?: boolean;
@@ -233,6 +246,8 @@ export interface ResolvedBase {
 
 export interface ResolvedShadow { type: "DROP_SHADOW" | "INNER_SHADOW"; x: number; y: number; blur: number; spread: number; hex: string }
 export interface ResolvedGradient { type?: "linear" | "radial" | "angular" | "diamond"; angle: number; stops: { hex: string; position: number }[] }
+/** An image already in the file, by its hash (figma.getImageByHash): nothing is uploaded again. */
+export interface ResolvedImageFill { hash: string; scaleMode: "FILL" | "FIT" | "CROP" | "TILE" }
 export type ResolvedLineHeight = { unit: "PIXELS" | "PERCENT"; value: number } | { unit: "AUTO" };
 
 export interface ResolvedFrame extends ResolvedBase {
@@ -245,8 +260,12 @@ export interface ResolvedFrame extends ResolvedBase {
     primaryAlign?: "MIN" | "CENTER" | "MAX" | "SPACE_BETWEEN";
     counterAlign?: "MIN" | "CENTER" | "MAX" | "BASELINE";
     wrap?: boolean;
+    /** Gap between wrapped rows (counterAxisSpacing); only with wrap. */
+    counterGap?: Num;
   };
   fill?: Paint;
+  /** An image already in the file, painted above the fill and below the gradient. */
+  image?: ResolvedImageFill;
   stroke?: Paint;
   strokeWeight?: number;
   strokeSides?: ("top" | "right" | "bottom" | "left")[];
@@ -309,7 +328,9 @@ export interface ResolvedRect extends ResolvedBase {
   radius?: Num;
   /** Image bytes as a data: URL (https sources are inlined by the MCP server before execution). */
   src?: string;
-  fit?: "FILL" | "FIT" | "CROP";
+  /** An image already in the file (figma.getImageByHash), used instead of src. */
+  imageHash?: string;
+  fit?: "FILL" | "FIT" | "CROP" | "TILE";
 }
 
 export interface ResolvedSvg extends ResolvedBase {
@@ -326,6 +347,7 @@ export interface ResolvedShape extends ResolvedBase {
   stroke?: Paint;
   strokeWeight?: number;
   gradient?: ResolvedGradient;
+  image?: ResolvedImageFill;
   pointCount?: number;
   innerRadius?: number;
   /** Degrees; the executor converts to radians. */

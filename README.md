@@ -203,7 +203,7 @@ Start with `npx layerwright doctor`. It checks Node, `.mcp.json`, the skill, the
 - CSS grid, floats and transforms are imported as positioned layers, not as Auto Layout.
 - Linear, radial and conic gradients and `blur()`/`backdrop-filter: blur()` come across; other filters and blend modes are dropped in plan mode (the pixel-faithful mode keeps blend modes). Only the top background layer is used.
 - The largest corner radius is used when the four corners differ.
-- The plan export leaves image fills out (they need the original file) and keeps one colour plus the top gradient when a layer stacks several fills.
+- The plan export keeps image fills by their hash, so they show only in the file they came from (a cropped image comes back as fill), keeps one colour, the top image and the top gradient when a layer stacks several fills, and turns a grid layout into a fixed frame with its children at their positions.
 - Fonts must be installed on the machine that runs Figma. A missing family falls back to Inter, with a warning.
 - Images must be PNG, JPEG or GIF (a Figma limit), up to 10 MB each.
 - The scan finds library components only when an instance of them exists in the open file. Others can be used by key (e.g. found with the official Figma MCP's library search).

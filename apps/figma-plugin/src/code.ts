@@ -73,7 +73,7 @@ async function handle(req: BridgeRequest): Promise<unknown> {
       const nodes = await resolveTarget(p.target, req.session);
       const depth = p.depth ?? (p.target === "page" ? 1 : 6);
       const out = [];
-      for (const n of nodes) out.push(await snapshot(n, { depth, maxNodes: p.maxNodes ?? 400, expandInstances: !!p.expandInstances, svg: !!p.svg }));
+      for (const n of nodes) out.push(await snapshot(n, { depth, maxNodes: p.maxNodes ?? 400, expandInstances: !!p.expandInstances, svg: !!p.svg, plan: !!p.plan }));
       return { page: figma.currentPage.name, nodes: out };
     }
     case "executePlan":

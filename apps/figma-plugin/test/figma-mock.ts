@@ -1,7 +1,8 @@
 // Strict in-memory mock of the Figma Plugin API, shared by the executor tests.
 // It enforces the rules that most often break real plugins: fonts must be loaded before text
 // writes, FILL/ABSOLUTE/minWidth need an auto-layout parent, HUG needs auto-layout or text,
-// setProperties rejects unknown keys, only available fonts load, createImage takes PNG/JPEG/GIF bytes.
+// setProperties rejects unknown keys, only available fonts load, createImage takes PNG/JPEG/GIF bytes, getImageByHash
+// knows only this file's images, only a horizontal layout wraps and only a wrapping one has a row gap.
 import { fixtureDs } from "../../../packages/core/test/fixture.ts";
 
 let seq = 0;
@@ -65,7 +66,19 @@ export class N {
   async setEffectStyleIdAsync(id: string) { this.effectStyleId = id; }
   async setFillStyleIdAsync(id: string) { this.fillStyleId = id; }
   async setStrokeStyleIdAsync(id: string) { this.strokeStyleId = id; }
-  locked = false; primaryAxisSizingMode = "AUTO"; counterAxisSizingMode = "AUTO"; layoutWrap = "NO_WRAP"; counterAxisSpacing = 0; dashPattern: number[] = [];
+  locked = false; primaryAxisSizingMode = "AUTO"; counterAxisSizingMode = "AUTO"; dashPattern: number[] = [];
+  // Like Figma (plugin typings): only a horizontal Auto Layout can wrap; setting layoutWrap on anything else throws.
+  private _wrap = "NO_WRAP"; private _cas: number | null = null;
+  get layoutWrap() { return this._wrap; }
+  set layoutWrap(v: string) { if (this.layoutMode !== "HORIZONTAL") throw new Error("in set_layoutWrap: layoutWrap can only be set on layers with layoutMode HORIZONTAL"); this._wrap = v; }
+  // Like Figma: the gap between wrapped rows applies only to a wrapping layout (the mock refuses a write Figma would
+  // ignore), can't be negative, and null makes it follow itemSpacing again (it never reads back as null).
+  get counterAxisSpacing() { return this._cas ?? this.itemSpacing; }
+  set counterAxisSpacing(v: number | null) {
+    if (this.layoutWrap !== "WRAP") throw new Error("in set_counterAxisSpacing: counterAxisSpacing only applies to auto-layout frames with layoutWrap WRAP");
+    if (v !== null && !(v >= 0)) throw new Error("in set_counterAxisSpacing: the value must be positive");
+    this._cas = v;
+  }
   private data = new Map<string, string>();
   setPluginData(k: string, v: string) { this.data.set(k, v); }
   getPluginData(k: string) { return this.data.get(k) ?? ""; }
@@ -101,6 +114,11 @@ export class N {
   findAllWithCriteriaPlugin(keys: string[]): any[] { return this.children.flatMap((c) => [...(keys.some((k) => c.hasPluginData(k)) ? [c] : []), ...c.findAllWithCriteriaPlugin(keys)]); }
 }
 
+/** The fields getStyledTextSegments accepts (plugin typings). */
+const SEGMENT_FIELDS = ["fontSize", "fontName", "fontWeight", "fontStyle", "textDecoration", "textDecorationStyle", "textDecorationOffset", "textDecorationThickness", "textDecorationColor",
+  "textDecorationSkipInk", "textCase", "lineHeight", "letterSpacing", "fills", "textStyleId", "fillStyleId", "listOptions", "listSpacing", "indentation", "paragraphIndent", "paragraphSpacing",
+  "hyperlink", "boundVariables", "textStyleOverrides", "openTypeFeatures"];
+
 export class T extends N {
   // Like Figma: a new font must be loaded before it is set, and the text's fonts before its size changes.
   _f: any = { family: "Inter", style: "Regular" }; _s = 12;
@@ -126,6 +144,25 @@ export class T extends N {
   setRangeFontSize(start: number, end: number, size: number) { this.ranges.push({ start, end, size }); }
   setRangeFills(start: number, end: number, fills: any[]) { this.ranges.push({ start, end, fills }); }
   setRangeHyperlink(start: number, end: number, link: any) { this.ranges.push({ start, end, link }); }
+  // Like Figma: only known text fields can be asked for, `end` is required with `start`, the range must be inside the
+  // text, and the text comes back in pieces where every asked field keeps one value (the last range set wins).
+  getStyledTextSegments(fields: string[], start?: number, end?: number) {
+    for (const f of fields) if (!SEGMENT_FIELDS.includes(f)) throw new Error(`in getStyledTextSegments: invalid field "${f}"`);
+    if (start !== undefined && end === undefined) throw new Error("in getStyledTextSegments: end is required when start is given");
+    const s = start ?? 0, e = end ?? this._c.length;
+    if (s < 0 || e > this._c.length || s > e) throw new Error("in getStyledTextSegments: range out of bounds");
+    const last = (i: number, k: string) => [...this.ranges].reverse().find((r) => r[k] !== undefined && r.start <= i && i < r.end)?.[k];
+    const at = (i: number): Record<string, unknown> => Object.fromEntries(fields.map((f) => [f,
+      f === "fontName" ? last(i, "font") ?? this._f : f === "fontSize" ? last(i, "size") ?? this._s : f === "fills" ? last(i, "fills") ?? this.fills
+      : f === "hyperlink" ? last(i, "link") ?? this.hyperlink : f === "textStyleId" ? this.textStyleId : (this as any)[f]]));
+    const out: any[] = [];
+    for (let i = s; i < e; i++) {
+      const v = at(i), prev = out.at(-1);
+      if (prev && JSON.stringify(fields.map((f) => prev[f])) === JSON.stringify(fields.map((f) => v[f]))) { prev.end = i + 1; prev.characters += this._c[i]; }
+      else out.push({ characters: this._c[i], start: i, end: i + 1, ...v });
+    }
+    return out;
+  }
   async setTextStyleIdAsync(id: string) { const s = styles.get(id); const f = s.realFont ?? s.fontName; if (!s.silent && !loaded.has(`${f.family}::${f.style}`)) throw new Error(`in setTextStyleIdAsync: Cannot write to node with unloaded font "${f.family} ${f.style}". Please call figma.loadFontAsync({ family: "${f.family}", style: "${f.style}" }) and await the returned promise first.`); this.textStyleId = id; this._f = f; }
 }
 
@@ -268,6 +305,8 @@ export function resetFigma() {
       if (!png && !jpg && !gif) throw new Error("Image type is unsupported");
       const hash = `img:${images.size + 1}`; images.set(hash, bytes); return { hash };
     },
+    // Like Figma: an image is found by hash only when this file has it; otherwise null.
+    getImageByHash: (hash: string) => (images.has(hash) ? { hash, getBytesAsync: async () => images.get(hash)! } : null),
     createNodeFromSvg: (svg: string) => {
       if (!/^\s*<svg[\s>]/.test(svg) || !/<\/svg>\s*$/.test(svg)) throw new Error("Invalid SVG");
       const f = onPage(new N("FRAME")); f.fills = [];

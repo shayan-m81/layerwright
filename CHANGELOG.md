@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- Plans from `figma_inspect({ format: "plan" })` were rejected by `figma_preview_plan` when the frame had a pill: Figma reports a fully round corner as 33554400 and plans allowed at most 10000. The export now writes 9999, and plans and the compiler take any larger radius as 9999 instead of rejecting it, so plans exported before still work.
+- Exported plans named the variables and text styles layers are bound to, so without a Design System scan the preview failed (`DESIGN_SYSTEM_NOT_SCANNED`, `TOKEN_NOT_FOUND`). Without a scan the export now writes the values themselves (hex, px, font fields) and says so; with a scan, a token the scan doesn't know is written as its value, with a warning. `values: "tokens"` or `"raw"` chooses.
+- Children of a grid layout lost their places in an exported plan and were stacked at 0,0 when it was built. The grid comes back as a fixed frame with each child at its position, with a warning; a child placed absolutely inside Auto Layout keeps its position too, and a frame without Auto Layout that fills its parent keeps filling it.
+- Image fills were left out of exported plans. They are exported by the file's image hash with their scale mode and painted again from it, without uploading anything (a hash the file doesn't have is left out with a warning).
+- A text with several colours, weights or sizes was exported with none of them. It is exported with `runs` now, and a plan gets long texts whole instead of cut at 300 characters (a text that really ends with "…" keeps it).
+- Wrapping rows were exported without `wrap`.
+
+### Added
+- `figma_inspect({ format: "plan", save: true })` writes the plan to `.layerwright/exports/<name>.plan.json` (or a `.json` file or folder inside the project) instead of returning it inline, and `figma_preview_plan({ planFile })` previews a plan from a file in the project. Paths outside the project are refused.
+- `layout.counterGap` in the Design DSL: the gap between the rows of a wrapping horizontal layout (Figma's `counterAxisSpacing`), compiled, built and exported.
+- `image: { hash, fit }` on frames and shapes, and `imageHash` on `image` nodes: an image already in the file, by hash. `fit` also takes `tile`.
+
 ## [1.2.0] - 2026-10-06
 
 ### Fixed
