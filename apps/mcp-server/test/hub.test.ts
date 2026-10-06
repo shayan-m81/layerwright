@@ -24,11 +24,13 @@ async function until(fn: () => boolean, ms = 3000) {
 
 /** A fake Figma plugin (paired: it has this computer's key): answers every request with who asked, records what it
  *  was sent. `silent` methods are never answered. */
-function fakePlugin(port: number, o: { protocol?: number; key?: string | null; origin?: string } = {}) {
+function fakePlugin(port: number, o: { protocol?: number; key?: string | null; origin?: string; file?: string; fileKey?: string; window?: string } = {}) {
   const got: any[] = [];
+  const closed: number[] = [];
   const ws = new WebSocket(`ws://127.0.0.1:${port}`, o.origin ? { origin: o.origin } : {});
   ws.on("error", () => {});
-  ws.on("open", () => ws.send(JSON.stringify({ type: "hello", fileName: "TEST", page: "Page 1", protocol: o.protocol ?? 2, key: o.key === null ? undefined : o.key ?? KEY })));
+  ws.on("close", (code) => closed.push(code));
+  ws.on("open", () => ws.send(JSON.stringify({ type: "hello", fileName: o.file ?? "TEST", fileKey: o.fileKey, page: "Page 1", protocol: o.protocol ?? 2, key: o.key === null ? undefined : o.key ?? KEY, window: o.window })));
   ws.on("message", (raw) => {
     const m = JSON.parse(String(raw));
     got.push(m);
@@ -39,9 +41,9 @@ function fakePlugin(port: number, o: { protocol?: number; key?: string | null; o
       return;
     }
     if (m.method === "silent") return;
-    if (m.method) ws.send(JSON.stringify({ id: m.id, ok: true, result: { by: m.session?.name, method: m.method } }));
+    if (m.method) ws.send(JSON.stringify({ id: m.id, ok: true, result: { by: m.session?.name, method: m.method, ...(o.file ? { file: o.file } : {}) } }));
   });
-  return { ws, got, open: () => new Promise<void>((r) => ws.once("open", () => r())) };
+  return { ws, got, closed, open: () => new Promise<void>((r) => ws.once("open", () => r())) };
 }
 
 test("two sessions share one plugin: each request is tagged with its session and answered to that session only", async () => {
@@ -557,4 +559,113 @@ test("the hub starts from a checkout (node --import tsx), whatever folder the se
   assert.equal(p.kind, "hub");
   const r: any = await new Promise((done) => { const ws = new WebSocket(`ws://127.0.0.1:${port}/stop`); ws.on("message", (m) => done(JSON.parse(String(m)))); });
   assert.equal(r.stopping, true);
+});
+
+test("one Layerwright window per Figma file: all stay connected; each session works in one file, chosen by where the user works, a request sent from a window, or the session naming the file", async (ctx) => {
+  const open: { close(): void }[] = [];
+  ctx.after(() => { for (const x of open) try { x.close(); } catch { /* closed */ } });
+  const port = 17316;
+  const hub = new Hub(port, { log: quiet }); open.push({ close: () => hub.close() });
+  await hub.start();
+  const shop = fakePlugin(port, { file: "Shop", fileKey: "SHOPKEY12345", window: "wshop0001" }); open.push({ close: () => shop.ws.close() });
+  await shop.open();
+  await until(() => shop.got.some((m) => m.type === "pairing"));
+  const blog = fakePlugin(port, { file: "Blog", fileKey: "BLOGKEY12345", window: "wblog0001" }); open.push({ close: () => blog.ws.close() });
+  await blog.open();
+  await until(() => blog.got.some((m) => m.type === "pairing"));
+  await wait(50);
+  assert.deepEqual(shop.closed, [], "the first window isn't pushed out");
+  assert.deepEqual(hub.status().windows.map((w: any) => w.file).sort(), ["Blog", "Shop"]);
+
+  // A new session goes to the file the user works in: the one they last selected something in.
+  shop.ws.send(JSON.stringify({ type: "active" }));
+  await wait(30);
+  const a = new RelayBridge(port, { log: quiet, workdir: "/work/a", startHub: () => {}, anyPort: true }); open.push(a);
+  await a.start();
+  assert.equal(((await a.request("inspect", {})) as any).file, "Shop");
+  assert.equal(a.info()?.fileName, "Shop", "the session knows which file it works in");
+  // The user moves to the other tab: a session in the middle of its work stays in its file…
+  blog.ws.send(JSON.stringify({ type: "active" }));
+  await wait(30);
+  assert.equal(((await a.request("inspect", {})) as any).file, "Shop");
+  // …and a session the user hasn't talked to in a while goes where the user is.
+  const b = new RelayBridge(port, { log: quiet, workdir: "/work/b", startHub: () => {}, anyPort: true }); open.push(b);
+  await b.start();
+  assert.equal(((await b.request("inspect", {})) as any).file, "Blog");
+  const STAY = Hub.STAY_MS;
+  try {
+    Hub.STAY_MS = 0;
+    assert.equal(((await a.request("inspect", {})) as any).file, "Blog", "after a while without Figma work, a session follows the user");
+  } finally { Hub.STAY_MS = STAY; }
+
+  // The session names its file (figma_status file:, or a link to it).
+  assert.deepEqual(await a.bind("https://www.figma.com/design/SHOPKEY12345/Shop?node-id=1-2"), { ok: true, files: ["Shop", "Blog"] });
+  assert.equal(((await a.request("inspect", {})) as any).file, "Shop");
+  assert.deepEqual((await a.windows()).map((w) => [w.file, w.current]), [["Shop", true], ["Blog", false]]);
+  assert.deepEqual(await a.bind("Nope"), { ok: false, files: ["Shop", "Blog"] });
+
+  // A request the user sends from the Blog window binds that session to Blog.
+  blog.ws.send(JSON.stringify({ type: "action", session: a.session!.id, action: { id: "q1", kind: "ask", text: "hi", nodes: [], at: 1 } }));
+  await until(() => a.info()?.fileName === "Blog");
+  assert.equal(((await a.request("inspect", {})) as any).file, "Blog");
+
+  // Every window lists every session, with the file each works in.
+  await until(() => [...shop.got].reverse().find((m) => m.type === "sessions")?.sessions.length === 2);
+  const listed = [...shop.got].reverse().find((m) => m.type === "sessions").sessions;
+  assert.ok(listed.every((x: any) => x.file === "Blog" || x.file === "Shop"));
+
+  // The Blog window closes: only its requests fail; its sessions go to the window that's left.
+  blog.ws.close();
+  await until(() => hub.status().windows.length === 1);
+  assert.equal(((await a.request("inspect", {})) as any).file, "Shop");
+  a.close(); b.close(); shop.ws.close(); hub.close();
+});
+
+test("the plugin opened again in the same file: the new window takes over, the old one is told (and doesn't knock again), its sessions stay with the file", async (ctx) => {
+  const open: { close(): void }[] = [];
+  ctx.after(() => { for (const x of open) try { x.close(); } catch { /* closed */ } });
+  const port = 17315;
+  const hub = new Hub(port, { log: quiet }); open.push({ close: () => hub.close() });
+  await hub.start();
+  const first = fakePlugin(port, { file: "Shop", fileKey: "SHOPKEY12345", window: "wfirst001" }); open.push({ close: () => first.ws.close() });
+  await first.open();
+  await until(() => first.got.some((m) => m.type === "pairing"));
+  const s = new RelayBridge(port, { log: quiet, workdir: "/work/s", startHub: () => {}, anyPort: true }); open.push(s);
+  await s.start();
+  await s.request("inspect", {});
+  const again = fakePlugin(port, { file: "Shop", fileKey: "SHOPKEY12345", window: "wagain001" }); open.push({ close: () => again.ws.close() });
+  await again.open();
+  await until(() => first.closed.length > 0);
+  assert.deepEqual(first.closed, [4000], "replaced: the window stops instead of taking it back");
+  assert.equal(hub.status().windows.length, 1);
+  assert.equal(((await s.request("inspect", {})) as any).file, "Shop");
+  assert.ok(again.got.some((m) => m.method === "inspect"), "the session's work goes to the new window");
+  s.close(); again.ws.close(); hub.close();
+});
+
+test("after the hub restarts, a session comes back to the file it worked in", async (ctx) => {
+  const open: { close(): void }[] = [];
+  ctx.after(() => { for (const x of open) try { x.close(); } catch { /* closed */ } });
+  const port = 17314;
+  let hub = new Hub(port, { log: quiet }); open.push({ close: () => hub.close() });
+  await hub.start();
+  const shop = fakePlugin(port, { file: "Shop", fileKey: "SHOPKEY12345", window: "wshop0002" }); open.push({ close: () => shop.ws.close() });
+  const blog = fakePlugin(port, { file: "Blog", fileKey: "BLOGKEY12345", window: "wblog0002" }); open.push({ close: () => blog.ws.close() });
+  await shop.open(); await blog.open();
+  await until(() => hub.status().windows.length === 2);
+  const s = new RelayBridge(port, { log: quiet, workdir: "/work/s", startHub: () => {}, anyPort: true }); open.push(s);
+  await s.start();
+  await s.bind("Shop");
+  hub.close();
+  hub = new Hub(port, { log: quiet }); open.push({ close: () => hub.close() });
+  await hub.start();
+  const shop2 = fakePlugin(port, { file: "Shop", fileKey: "SHOPKEY12345", window: "wshop0002" }); open.push({ close: () => shop2.ws.close() });
+  const blog2 = fakePlugin(port, { file: "Blog", fileKey: "BLOGKEY12345", window: "wblog0002" }); open.push({ close: () => blog2.ws.close() });
+  await shop2.open(); await blog2.open();
+  await until(() => hub.status().windows.length === 2);
+  blog2.ws.send(JSON.stringify({ type: "active" })); // the user looks at Blog meanwhile
+  await until(() => hub.sessions().length === 1, 5000);
+  await wait(400);
+  assert.equal(((await s.request("inspect", {})) as any).file, "Shop");
+  s.close(); shop2.ws.close(); blog2.ws.close(); hub.close();
 });

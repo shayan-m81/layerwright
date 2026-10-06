@@ -7,3 +7,4 @@ export * from "./analyze.ts";
 export * from "./export.ts";
 export * from "./weights.ts";
 export * from "./critique.ts";
+export * from "./links.ts";

@@ -138,6 +138,9 @@
   @keyframes ring { 0% { transform: scale(.6); opacity: .55; } 100% { transform: scale(1.8); opacity: 0; } }
   #status { font-size: 13px; font-weight: 650; letter-spacing: -.01em; }
   #detail { color: var(--fg2); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* This file's plugin was opened again in another window: this one steps back until the user takes it back. */
+  .resume { margin-top: 10px; width: 100%; font-weight: 600; }
+  .resume[hidden] { display: none; }
   .stack { display: flex; flex: none; }
   .stack .avatar { width: 22px; height: 22px; border-radius: 50%; font-size: 9px; margin-left: -6px; box-shadow: 0 0 0 2px var(--bg2); background: color-mix(in srgb, var(--c) 22%, var(--bg)); }
   .stack .avatar:first-child { margin-left: 0; }
@@ -615,6 +618,7 @@
           <div style="min-width:0;flex:1"><div id="status">Connecting…</div><div id="detail"></div></div>
           <div id="avatars" class="stack"></div>
         </div>
+        <button id="resume" class="resume" hidden>Use this window</button>
         <div id="help">
           Layerwright talks to Claude Code or Codex on this computer. To connect:
           <ol>
@@ -807,7 +811,11 @@
   };
   const fresh = (key) => { if (!firstSeen.has(key)) firstSeen.set(key, Date.now()); return Date.now() - firstSeen.get(key) < 400 ? " enter" : ""; };
   const post = (m) => parent.postMessage({ pluginMessage: m }, "*");
-  const withKey = (h) => Object.assign({}, h, { key: KEY });
+  /** This window, as the hub knows it: each Figma file's plugin (one per tab) stays connected on its own. */
+  const WIN = "w" + Math.random().toString(36).slice(2, 12).replace(/[^0-9a-z]/g, "0").padEnd(8, "0");
+  const withKey = (h) => Object.assign({}, h, { key: KEY, window: WIN });
+  let replaced = false;      // the plugin was opened again for this file (another window took over): wait for the user
+  let activeSent = 0;        // the last time this window told the hub the user works here (selection, page)
   const isOpen = () => !!ws && ws.readyState === 1;
 
   // What each request means to a person. Quiet ones (status checks, reading layers) don't clutter the activity.
@@ -815,8 +823,9 @@
     executePlan: "Building the design", importTree: "Importing HTML", scanDesignSystem: "Scanning the Design System",
     applyTransformations: "Applying the Design System", editNodes: "Editing layers", exportImage: "Taking a picture",
     cleanup: "Cleaning up", foundations: "Creating variables and styles", ensurePages: "Setting up pages", select: "Showing it on the canvas", inspect: "Reading layers",
+    refs: "Making links",
   };
-  const QUIET = { ping: 1, inspect: 1, select: 1, exportImage: 1 };
+  const QUIET = { ping: 1, inspect: 1, select: 1, exportImage: 1, refs: 1 };
   // The quick requests; what each asks the agent to do is in the server (inbox.ts).
   const ACTIONS = [
     { kind: "code", label: "Build in code", short: "Code", color: "#7c3aed", icon: '<path d="M8 7l-5 5 5 5M16 7l5 5-5 5M13.5 4l-3 16"/>' },
@@ -913,7 +922,7 @@
     $("conn").dataset.state = look;
     $("detail").title = "";
     // Connected to the hub isn't connected to a session: with none, nothing here can be sent anywhere. Say so.
-    $("connText").textContent = state === "running" ? "Working" : state === "connected" ? (sessions.length > 1 ? sessions.length + " sessions" : sessions.length ? "Connected" : "No session") : failures > 1 ? "Waiting for Claude" : "Connecting";
+    $("connText").textContent = replaced ? "Paused" : state === "running" ? "Working" : state === "connected" ? (sessions.length > 1 ? sessions.length + " sessions" : sessions.length ? "Connected" : "No session") : failures > 1 ? "Waiting for Claude" : "Connecting";
     if (state === "running") {
       const [r] = running.values();
       $("status").textContent = (LABEL[r.method] || r.method) + "…";
@@ -928,6 +937,9 @@
       $("status").textContent = sessions.length > 1 ? "Connected · " + sessions.length + " sessions" : "Connected to " + (clientName(sessions[0].client) || "Claude Code");
       const sel = hello && hello.selection ? hello.selection : 0;
       $("detail").textContent = hello ? (hello.fileName + " · " + String(hello.page || "").trim() + (sel ? " · " + count(sel, "layer", "layers") + " selected" : "")) : "Ready";
+    } else if (replaced) {
+      $("status").textContent = "Paused · opened in another window";
+      $("detail").textContent = "Layerwright for this file runs in another Figma window now";
     } else if (rejected) {
       $("status").textContent = "Not paired with Layerwright";
       $("detail").textContent = "Run npx layerwright plugin, then reopen the plugin";
@@ -937,7 +949,8 @@
     }
     $("error").style.display = rejected ? "block" : $("error").style.display;
     if (rejected) { $("errorText").textContent = rejected.message; $("errorTech").textContent = ""; }
-    $("help").style.display = !open && failures >= 3 && !rejected ? "block" : "none";
+    $("help").style.display = !open && failures >= 3 && !rejected && !replaced ? "block" : "none";
+    $("resume").hidden = !replaced;
     if (state !== "running") $("progress").style.display = "none";
     setHTML($("avatars"), sessions.slice(0, 4).map((s) => '<span class="avatar" style="--c:' + col(s.color) + '" title="' + esc(s.name) + '">' + esc(initials(s.name)) + '</span>').join(""));
     $("activityBadge").textContent = unseen > 9 ? "9+" : String(unseen);
@@ -993,7 +1006,7 @@
     $("sessionCount").textContent = String(sessions.length);
     $("sessionCount").dataset.show = many ? "1" : "";
     if (!holdList) setHTML($("sessions"), sessions.map((s, i) => '<li class="' + fresh("s:" + s.id).trim() + '" style="--i:' + i + '"' + (kickArmed === s.id ? ' data-confirm="1"' : "") + '>' +
-      whoHTML(s, [clientName(s.client), short(s.workdir)].filter(Boolean).join(" · ")) + sessionState(s) + kickBtn(s) + '</li>').join("") +
+      whoHTML(s, [clientName(s.client), s.file && hello && s.file !== hello.fileName ? "in " + s.file : short(s.workdir)].filter(Boolean).join(" · ")) + sessionState(s) + kickBtn(s) + '</li>').join("") +
       // Removed here, not gone from its chat: it comes back when its agent next uses Figma (figma_status).
       removed.map((s) => '<li class="gone" title="Removed from Figma. It joins again the next time you ask it for Figma work in its chat.">' +
         whoHTML(s, "Rejoins when you ask it for Figma") + '<span class="pill off">Removed</span></li>').join(""));
@@ -1118,6 +1131,7 @@
     setHTML($("mStatus"), state === "running" ? "<b>" + esc((LABEL[r.method] || r.method) + "…") + "</b> " + esc(Math.round((Date.now() - r.started) / 1000) + "s")
       : state === "connected" && !sessions.length ? "<b>No session connected</b>"
       : state === "connected" ? "<b>" + esc(hello ? String(hello.page || "").trim() || hello.fileName : "Connected") + "</b>" + (sessions.length > 1 ? " · " + sessions.length + " sessions" : "")
+      : replaced ? "<b>Paused</b> · opened in another window"
       : "<b>" + (failures > 1 ? "Waiting for Claude Code" : "Connecting…") + "</b>");
     $("mTo").style.display = sessions.length ? "inline-flex" : "none";
     if (to) $("mTo").style.setProperty && $("mTo").style.setProperty("--c", col(to.color));
@@ -1570,6 +1584,13 @@
     sock.onclose = (e) => {
       if (my !== gen) return;
       failures++; running.clear(); sessions = []; removed = []; paired = null; post({ type: "sessions", sessions });
+      if (e && e.code === 4000) {
+        // This file's plugin was opened again in another window: that one has it now. Knocking again would take it
+        // back and forth between the two; wait until the user wants this one.
+        replaced = true; failures = 0;
+        render();
+        return;
+      }
       if ((e && e.code === 4003) || rejected) {
         // Not paired with this computer's Layerwright: knocking again every few seconds won't change that. Try again
         // now and then (or when the port is changed), in case the user runs the command meanwhile.
@@ -1671,12 +1692,20 @@
   }
   $("port").onchange = () => setPort($("port").value, true);
   $("dismiss").onclick = () => { $("error").style.display = "none"; };
+  // Take this file back from the other window (that one steps back in turn).
+  $("resume").onclick = () => { replaced = false; render(); connect(); };
 
   window.onmessage = (ev) => {
     const msg = ev.data && ev.data.pluginMessage;
     if (!msg) return;
     if (msg.type === "hello") { hello = msg.hello; $("build").textContent = hello.pluginBuild ? "plugin " + String(hello.pluginBuild).slice(0, 16).replace("T", " ") : ""; if (isOpen()) ws.send(JSON.stringify(withKey(hello))); render(); }
-    if (msg.type === "selection") { if (hello) hello.selection = msg.count; if (thumb) thumb.loading = msg.count > 0; render(); }
+    if (msg.type === "selection") {
+      if (hello) hello.selection = msg.count;
+      if (thumb) thumb.loading = msg.count > 0;
+      // The user works in this file: a session that isn't working in a file yet comes here (at most every 2 s).
+      if (msg.user && isOpen() && Date.now() - activeSent > 2000) { activeSent = Date.now(); ws.send(JSON.stringify({ type: "active" })); }
+      render();
+    }
     if (msg.type === "thumb") { thumb = msg.count ? { id: msg.id, name: msg.name, kind: msg.kind, w: msg.w, h: msg.h, png: msg.png } : null; render(); }
     if (msg.type === "note-asks") { noteAsks = Array.isArray(msg.asks) ? msg.asks : []; if (noteAsks.some((n) => !n.quiet) && !settings.mini && tab !== "home") setTab("home"); render(); }
     if (msg.type === "desk") { desk = { count: msg.count || 0, names: msg.names || [], owner: msg.owner || null, to: msg.to || null, why: msg.why || null, asks: msg.asks || [] }; render(); }

@@ -788,3 +788,39 @@ test("the question box: Enter sends, Shift+Enter and an input method's Enter don
   box.value = "again"; key({ metaKey: true }); key({ ctrlKey: true, key: "Enter" });
   assert.equal(sent(), 2, "⌘/Ctrl+Enter sends (the second has nothing left to send)");
 });
+
+test("one window per Figma file: its hello names the window; the user's selections tell the hub the file is in use; reopened elsewhere, it pauses instead of taking the file back", async () => {
+  const ui = withSession();
+  ui.fromPlugin({ type: "hello", hello: { type: "hello", fileName: "Shop", page: "Home" } }); // like a page change
+  const sentHello = (ui.sockets[0].sent as string[]).map((m) => JSON.parse(m)).filter((m) => m.type === "hello").at(-1);
+  assert.match(sentHello.window, /^w[0-9a-z]{8,}$/, "a window id the hub keeps per file");
+  ui.fromPlugin({ type: "hello", hello: { type: "hello", fileName: "Shop", page: "Other" } });
+  assert.equal((ui.sockets[0].sent as string[]).map((m) => JSON.parse(m)).filter((m) => m.type === "hello").at(-1).window, sentHello.window, "the same id for the window's life");
+  const active = () => (ui.sockets[0].sent as string[]).map((m) => JSON.parse(m)).filter((m) => m.type === "active").length;
+  const now = Date.now;
+  try {
+    let t = now(); Date.now = () => t;
+    ui.fromPlugin({ type: "selection", count: 1, user: true });
+    assert.equal(active(), 1, "the user selected something here");
+    ui.fromPlugin({ type: "selection", count: 2, user: true });
+    assert.equal(active(), 1, "at most every 2 s");
+    t += 2500;
+    ui.fromPlugin({ type: "selection", count: 1, user: false });
+    assert.equal(active(), 1, "Layerwright's own selection isn't the user working here");
+    ui.fromPlugin({ type: "selection", count: 1, user: true });
+    assert.equal(active(), 2);
+  } finally { Date.now = now; }
+  // The plugin was opened again for this file in another window: the hub closes this one with 4000.
+  const sockets = ui.sockets.length, timers = ui.timers.length;
+  ui.sockets[0].readyState = 3;
+  ui.sockets[0].onclose({ code: 4000 });
+  assert.equal(ui.timers.length, timers, "no reconnect scheduled");
+  assert.equal(ui.els.status.textContent, "Paused · opened in another window");
+  assert.equal(ui.els.connText.textContent, "Paused");
+  assert.equal(ui.els.resume.hidden, false, "a button to take this file back");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(ui.sockets.length, sockets, "it doesn't knock again by itself (no back and forth between two windows)");
+  ui.els.resume.onclick();
+  assert.equal(ui.sockets.length, sockets + 1, "the user takes it back: it connects");
+  assert.equal(ui.els.resume.hidden, true);
+});

@@ -12,6 +12,7 @@
     "teamlibrary",
     "currentuser"
   ],
+  "enablePrivatePluginApi": true,
   "networkAccess": {
     "allowedDomains": [
       "none"
@@ -28,6 +29,6 @@
       "ws://localhost:7339",
       "ws://localhost:7340"
     ],
-    "reasoning": "Connects only to the local Layerwright MCP server on localhost ports 7331\u20137340 (started by Claude Code). No other network access."
+    "reasoning": "Connects only to the local Layerwright MCP server on localhost ports 7331–7340 (started by Claude Code). No other network access."
   }
 }

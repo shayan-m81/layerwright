@@ -11,6 +11,7 @@ export type ErrorType =
   | "TOKEN_NOT_FOUND"
   | "STYLE_NOT_FOUND"
   | "NODE_NOT_FOUND"
+  | "FILE_KEY_UNKNOWN"
   | "FIGMA_API_ERROR"
   | "PLUGIN_DISCONNECTED"
   | "TIMEOUT"
@@ -408,12 +409,14 @@ export type BridgeMethod =
   | "foundations"
   | "exportImage"
   | "editNodes"
-  | "cleanup";
+  | "cleanup"
+  | "refs";
 
 /** A Claude Code / Cursor session connected to the shared bridge (the hub). */
 /** `titled`: the name is the agent's title for its task, not the folder name it started with. */
 /** `connectedAt`: when it first joined (kept across reconnects). */
-export interface SessionInfo { id: string; name: string; color: string; workdir?: string; client?: string; version?: string; connectedAt: number; titled?: boolean }
+/** `file`: the Figma file it works in (from the hub, for the windows' Sessions tab). */
+export interface SessionInfo { id: string; name: string; color: string; workdir?: string; client?: string; version?: string; connectedAt: number; titled?: boolean; file?: string }
 /** A request the user sent from the Figma window to one session: a quick action ("code", "polish"…) or their own
  *  words ("ask"), about the layers selected when they sent it. */
 /** `skills`: skills the user picked for this request in the window's chat box (@name): the agent reads them first.
