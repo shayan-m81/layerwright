@@ -53,7 +53,11 @@ without displacing the plugin connection (browsers can't). The manifest allows l
 
 Every session's server is a client of one small process per computer, the hub (`apps/mcp-server/src/hub.ts`),
 which owns the bridge port. The first session that finds the port free starts it detached (`relay.ts`), the
-plugin connects to it once, and it exits by itself a minute after the last session leaves. Sessions don't
+plugin connects to it once, and it exits by itself a minute after the last session leaves. A session joins when
+it starts only in a project that uses Layerwright (its `.layerwright` folder: `init` makes it, and a session's
+first real Figma work there does); any other session joins on its first Figma call (`RelayBridge.start`, from
+`request`, the inbox or `figma_status`). The agent plugin runs the server in every Claude Code session on the
+computer, and the window shouldn't list sessions that never use Figma. Sessions don't
 affect each other: closing one leaves the rest connected, and if the hub goes away a session starts a new one
 and the plugin reconnects. `LAYERWRIGHT_DIRECT=1` keeps the old one-session bridge (`bridge.ts`).
 
@@ -63,6 +67,12 @@ and the plugin reconnects. `LAYERWRIGHT_DIRECT=1` keeps the old one-session brid
   `Origin` header other than the plugin iframe's `null`) are refused, sessions present the per-computer key
   (`~/.layerwright/key`, mode 0600), and a plugin window must be paired with the same key: `init` and
   `layerwright plugin` write it into the installed plugin.
+- **Whose selection.** Decided in the plugin (`apps/figma-plugin/src/sessions.ts`, `SessionDesk.choose`) and shown
+  by the window in Send to and the line under it: the only session; else the user's session (their last pick in
+  the window, or a request sent from it, or the session they were using when it was the only one) until they
+  pick another; else nobody, and the window asks them to choose. Joining, reconnecting, other sessions' work and
+  notes on the canvas never move it. What a session's own work selects it may use without asking; any other
+  session asks the user in the window first.
 - **Requests from Figma.** The window and canvas notes send requests to a session through the hub; the session
   gets them in its next tool result, with `figma_inbox`, or woken by the Claude Code plugin's monitor
   (`layerwright inbox-watch`). Only notes the local user types count.

@@ -40,6 +40,10 @@ interface Run {
   ticker?: ReturnType<typeof setInterval>;
   tick: number;
   progressAt: number;
+  /** Settles once the session's cursor is drawn (or never will be): a quick change waits for it before ending. */
+  drawn: Promise<void>;
+  /** When the session's cursor appeared. */
+  shownAt?: number;
 }
 interface Cur {
   run: Run; key: string; name: string; color: string;
@@ -67,8 +71,10 @@ let font: FontName | undefined;
 /** Where each session's cursor was when its last request ended: the next request's cursor comes back there. */
 const last = new Map<string, { x: number; y: number }>();
 /** How long moves, the drag-select and the typing of its tag take; how lively it is between moves (0: still); how
- *  many helpers at most; how long the ending lasts before the cursor is erased and the request answers. */
-export const timing = { glide: 520, select: 240, type: 320, life: 1, crew: 3, end: 240 };
+ *  many helpers at most; how long the ending lasts before the cursor is erased and the request answers; how long a
+ *  cursor stays on screen at least (a quick change is still seen being made); how long an ending waits at most for a
+ *  cursor still being set up (its font, where the change lands). */
+export const timing = { glide: 520, select: 240, type: 320, life: 1, crew: 3, end: 240, min: 700, drawWait: 1500 };
 /** Frames: moves at ~60 fps, the life between moves at ~25 fps (every frame is a tiny canvas update). */
 const FRAME = 16, LIFE_FRAME = 40;
 /** An overlay older than this is a leftover, whoever drew it (no request draws for that long). */
@@ -688,7 +694,8 @@ export function cursorsRescale(z: number) {
 export function cursorBegin(s: Who | undefined, method: string, params: unknown): void {
   if (!enabled || !CHANGES.has(method)) return;
   if (run) finish(run);
-  const r: Run = { curs: new Map(), transient: new Set(), over: false, tick: 0, progressAt: 0 };
+  let drawn!: () => void;
+  const r: Run = { curs: new Map(), transient: new Set(), over: false, tick: 0, progressAt: 0, drawn: new Promise<void>((ok) => { drawn = ok; }) };
   run = r;
   void (async () => {
     const z = zoomNow();
@@ -699,6 +706,8 @@ export function cursorBegin(s: Who | undefined, method: string, params: unknown)
     const v = figma.viewport.bounds;
     const start = was ?? (t ? { x: t.point.x - 90 / z, y: t.point.y - 70 / z } : { x: v.x + v.width * 0.5, y: v.y + v.height * 0.45 });
     const c = (r.lead = make(r, key, s?.name || "Claude", s?.color || "#7c3aed", start, !was));
+    r.shownAt = Date.now();
+    drawn();
     const nm: Names = names ?? ((id) => (typeof id === "string" ? "a layer" : "it"));
     c.plan = planOf(method, params, nm);
     say(c, describeRequest(method, params, nm));
@@ -712,7 +721,7 @@ export function cursorBegin(s: Who | undefined, method: string, params: unknown)
     c.box = t.box;
     c.hopAt = Date.now() + 250;
     await dragSelect(c, t.box);
-  })().catch(() => { /* decoration */ });
+  })().catch(() => { /* decoration */ }).finally(drawn);
 }
 
 /** Progress of the running request: the tag follows it ("building “Hero” · 2/5"), and step by step the crew moves to
@@ -749,6 +758,15 @@ export function cursorProgress(label: string, done?: number, total?: number) {
 export async function cursorEnd(ok: boolean, method: string, result?: unknown, params?: unknown): Promise<void> {
   const r = run;
   if (!r) return;
+  // A change quicker than the cursor's setup still shows it: wait for it to appear (never for long), then let it be
+  // seen working for a moment. All of it inside the request's undo step, like the work.
+  if (!r.over && !r.lead) {
+    let t: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([r.drawn, new Promise<void>((ok) => { t = setTimeout(ok, timing.drawWait); })]);
+    clearTimeout(t);
+  }
+  const left = r.shownAt ? r.shownAt + timing.min - Date.now() : 0;
+  if (!r.over && left > 0) await sleep(left);
   const c = r.lead;
   if (c && !r.over) {
     for (const k of r.curs.values()) { k.box = undefined; k.plan = undefined; }

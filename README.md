@@ -70,7 +70,7 @@ Layerwright closes that gap locally:
 
 ### Work together with your agents
 
-- **Several sessions, one Figma.** Every Claude Code, Codex and Cursor session on your computer shares one connection to the plugin, with no port to configure. The plugin window shows who is connected and what each is doing (sessions name themselves after their task). Your selection goes to the session you give it to, and a session never overwrites a layer another one just changed.
+- **Several sessions, one Figma.** Claude Code, Codex and Cursor sessions on your computer share one connection to the plugin, with no port to configure. Sessions in a project that uses Layerwright join when they start; any other session joins on its first Figma call, so the plugin window lists only the sessions you use with Figma, and what each is doing (sessions name themselves after their task). Your selection and requests from the window go to the session you pick there, until you pick another, and a session never overwrites a layer another one just changed.
 - **Ask from Figma.** Select layers in the plugin window, pick a session and send a request: *Build in code*, *Polish design*, *Make component*, *Mobile version*, or your own words. A Claude Code session with the plugin starts on it by itself (the plugin's monitor wakes the session); Codex gets it on its next Figma step or with `/layer:inbox`. Progress and the session's answer come back to the window.
 - **Notes on the canvas.** Type a text layer that starts with `@<session>` (or `@claude` when one session is connected) on the frame it's about, and that session gets it like a request from the window. Only notes you type count: edits by collaborators and text Layerwright writes never start a task.
 - **AI cursor.** While a session changes the canvas, a cursor in its colour with its name shows where it works, like a collaborator's. It exists only during that change and is gone before the change's undo step closes, so undo never brings it back. Waiting and questions show in the plugin window instead (Settings → AI cursor to turn it off).
@@ -139,7 +139,7 @@ flowchart LR
 3. **Execute.** The plugin builds the resolved plan with fixed Plugin API calls. There is no `eval` and no model-written code.
 4. **Verify.** The result is re-inspected and compared with the plan and, for HTML imports, with the page's rendered boxes. `figma_export_image` shows the result next to the source.
 
-Every session reaches Figma through one small local process, the **hub**. The first session starts it, and it stops by itself a minute after the last session leaves. It routes each request to the plugin and the answer back to the session that asked, so several agents can work in one file.
+Every session reaches Figma through one small local process, the **hub**. The first session that needs it starts it, and it stops by itself a minute after the last session leaves. It routes each request to the plugin and the answer back to the session that asked, so several agents can work in one file.
 
 Read more in [docs/architecture.md](https://github.com/shayan-m81/layerwright/blob/main/docs/architecture.md). The DSL is documented in [docs/dsl.md](https://github.com/shayan-m81/layerwright/blob/main/docs/dsl.md).
 

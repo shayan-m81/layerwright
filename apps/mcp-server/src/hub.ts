@@ -396,7 +396,9 @@ export class Hub {
     const name = this.uniqueName(title ?? (String(msg.name || (msg.workdir ? basename(String(msg.workdir)) : "") || "Session").slice(0, 40)));
     const used = new Set([...this.clients.values()].map((c) => c.info.color));
     const color = SESSION_COLORS.includes(msg.color) && !used.has(msg.color) ? msg.color : SESSION_COLORS.find((x) => !used.has(x)) ?? SESSION_COLORS[this.seq % SESSION_COLORS.length];
-    return { id, name, color, workdir: msg.workdir ? String(msg.workdir) : undefined, client: msg.client ? String(msg.client) : undefined, version: msg.version ? String(msg.version) : undefined, connectedAt: Date.now(), titled: title ? true : undefined };
+    // A reconnect keeps when it first joined: it isn't a new session, and mustn't become the window's default.
+    const since = id === want && Number.isFinite(msg.since) && msg.since > 0 && msg.since <= Date.now() ? Number(msg.since) : Date.now();
+    return { id, name, color, workdir: msg.workdir ? String(msg.workdir) : undefined, client: msg.client ? String(msg.client) : undefined, version: msg.version ? String(msg.version) : undefined, connectedAt: since, titled: title ? true : undefined };
   }
 
   private fromClient(c: Client, msg: any) {

@@ -1,7 +1,7 @@
 // Other Layerwright servers on this computer that can't share Figma. Before 1.0 every session's server owned the
 // bridge port alone (no hub): next to a hub it only logs "already in use" and never connects, and nothing tells the
 // user why that session can't reach Figma. `doctor` and figma_status look for them and say which project to update.
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { readFileSync, readlinkSync } from "node:fs";
 
 export interface OlderServer { pid: number; version: string; workdir?: string }
@@ -25,33 +25,50 @@ export interface FindOptions {
   self?: number;
 }
 
-/** Running Layerwright servers older than 1.0 (single-session), with the folder each runs in. Never throws. */
+const versionOf = (dir: string) => { try { return String(JSON.parse(readFileSync(`${dir}/package.json`, "utf8")).version); } catch { return undefined; } };
+
+/** The 0.x servers in a process list (pid and version; the folder comes after). */
+function olderIn(list: string, versionAt: (dir: string) => string | undefined, self: number): { pid: number; version: string }[] {
+  const out: { pid: number; version: string }[] = [];
+  for (const line of list.split("\n")) {
+    const m = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (!m || Number(m[1]) === self) continue;
+    const dir = packageDirOf(m[2]);
+    const version = dir && versionAt(dir);
+    if (version && /^0\./.test(version)) out.push({ pid: Number(m[1]), version });
+  }
+  return out;
+}
+
+/** Running Layerwright servers older than 1.0 (single-session), with the folder each runs in. Never throws. Blocks
+ *  while ps and lsof run: for the CLI (doctor). The server uses olderServersCached, which never blocks. */
 export function findOlderServers(o: FindOptions = {}): OlderServer[] {
   if (process.platform === "win32" && !o.ps) return [];
   let list = "";
   try { list = (o.ps ?? (() => execFileSync("ps", ["-axo", "pid=,command="], { encoding: "utf8", timeout: 2000, maxBuffer: 8 << 20 })))(); } catch { return []; }
-  const versionAt = o.versionAt ?? ((dir: string) => { try { return String(JSON.parse(readFileSync(`${dir}/package.json`, "utf8")).version); } catch { return undefined; } });
-  const out: OlderServer[] = [];
-  for (const line of list.split("\n")) {
-    const m = /^\s*(\d+)\s+(.*)$/.exec(line);
-    if (!m) continue;
-    const pid = Number(m[1]);
-    if (pid === (o.self ?? process.pid)) continue;
-    const dir = packageDirOf(m[2]);
-    const version = dir && versionAt(dir);
-    if (!version || !/^0\./.test(version)) continue;
-    out.push({ pid, version, workdir: (o.cwdOf ?? cwdOf)(pid) });
-  }
-  return out;
+  return olderIn(list, o.versionAt ?? versionOf, o.self ?? process.pid).map((s) => ({ ...s, workdir: (o.cwdOf ?? cwdOf)(s.pid) }));
 }
 
 /** A process's working folder: /proc on Linux, lsof elsewhere (macOS). */
 function cwdOf(pid: number): string | undefined {
   try { return readlinkSync(`/proc/${pid}/cwd`); } catch { /* not Linux */ }
-  try {
-    const r = execFileSync("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8", timeout: 2000 });
-    return r.split("\n").find((l) => l.startsWith("n"))?.slice(1) || undefined;
-  } catch { return undefined; }
+  try { return lsofCwd(execFileSync("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8", timeout: 2000 })); } catch { return undefined; }
+}
+const lsofCwd = (out: string) => out.split("\n").find((l) => l.startsWith("n"))?.slice(1) || undefined;
+
+const run = (cmd: string, args: string[]) => new Promise<string>((done) => {
+  execFile(cmd, args, { encoding: "utf8", timeout: 2000, maxBuffer: 8 << 20 }, (err, out) => done(err ? "" : out));
+});
+
+/** The same as findOlderServers, without blocking the server while ps and lsof run. */
+async function findOlderServersAsync(): Promise<OlderServer[]> {
+  if (process.platform === "win32") return [];
+  const found = olderIn(await run("ps", ["-axo", "pid=,command="]), versionOf, process.pid);
+  return Promise.all(found.map(async (s) => {
+    let workdir: string | undefined;
+    try { workdir = readlinkSync(`/proc/${s.pid}/cwd`); } catch { workdir = lsofCwd(await run("lsof", ["-a", "-p", String(s.pid), "-d", "cwd", "-Fn"])); }
+    return { ...s, workdir };
+  }));
 }
 
 /** One line for the user: who it is and how to fix it. */
@@ -61,8 +78,13 @@ export function describeOlder(s: OlderServer, current: string): string {
 }
 
 let cache: { at: number; list: OlderServer[] } | undefined;
-/** findOlderServers, at most once a minute (figma_status is called often). */
-export function olderServersCached(o?: FindOptions): OlderServer[] {
-  if (!cache || Date.now() - cache.at > 60_000) cache = { at: Date.now(), list: findOlderServers(o) };
-  return cache.list;
+let refreshing = false;
+/** What the last scan found, refreshed in the background at most once a minute: figma_status is called often and
+ *  must stay cheap. The server primes it at startup. */
+export function olderServersCached(): OlderServer[] {
+  if ((!cache || Date.now() - cache.at > 60_000) && !refreshing) {
+    refreshing = true;
+    void findOlderServersAsync().then((list) => { cache = { at: Date.now(), list }; }, () => {}).finally(() => { refreshing = false; });
+  }
+  return cache?.list ?? [];
 }

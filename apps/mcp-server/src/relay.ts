@@ -50,6 +50,9 @@ export interface RelayOptions {
   log?: (m: string) => void;
   /** How to start a hub when the port is free (tests pass an in-process one). */
   startHub?: (port: number) => void | Promise<void>;
+  /** Called once, at the session's first real Figma work (any request but a status ping): index.ts marks the project
+   *  as one that uses Layerwright. A status check (figma_status, /layer:help) doesn't mark it. */
+  onUse?: () => void;
   /** Tests: allow ports outside the plugin's 7331–7340 so they never meet a real session. */
   anyPort?: boolean;
   /** The pairing key this session presents to the hub (default: ~/.layerwright/key, made if missing). */
@@ -86,8 +89,19 @@ export class RelayBridge implements FigmaTransport {
     this.log = o.log ?? ((m) => process.stderr.write(`[layerwright] ${m}\n`));
   }
 
-  /** Connect (starting the hub if needed). Resolves once connected or after a first failed round; keeps trying. */
-  async start(): Promise<void> {
+  private starting?: Promise<void>;
+  private used = false;
+  /** Connect (starting the hub if needed). Resolves once connected or after a first failed round; keeps trying.
+   *  Called once: at startup in a project that uses Layerwright, else on the first Figma call (request, inbox,
+   *  figma_status), so sessions that never use Figma aren't listed in the plugin window. */
+  start(): Promise<void> {
+    return (this.starting ??= this.startNow());
+  }
+  /** Joined, or joining: false until the first start(). */
+  get started() { return !!this.starting; }
+  join() { return this.start(); }
+
+  private async startNow(): Promise<void> {
     if (!this.o.anyPort && (this.port < 7331 || this.port > 7340)) {
       this.startError = `Port ${this.port} is outside 7331–7340, the only ports the Figma plugin may connect to. Set LAYERWRIGHT_PORT to one of them.`;
       this.log(this.startError);
@@ -125,14 +139,14 @@ export class RelayBridge implements FigmaTransport {
       this.log(this.startError);
       return this.retry(Date.now() < this.noSpawnUntil ? 1000 : 3000);
     }
-    await this.join();
+    await this.connect();
   }
 
   private key(): string | undefined {
     try { return (this.o.key ?? (() => pluginKey(true)))(); } catch { return undefined; }
   }
 
-  private join(): Promise<void> {
+  private connect(): Promise<void> {
     return new Promise((done) => {
       const ws = new WebSocket(`ws://127.0.0.1:${this.port}/client`);
       let settled = false;
@@ -141,7 +155,7 @@ export class RelayBridge implements FigmaTransport {
       // A reconnect asks for this session's id, colour and name back (the hub gives them when nobody else has them).
       const was = this.session;
       ws.on("open", () => ws.send(JSON.stringify({ type: "hello", protocol: HUB_PROTOCOL, version: this.version, workdir: this.o.workdir ?? process.cwd(), client: this.client, title: this.title, pid: process.pid, key: this.key(),
-        resume: was?.id, color: was?.color, name: was && !was.titled ? was.name : undefined })));
+        resume: was?.id, color: was?.color, name: was && !was.titled ? was.name : undefined, since: was?.connectedAt })));
       ws.on("message", (raw) => {
         let msg: any;
         try { msg = JSON.parse(String(raw)); } catch { return; }
@@ -245,8 +259,9 @@ export class RelayBridge implements FigmaTransport {
   onActionStop?: (id: string) => void;
   kicked = false;
   private asks = new Map<string, (msg: any) => void>();
-  private ask(msg: Record<string, unknown>): Promise<any> {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return Promise.resolve(undefined);
+  private async ask(msg: Record<string, unknown>): Promise<any> {
+    if (!this.starting) await this.start();
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return undefined;
     const rid = `k${++this.seq}`;
     return new Promise((done) => {
       const t = setTimeout(() => { this.asks.delete(rid); done(undefined); }, 3000);
@@ -279,10 +294,12 @@ export class RelayBridge implements FigmaTransport {
   info() { return this.hello; }
 
   request<T>(method: BridgeMethod, params?: unknown, timeoutMs = 60_000): Promise<T> {
+    if (!this.starting) return this.start().then(() => this.request<T>(method, params, timeoutMs)); // first Figma call: join now
     if (!this.connected()) {
       return Promise.reject(new BridgeError({ type: "PLUGIN_DISCONNECTED", message: this.startError ?? `Figma plugin is not connected. In Figma desktop: Plugins → Development → "Layerwright" (it connects to ws://localhost:${this.port}).` }));
     }
     const id = `r${++this.seq}`;
+    if (method !== "ping" && !this.used) { this.used = true; try { this.o.onUse?.(); } catch { /* a hint only */ } }
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => this.expire(id), timeoutMs);
       this.pending.set(id, { resolve, reject, timer, method, timeoutMs, started: Date.now() });

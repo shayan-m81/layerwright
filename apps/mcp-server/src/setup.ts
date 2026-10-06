@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import WebSocket from "ws";
-import { BIN, CLI_FILE, DEFAULT_PORT, FROM_SOURCE, IN_NPX_CACHE, KEY_PLACEHOLDER, MIN_NODE, PKG_NAME, PKG_VERSION, PORT_RANGE, REPO_ROOT, pluginHome, pluginKey, pluginSource, portAllowed, skillSource } from "./meta.ts";
+import { BIN, CLI_FILE, DEFAULT_PORT, FROM_SOURCE, IN_NPX_CACHE, KEY_PLACEHOLDER, MIN_NODE, PKG_NAME, PKG_VERSION, PORT_RANGE, REPO_ROOT, markProject, pluginHome, pluginKey, pluginSource, portAllowed, skillSource } from "./meta.ts";
 import { AGENTS, AGENT_NAMES, PLUGIN_ID, buildMarketplace, detectAgents, installAgent, onPath, pluginInstalled, run as runAgentCli, type Agent, type Runner } from "./agents.ts";
 
 type Out = (s: string) => void;
@@ -279,6 +279,10 @@ export async function init(o: InitOptions = {}): Promise<number> {
     writeFileSync(rule, cursorRule(readFileSync(skillSource(), "utf8")));
     out(`✓ Cursor set up: ${cursorMcp} and ${rule}`);
   }
+
+  // The project's .layerwright folder marks it as one that uses Layerwright: its sessions join Figma at once and are
+  // told to watch for requests from it; other projects' sessions stay out of the plugin window until they use Figma.
+  markProject(dir);
 
   const gi = join(dir, ".gitignore");
   // The scan cache and report drafts stay local; mapping.json and memory.json are meant to be shared.

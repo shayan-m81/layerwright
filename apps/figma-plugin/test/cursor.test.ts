@@ -30,6 +30,7 @@ cursor.timing.select = 20;
 cursor.timing.type = 0;
 cursor.timing.life = 0; // still between moves, unless a test wants it lively
 cursor.timing.end = 60;
+cursor.timing.min = 0; // tests that want the minimum time on screen set it
 beforeEach(world);
 after(() => cursor.cursorsClear()); // a failed test must not leave a run going
 
@@ -87,15 +88,37 @@ test("a change: the cursor comes and drag-selects the layer while the work runs;
   assert.deepEqual(pendingTimers(), [], "and nothing keeps running");
 });
 
-test("the work never waits for the cursor: it starts at once, and a quick request ends the cursor before it was even drawn", async () => {
-  const order: string[] = [];
-  await change(A, "editNodes", RENAME, () => { order.push(`work with ${overlays().length} overlays`); undo.commitUndo(); });
-  assert.deepEqual(order, ["work with 0 overlays"], "the handler ran before the cursor was drawn");
-  assert.equal(overlays().length, 0);
-  assert.deepEqual(commits, [0]);
-  await sleep(60);
-  assert.equal(overlays().length, 0, "the cursor's setup, finishing late, draws nothing after the request");
-  assert.deepEqual(pendingTimers(), []);
+test("the work never waits for the cursor, and a quick change still shows it: the ending waits for it and keeps it on screen a moment", async () => {
+  cursor.timing.min = 150;
+  try {
+    const order: string[] = [];
+    let seen = 0;
+    const t0 = Date.now();
+    const done = change(A, "editNodes", RENAME, () => { order.push(`work with ${overlays().length} overlays`); undo.commitUndo(); });
+    while (Date.now() - t0 < 2000 && !seen) { await sleep(10); seen = cursors().length; }
+    await done;
+    assert.deepEqual(order, ["work with 0 overlays"], "the handler ran at once, before the cursor was drawn");
+    assert.equal(seen, 1, "the cursor was drawn even though the work was already done");
+    assert.ok(Date.now() - t0 >= 150, `and stayed at least timing.min (${Date.now() - t0} ms)`);
+    assert.equal(overlays().length, 0, "then erased");
+    assert.deepEqual(commits, [0], "one step, with no overlay in the file");
+    await sleep(60);
+    assert.equal(overlays().length, 0, "nothing is drawn after the request");
+    assert.deepEqual(pendingTimers(), []);
+  } finally { cursor.timing.min = 0; }
+});
+
+test("a cursor that can't be set up never holds a change for long", async () => {
+  cursor.timing.drawWait = 80;
+  const find = F().getNodeByIdAsync;
+  F().getNodeByIdAsync = () => new Promise(() => {}); // where the change lands is never found: the cursor never comes
+  try {
+    const t0 = Date.now();
+    await change(A, "editNodes", RENAME);
+    assert.ok(Date.now() - t0 < 400, `the request ended after drawWait (${Date.now() - t0} ms)`);
+    assert.equal(overlays().length, 0);
+    assert.deepEqual(commits, [0]);
+  } finally { F().getNodeByIdAsync = find; cursor.timing.drawWait = 1500; }
 });
 
 test("reads draw nothing: inspect, pictures, scans, selecting", async () => {

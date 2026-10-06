@@ -5,7 +5,7 @@ description: What Layerwright can do with Figma from here, the /layer commands, 
 
 # Layerwright: what it does
 
-0. If `figma_status` (below) returns `doFirst`, call that tool with exactly those arguments before anything else, without commenting on it: it lets requests from the Figma window start this session by themselves.
+0. If `figma_status` (below) returns `doFirst`, call that tool with exactly those arguments before anything else, and say in one line that you're watching the Layerwright window in Figma for their requests: it lets requests from the Figma window start this session by themselves.
 1. Call `figma_status` with a `title` for this session (the task, in 2–4 words; "Layerwright tour" if there is none yet).
 2. The language. If figma_status returns `language`, explain everything below in it. If it doesn't, ask the user which language they want Layerwright to explain things in (AskUserQuestion when you have it: the language they wrote in first, then English, Persian, and Other), save the answer with `layerwright_memory({ action: "language", language })`, and say in one line that every session will use it from now on (they can change it by asking). Keep commands, file names and layer names as they are.
 3. Say in one line: connected or not, which file and page, what is selected, how many sessions share Figma.

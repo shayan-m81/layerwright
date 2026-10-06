@@ -171,13 +171,13 @@ export async function reportCommand(dir = process.cwd(), out: (s: string) => voi
   return 0;
 }
 
-/** `hub` runs the shared bridge (sessions start it detached); `hub status` / `hub stop` are for people. */
 /** Local time for log lines: 2026-10-06 02:11:03. */
 export function logTime(d = new Date()): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+/** `hub` runs the shared bridge (sessions start it detached); `hub status` / `hub stop` are for people. */
 export async function hubCommand(sub: string, port = Number(process.env.LAYERWRIGHT_PORT ?? 7331), out: (s: string) => void = (s) => process.stdout.write(s + "\n")): Promise<number> {
   const { probePort } = await import("./relay.ts");
   if (sub === "run") {
@@ -271,10 +271,15 @@ export async function inboxWatch(o: { file?: string; out?: (s: string) => void; 
 /** `session-hint`: the plugin's SessionStart hook. When a Figma window is connected, or was used on this computer in
  *  the last two weeks, tells the new session to start watching for requests from it (the Monitor tool), so they
  *  start the session by themselves, whichever opens first. Prints nothing otherwise. */
-export async function sessionHint(o: { port?: number; self?: string; out?: (s: string) => void; recent?: boolean } = {}): Promise<number> {
+export async function sessionHint(o: { port?: number; self?: string; out?: (s: string) => void; recent?: boolean; project?: string } = {}): Promise<number> {
   const { probePort } = await import("./relay.ts");
   const { figmaUsedRecently } = await import("./prefs.ts");
+  const { projectUsesLayerwright } = await import("./meta.ts");
   const out = o.out ?? ((s: string) => process.stdout.write(s + "\n"));
+  // The agent plugin runs this hook in every Claude Code session on the computer: only a project that uses Layerwright
+  // (its .layerwright folder) is told to watch for requests from Figma. Elsewhere the session stays out of Figma
+  // until the user asks it for Figma work.
+  if (!projectUsesLayerwright(o.project ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd())) return 0;
   const p = await probePort(o.port ?? Number(process.env.LAYERWRIGHT_PORT ?? 7331), 1200);
   const connected = p.kind === "hub" && !!(p as any).status?.pluginConnected;
   if (!connected && !(o.recent ?? figmaUsedRecently())) return 0;
