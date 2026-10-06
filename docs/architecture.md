@@ -67,6 +67,11 @@ and the plugin reconnects. `LAYERWRIGHT_DIRECT=1` keeps the old one-session brid
   `Origin` header other than the plugin iframe's `null`) are refused, sessions present the per-computer key
   (`~/.layerwright/key`, mode 0600), and a plugin window must be paired with the same key: `init` and
   `layerwright plugin` write it into the installed plugin.
+- **One window per file.** Each Figma tab running the plugin is its own window, with an id (`ui.html` `WIN`); the
+  hub keeps them all (`Hub.windows`). A session's requests go to its window (`Client.window`): bound by a request
+  sent to it from a window, by `figma_status({ file })` or a link, and on its first request (the window the user last
+  selected something in, `active`). A binding left alone for `Hub.STAY_MS` follows the user's tab again. A second
+  window for the same file replaces the first (closed with 4000; it pauses instead of reconnecting).
 - **Whose selection.** Decided in the plugin (`apps/figma-plugin/src/sessions.ts`, `SessionDesk.choose`) and shown
   by the window in Send to and the line under it: the only session; else the user's session (their last pick in
   the window, or a request sent from it, or the session they were using when it was the only one) until they

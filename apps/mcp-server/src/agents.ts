@@ -112,6 +112,8 @@ export function pluginHooks(cmd: string) {
     PreToolUse: [{ matcher: "AskUserQuestion", hooks: ev() }],
     PostToolUse: [{ matcher: "AskUserQuestion", hooks: ev() }],
     Notification: [{ matcher: "permission_prompt|elicitation_dialog", hooks: ev() }],
+    // The user answered in the chat (a reply, not only a question's answer): the window stops saying "waiting for you".
+    UserPromptSubmit: [{ hooks: ev() }],
     Stop: [{ hooks: ev() }],
   } };
 }

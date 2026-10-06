@@ -37,6 +37,7 @@ Don't ask what you can find out: the file, page, selection and DS come from `fig
 
 1. `figma_status({ title })`. If it returns `doFirst`, call that tool (Monitor) with exactly those arguments right away, before anything else, and tell the user in one line that you're watching the Layerwright window in Figma for their requests: it wakes you when the user sends a request from the Figma window. Restart it when it expires; stop it when they ask. If it returns `rejoined`, the user had removed this session in the Figma window: say so in one line. `title` is 2–4 words naming your task in the user's language ("Checkout redesign"). The plugin window shows it instead of the folder name, so the user can tell sessions apart. Not connected → tell the user: *Figma desktop → Plugins → Development → Layerwright*.
    - `warnings` say when the scan is stale, Figma shows another page than your last build, or a newer Layerwright exists (tell the user once, with the steps given).
+   - `files`: several Figma files are open, each with its own Layerwright window. You work in the one marked `current`; when the user means another one, call `figma_status({ file })` with its name or a link to it. A link the user pastes moves you to its file by itself.
    - `memory` is what this project learned: font substitutions and mappings (imports reuse them), component choices, the user's notes (follow them), and `recurring` problems with a `hint` (act on it instead of repeating the mistake).
 2. `figma_scan_design_system` (cached; `refresh: true` after DS changes, `reload: true` after editing the cache file). It reads local and library components, styles and variables; a big file takes 10–30 s.
    Read `duplicateNames`: copies of one library set resolve to the most used; otherwise pick by `{ id }` (remembered afterwards).
@@ -47,6 +48,7 @@ Don't ask what you can find out: the file, page, selection and DS come from `fig
    them; this skill's rules still come first. The user adds their own (a link or a pasted SKILL.md) with
    `layerwright_skills({ action: "add", source })`, `/layer:skills`, the Skills tab or `/skill <link>` in the Figma
    window's chat box; they stay across updates.
+5. **Links.** A Figma link the user pastes goes wherever a layer goes: `figma_select({ nodeIds: [link] })` shows it (a page link opens that page), `figma_inspect({ target: link })` reads it, `figma_export_image({ nodeId: link })` pictures it. Give the user links too: `figma_execute_plan` returns `links` to what it built, `figma_select` to what it selected, and `figma_link` gives one for the selection, any layer or the page (`FILE_KEY_UNKNOWN`: ask them to paste any link from the file once, and links work from then on).
 
 ## 3. Job A: HTML → Figma
 
@@ -168,8 +170,8 @@ validation, approval, rollback and verification.
 2. **Reuse before you create:** DS components, variables and text styles over raw values. Use `allowFallback` only with the user's consent, and say so.
 3. **Approval boundary:** new frames need none; anything that changes or removes existing nodes needs the user's yes, then `approved: true`.
 4. **Errors are data:** `{ success: false, errors: [{ type, message, suggestions, candidates }] }`. Fix the plan from them and preview again. `AMBIGUOUS_COMPONENT` → pick a candidate `{ id }` (ask if unclear). No fitting component → ask; don't invent one.
-5. **Verify with your eyes:** `verification.passed` checks structure, sizes and links; a picture catches the rest. Never report success on a build you haven't looked at.
+5. **Verify with your eyes:** `verification.passed` checks structure, sizes and links; a picture catches the rest. Never report success on a build you haven't looked at. When you report, give the user a link to it (`links`, or `figma_link`).
 
 6. **Report what keeps failing:** if a problem recurs and isn't the user's setup, suggest `npx layerwright report` (a redacted issue draft they review and send).
 
-Error types: `INVALID_PLAN` · `COMPONENT_NOT_FOUND` · `AMBIGUOUS_COMPONENT` · `INVALID_VARIANT` · `TOKEN_NOT_FOUND` · `STYLE_NOT_FOUND` · `NODE_NOT_FOUND` · `DESIGN_SYSTEM_NOT_SCANNED` · `PLUGIN_DISCONNECTED` · `TIMEOUT` (inspect before retrying) · `NOT_APPROVED` · `FIGMA_API_ERROR` (the run was rolled back).
+Error types: `INVALID_PLAN` · `COMPONENT_NOT_FOUND` · `AMBIGUOUS_COMPONENT` · `INVALID_VARIANT` · `TOKEN_NOT_FOUND` · `STYLE_NOT_FOUND` · `NODE_NOT_FOUND` (also a link to a file that isn't open in Layerwright) · `FILE_KEY_UNKNOWN` (ask for one link from the file) · `DESIGN_SYSTEM_NOT_SCANNED` · `PLUGIN_DISCONNECTED` · `TIMEOUT` (inspect before retrying) · `NOT_APPROVED` · `FIGMA_API_ERROR` (the run was rolled back).

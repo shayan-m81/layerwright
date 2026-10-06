@@ -90,6 +90,10 @@ export class RelayBridge implements FigmaTransport {
   }
 
   private starting?: Promise<void>;
+  /** The file this session worked in last: kept through a disconnect, so a reconnect comes back to it. */
+  private lastFile?: string;
+  /** The hub keeps one window per Figma file and answers `windows` / `bind` (1.3+; its welcome says so). */
+  private hubFiles = false;
   private used = false;
   /** Connect (starting the hub if needed). Resolves once connected or after a first failed round; keeps trying.
    *  Called once: at startup in a project that uses Layerwright, else on the first Figma call (request, inbox,
@@ -155,13 +159,15 @@ export class RelayBridge implements FigmaTransport {
       // A reconnect asks for this session's id, colour and name back (the hub gives them when nobody else has them).
       const was = this.session;
       ws.on("open", () => ws.send(JSON.stringify({ type: "hello", protocol: HUB_PROTOCOL, version: this.version, workdir: this.o.workdir ?? process.cwd(), client: this.client, title: this.title, pid: process.pid, key: this.key(),
-        resume: was?.id, color: was?.color, name: was && !was.titled ? was.name : undefined, since: was?.connectedAt })));
+        resume: was?.id, color: was?.color, name: was && !was.titled ? was.name : undefined, since: was?.connectedAt,
+        file: this.lastFile })));
       ws.on("message", (raw) => {
         let msg: any;
         try { msg = JSON.parse(String(raw)); } catch { return; }
         if (msg.type === "welcome") {
           clearTimeout(t);
           this.ws = ws;
+          this.hubFiles = msg.multiFile === true;
           this.session = msg.session;
           this.sessionCount = msg.sessions ?? 1;
           this.startError = undefined;
@@ -206,6 +212,7 @@ export class RelayBridge implements FigmaTransport {
   private setPlugin(connected: boolean, hello?: BridgeHello) {
     this.plugin = connected;
     this.hello = connected ? hello ?? this.hello : undefined;
+    if (this.hello) this.lastFile = this.hello.fileKey ?? this.hello.fileName;
     if (connected && hello) { try { this.onHello?.(); } catch { /* listener */ } }
   }
 
@@ -216,7 +223,7 @@ export class RelayBridge implements FigmaTransport {
     if (msg.type === "action" && msg.action && typeof msg.action.id === "string") { try { this.onAction?.(msg.action); } catch { /* listener */ } return; }
     if (msg.type === "action-stop" && typeof msg.id === "string") { try { this.onActionStop?.(msg.id); } catch { /* listener */ } return; }
     if (msg.type === "action-drop" && typeof msg.id === "string") { try { this.onActionDrop?.(msg.id, typeof msg.by === "string" ? msg.by : undefined); } catch { /* listener */ } return; }
-    if ((msg.type === "inbox-list" || msg.type === "inbox-claim") && this.asks.has(msg.rid)) { const done = this.asks.get(msg.rid)!; this.asks.delete(msg.rid); done(msg); return; }
+    if ((msg.type === "inbox-list" || msg.type === "inbox-claim" || msg.type === "windows" || msg.type === "bind") && this.asks.has(msg.rid)) { const done = this.asks.get(msg.rid)!; this.asks.delete(msg.rid); done(msg); return; }
     if (msg.type === "progress") {
       this.lastProgress = { label: String(msg.label ?? ""), done: msg.done, total: msg.total, at: Date.now() };
       for (const [id, p] of this.pending) {
@@ -270,6 +277,24 @@ export class RelayBridge implements FigmaTransport {
     });
   }
   /** Every open request from the Figma window, whichever session it was sent to. */
+  /** An older hub has one window and doesn't answer `windows` / `bind`: they're answered here instead. */
+  private multiFile() { return this.hubFiles; }
+  /** The Figma files open in Layerwright, and which one this session works in. */
+  async windows(): Promise<{ file?: string; fileKey?: string; page?: string; current: boolean }[]> {
+    if (!this.multiFile()) return this.hello ? [{ file: this.hello.fileName, fileKey: this.hello.fileKey, page: this.hello.page, current: true }] : [];
+    return (await this.ask({ type: "windows" }))?.windows ?? [];
+  }
+  /** Work in that file from now on: a Figma link, a file key or the file's name. Its window must be open. */
+  async bind(file: string): Promise<{ ok: boolean; files: string[] }> {
+    if (!this.started) await this.start();
+    if (!this.multiFile()) {
+      const ok = !!this.hello && (this.hello.fileName === file || this.hello.fileKey === file || (!!this.hello.fileKey && file.includes(this.hello.fileKey)));
+      return { ok, files: this.hello ? [this.hello.fileName] : [] };
+    }
+    const r = await this.ask({ type: "bind", file });
+    if (r?.ok && r.hello) this.setPlugin(true, r.hello);
+    return { ok: !!r?.ok, files: (r?.files ?? []).filter(Boolean) };
+  }
   async inboxList(): Promise<{ action: FigmaAction; status: string; session: string; sessionName?: string }[]> { return (await this.ask({ type: "inbox-list" }))?.requests ?? []; }
   /** Take a request that was sent to another session (force: the user moved it here with /layer:inbox). Refused while
    *  that session handles it: then who has it. */
@@ -317,3 +342,4 @@ export class RelayBridge implements FigmaTransport {
     p.reject(new BridgeError({ type: "TIMEOUT", message: `Figma did not answer "${p.method}" after ${took}s without progress.${last} The operation may still be running; inspect before retrying.` }));
   }
 }
+

@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- One Layerwright window per Figma file, all at once: open the plugin in several Figma tabs and each stays connected (before, two tabs took the connection from each other every few seconds, and requests in flight failed). Each session works in one file: the one the user sends it a request from, the one it keeps working in, or (a session the user hasn't used for a few minutes) the tab the user works in. `figma_status` lists the open files and takes `file` (a name or a link) to switch; the Sessions tab shows which file each session works in. Opening the plugin again in the same file hands over to the new window; the old one pauses with a button to take it back, instead of reconnecting.
+- Figma links. `figma_link` gives links to the selection, any layer or the page, and the file's own link; `figma_execute_plan` and `figma_select` return links to what they built or selected. A link the user pastes works wherever a layer goes (`figma_select`, `figma_inspect`, `figma_export_image`, `figma_analyze_design`…): Layerwright finds the layer, opens its page and moves to its file when it's open in another window. The plugin reads its file's key (the manifest enables the private plugin API); when Figma doesn't give it, the first link the user pastes from that file teaches it.
+- While a session works in Figma, a toast at the bottom of the canvas says so ("✦ Checkout · scanning the Design System…"), also while it reads, scans or takes pictures, and through a multi-step job; it goes a few seconds after the last step. A toast isn't part of the document (no layers, no undo steps); the AI cursor still shows inside changes. The "AI cursor" switch covers both.
+
+### Fixed
+- The window kept saying a session was waiting for you after you answered it in the chat: the plugin's hooks didn't listen for your reply. Sending a message now clears it, and a new question replaces it.
+
 ## [1.2.0] - 2026-10-06
 
 ### Fixed

@@ -58,6 +58,7 @@ test("the marketplace: both catalogues, the plugin with its commands and skill, 
   const hooks = JSON.parse(readFileSync(join(p, "hooks", "hooks.json"), "utf8")).hooks;
   assert.equal(hooks.Stop[0].hooks[0].command, "npx -y --prefer-offline layerwright@9.9.9 hook-event", "the chat hooks: when the session waits for the user, Figma says so");
   assert.equal(hooks.PreToolUse[0].matcher, "AskUserQuestion");
+  assert.equal(hooks.UserPromptSubmit[0].hooks[0].command, "npx -y --prefer-offline layerwright@9.9.9 hook-event", "the user's reply in the chat clears 'waiting for you'");
   for (const s of ["help", "connect", "import", "design", "edit", "code", "check", "components", "prototype", "shot", "inbox", "doctor", "report", "figma-design"]) assert.ok(existsSync(join(p, "skills", s, "SKILL.md")), s);
 });
 
