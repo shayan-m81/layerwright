@@ -1,6 +1,6 @@
 // Deterministic executor: ResolvedPlan -> real Figma nodes, and Transformation[] -> edits.
 // No model calls, no eval. Every operation is a fixed Plugin API call.
-import type { ExecutionReport, Num, Paint as PlanPaint, ResolvedFrame, ResolvedGradient, ResolvedInstance, ResolvedInteraction, ResolvedNode, ResolvedPlan, ResolvedRect, ResolvedShadow, ResolvedShape, ResolvedSvg, ResolvedText, StructuredError, Transformation, TransformReport } from "@cde/core";
+import type { ExecutionReport, Num, Paint as PlanPaint, ResolvedFrame, ResolvedGradient, ResolvedImageFill, ResolvedInstance, ResolvedInteraction, ResolvedNode, ResolvedPlan, ResolvedRect, ResolvedShadow, ResolvedShape, ResolvedSvg, ResolvedText, StructuredError, Transformation, TransformReport } from "@cde/core";
 
 import { progress } from "./progress.ts";
 import { blurEffects, gradientPaint } from "./paints.ts";
@@ -135,6 +135,14 @@ export function closestStyle(styles: string[], want: string, italic = false): st
   const w = weightOf(want);
   const pool = styles.filter((s) => /italic|oblique/i.test(s) === italic);
   return [...(pool.length ? pool : styles)].sort((a, b) => Math.abs(weightOf(a) - w) - Math.abs(weightOf(b) - w) || a.length - b.length)[0];
+}
+
+/** An image already in this file, by its hash: nothing is uploaded. A hash the file doesn't have (an image from another
+ *  file) is left out with a warning; the node keeps its other fills. */
+function imagePaint(img: ResolvedImageFill, path: string, ctx: Ctx): ImagePaint | undefined {
+  const found = figma.getImageByHash(img.hash);
+  if (!found) { ctx.warnings.push(`${path}: this file has no image with hash ${img.hash} (an image is reachable by hash only in the file it was exported from); left out.`); return undefined; }
+  return { type: "IMAGE", imageHash: found.hash, scaleMode: img.scaleMode };
 }
 
 function gradientOf(g: ResolvedGradient): GradientPaint {
@@ -319,9 +327,16 @@ async function buildFrame(n: ResolvedFrame, parent: BaseNode & ChildrenMixin, ct
     if (p) { await ctx.num(f, "paddingTop", p.top); await ctx.num(f, "paddingRight", p.right); await ctx.num(f, "paddingBottom", p.bottom); await ctx.num(f, "paddingLeft", p.left); }
     if (n.layout.primaryAlign) f.primaryAxisAlignItems = n.layout.primaryAlign;
     if (n.layout.counterAlign) f.counterAxisAlignItems = n.layout.counterAlign;
-    if (n.layout.wrap && n.layout.direction === "HORIZONTAL") f.layoutWrap = "WRAP";
+    // Figma wraps only a horizontal layout, and has a row gap (counterAxisSpacing) only once it wraps.
+    if (n.layout.wrap && n.layout.direction === "HORIZONTAL") {
+      f.layoutWrap = "WRAP";
+      await ctx.num(f, "counterAxisSpacing", n.layout.counterGap);
+    }
   }
   await ctx.fill(f, n.fill);
+  // Paints bottom to top: the colour, then the image, then the gradient (a scrim over a photo).
+  const img = n.image && imagePaint(n.image, n.path, ctx);
+  if (img) f.fills = [...(f.fills as Paint[]), img];
   if (n.gradient) f.fills = [...(f.fills as Paint[]), gradientOf(n.gradient)];
   if (n.stroke) {
     await ctx.fill(f, n.stroke, "stroke");
@@ -475,6 +490,10 @@ async function buildRect(n: ResolvedRect, parent: BaseNode & ChildrenMixin, ctx:
       const img = figma.createImage(figma.base64Decode(m[1]));
       r.fills = [{ type: "IMAGE", imageHash: img.hash, scaleMode: n.fit ?? "FILL" }];
     } catch (e) { ctx.warnings.push(`${n.path}: image could not be loaded (${(e as Error).message}); kept the placeholder.`); }
+  } else if (n.imageHash) {
+    // An image this file already has: reused by hash, the placeholder stays when it isn't here.
+    const img = imagePaint({ hash: n.imageHash, scaleMode: n.fit ?? "FILL" }, n.path, ctx);
+    if (img) r.fills = [img];
   }
   await ctx.radius(r, n.radius);
   applySizing(r, { ...n, width: undefined, height: undefined }, ctx);
@@ -512,6 +531,8 @@ async function buildShape(n: ResolvedShape, parent: BaseNode & ChildrenMixin, ct
   if (s.type === "LINE") s.resize(n.width ?? 100, 0); else s.resize(n.width ?? 24, n.height ?? 24);
   s.fills = [];
   await ctx.fill(s, n.fill);
+  const img = n.image && imagePaint(n.image, n.path, ctx);
+  if (img) s.fills = [...(s.fills as Paint[]), img];
   if (n.gradient) s.fills = [...(s.fills as Paint[]), gradientOf(n.gradient)];
   if (n.stroke) { await ctx.fill(s, n.stroke, "stroke"); s.strokeWeight = n.strokeWeight ?? 1; }
   if (n.pointCount && (s.type === "POLYGON" || s.type === "STAR")) s.pointCount = n.pointCount;

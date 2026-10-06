@@ -1,7 +1,8 @@
 // Strict in-memory mock of the Figma Plugin API, shared by the executor tests.
 // It enforces the rules that most often break real plugins: fonts must be loaded before text
 // writes, FILL/ABSOLUTE/minWidth need an auto-layout parent, HUG needs auto-layout or text,
-// setProperties rejects unknown keys, only available fonts load, createImage takes PNG/JPEG/GIF bytes.
+// setProperties rejects unknown keys, only available fonts load, createImage takes PNG/JPEG/GIF bytes, getImageByHash
+// knows only this file's images, only a horizontal layout wraps and only a wrapping one has a row gap.
 import { fixtureDs } from "../../../packages/core/test/fixture.ts";
 
 let seq = 0;
@@ -31,7 +32,11 @@ export class N {
   set maxWidth(v: number | null) { this.checkMinMax(); this._maxW = v; }
   private checkMinMax() { if (this.layoutMode === "NONE" && (!this.parent || this.parent.layoutMode === "NONE")) throw new Error("min/max width only apply to auto-layout frames and their children"); }
   findAll(fn: (n: any) => boolean): any[] { return this.children.flatMap((c) => [...(fn(c) ? [c] : []), ...(c.findAll ? c.findAll(fn) : [])]); }
-  constructor(public type: string, id?: string) { this.id = id ?? `n:${++seq}`; nodes.set(this.id, this); }
+  constructor(public type: string, id?: string) {
+    this.id = id ?? `n:${++seq}`; nodes.set(this.id, this);
+    // Like Figma: a page (and the document) has no position or size ("x" in page is false).
+    if (type === "PAGE" || type === "DOCUMENT") for (const k of ["x", "y", "width", "height"]) delete (this as any)[k];
+  }
   appendChild(c: any) { this.insertChild(this.children.length, c); }
   insertChild(i: number, c: any) { if (c.parent) c.parent.children = c.parent.children.filter((x: any) => x !== c); this.children.splice(i, 0, c); c.parent = this; }
   remove() { this.removed = true; if (this.parent) this.parent.children = this.parent.children.filter((x: any) => x !== this); }
@@ -44,7 +49,11 @@ export class N {
     const scale = (n: any, top: boolean) => { if (!top) { n.x *= s; n.y *= s; } n.width *= s; n.height *= s; if (n.type === "TEXT") n.fontSize *= s; for (const c of n.children) scale(c, false); };
     scale(this, true);
   }
-  async exportAsync(o?: { format?: string }) { if (o?.format === "SVG_STRING") return `<svg xmlns="http://www.w3.org/2000/svg" width="${this.width}" height="${this.height}"><path d="M0 0H${this.width}V${this.height}Z" fill="#000"/></svg>`; return new Uint8Array([0x89, 0x50]); }
+  async exportAsync(o?: { format?: string; constraint?: { type: string; value: number } }) {
+    // Like Figma: the size constraint is validated (a page has no size of its own: its "scale" can't come from it).
+    if (o?.constraint && (!["SCALE", "WIDTH", "HEIGHT"].includes(o.constraint.type) || !Number.isFinite(o.constraint.value))) throw new Error(`in exportAsync: Property "settings" failed validation: Expected number, received ${o.constraint.value} at .constraint.value`);
+    if (o?.format === "SVG_STRING") return `<svg xmlns="http://www.w3.org/2000/svg" width="${this.width}" height="${this.height}"><path d="M0 0H${this.width}V${this.height}Z" fill="#000"/></svg>`; return new Uint8Array([0x89, 0x50]);
+  }
   setBoundVariable(f: string, v: any) { this.boundVariables[f] = { type: "VARIABLE_ALIAS", id: v.id }; }
   findAllWithCriteria(q: any): any[] {
     if (q.pluginData) return this.findAllWithCriteriaPlugin(q.pluginData.keys);
@@ -65,7 +74,19 @@ export class N {
   async setEffectStyleIdAsync(id: string) { this.effectStyleId = id; }
   async setFillStyleIdAsync(id: string) { this.fillStyleId = id; }
   async setStrokeStyleIdAsync(id: string) { this.strokeStyleId = id; }
-  locked = false; primaryAxisSizingMode = "AUTO"; counterAxisSizingMode = "AUTO"; layoutWrap = "NO_WRAP"; counterAxisSpacing = 0; dashPattern: number[] = [];
+  locked = false; primaryAxisSizingMode = "AUTO"; counterAxisSizingMode = "AUTO"; dashPattern: number[] = [];
+  // Like Figma (plugin typings): only a horizontal Auto Layout can wrap; setting layoutWrap on anything else throws.
+  private _wrap = "NO_WRAP"; private _cas: number | null = null;
+  get layoutWrap() { return this._wrap; }
+  set layoutWrap(v: string) { if (this.layoutMode !== "HORIZONTAL") throw new Error("in set_layoutWrap: layoutWrap can only be set on layers with layoutMode HORIZONTAL"); this._wrap = v; }
+  // Like Figma: the gap between wrapped rows applies only to a wrapping layout (the mock refuses a write Figma would
+  // ignore), can't be negative, and null makes it follow itemSpacing again (it never reads back as null).
+  get counterAxisSpacing() { return this._cas ?? this.itemSpacing; }
+  set counterAxisSpacing(v: number | null) {
+    if (this.layoutWrap !== "WRAP") throw new Error("in set_counterAxisSpacing: counterAxisSpacing only applies to auto-layout frames with layoutWrap WRAP");
+    if (v !== null && !(v >= 0)) throw new Error("in set_counterAxisSpacing: the value must be positive");
+    this._cas = v;
+  }
   private data = new Map<string, string>();
   setPluginData(k: string, v: string) { this.data.set(k, v); }
   getPluginData(k: string) { return this.data.get(k) ?? ""; }
@@ -101,6 +122,11 @@ export class N {
   findAllWithCriteriaPlugin(keys: string[]): any[] { return this.children.flatMap((c) => [...(keys.some((k) => c.hasPluginData(k)) ? [c] : []), ...c.findAllWithCriteriaPlugin(keys)]); }
 }
 
+/** The fields getStyledTextSegments accepts (plugin typings). */
+const SEGMENT_FIELDS = ["fontSize", "fontName", "fontWeight", "fontStyle", "textDecoration", "textDecorationStyle", "textDecorationOffset", "textDecorationThickness", "textDecorationColor",
+  "textDecorationSkipInk", "textCase", "lineHeight", "letterSpacing", "fills", "textStyleId", "fillStyleId", "listOptions", "listSpacing", "indentation", "paragraphIndent", "paragraphSpacing",
+  "hyperlink", "boundVariables", "textStyleOverrides", "openTypeFeatures"];
+
 export class T extends N {
   // Like Figma: a new font must be loaded before it is set, and the text's fonts before its size changes.
   _f: any = { family: "Inter", style: "Regular" }; _s = 12;
@@ -126,6 +152,25 @@ export class T extends N {
   setRangeFontSize(start: number, end: number, size: number) { this.ranges.push({ start, end, size }); }
   setRangeFills(start: number, end: number, fills: any[]) { this.ranges.push({ start, end, fills }); }
   setRangeHyperlink(start: number, end: number, link: any) { this.ranges.push({ start, end, link }); }
+  // Like Figma: only known text fields can be asked for, `end` is required with `start`, the range must be inside the
+  // text, and the text comes back in pieces where every asked field keeps one value (the last range set wins).
+  getStyledTextSegments(fields: string[], start?: number, end?: number) {
+    for (const f of fields) if (!SEGMENT_FIELDS.includes(f)) throw new Error(`in getStyledTextSegments: invalid field "${f}"`);
+    if (start !== undefined && end === undefined) throw new Error("in getStyledTextSegments: end is required when start is given");
+    const s = start ?? 0, e = end ?? this._c.length;
+    if (s < 0 || e > this._c.length || s > e) throw new Error("in getStyledTextSegments: range out of bounds");
+    const last = (i: number, k: string) => [...this.ranges].reverse().find((r) => r[k] !== undefined && r.start <= i && i < r.end)?.[k];
+    const at = (i: number): Record<string, unknown> => Object.fromEntries(fields.map((f) => [f,
+      f === "fontName" ? last(i, "font") ?? this._f : f === "fontSize" ? last(i, "size") ?? this._s : f === "fills" ? last(i, "fills") ?? this.fills
+      : f === "hyperlink" ? last(i, "link") ?? this.hyperlink : f === "textStyleId" ? this.textStyleId : (this as any)[f]]));
+    const out: any[] = [];
+    for (let i = s; i < e; i++) {
+      const v = at(i), prev = out.at(-1);
+      if (prev && JSON.stringify(fields.map((f) => prev[f])) === JSON.stringify(fields.map((f) => v[f]))) { prev.end = i + 1; prev.characters += this._c[i]; }
+      else out.push({ characters: this._c[i], start: i, end: i + 1, ...v });
+    }
+    return out;
+  }
   async setTextStyleIdAsync(id: string) { const s = styles.get(id); const f = s.realFont ?? s.fontName; if (!s.silent && !loaded.has(`${f.family}::${f.style}`)) throw new Error(`in setTextStyleIdAsync: Cannot write to node with unloaded font "${f.family} ${f.style}". Please call figma.loadFontAsync({ family: "${f.family}", style: "${f.style}" }) and await the returned promise first.`); this.textStyleId = id; this._f = f; }
 }
 
@@ -153,7 +198,7 @@ export const styles = new Map<string, any>([
 
 /** The plugin's side of Figma: what it showed and said (window messages, notifications, links opened, settings
  *  saved), the event handlers it registered, and the window's size. */
-export const host = { posted: [] as any[], notified: [] as string[], opened: [] as string[], storage: new Map<string, unknown>(), handlers: new Map<string, ((e?: any) => void)[]>(), ui: { width: 0, height: 0 } };
+export const host = { posted: [] as any[], notified: [] as string[], toasts: [] as { text: string; timeout?: number; open: boolean }[], opened: [] as string[], storage: new Map<string, unknown>(), handlers: new Map<string, ((e?: any) => void)[]>(), ui: { width: 0, height: 0 } };
 /** Fire a Figma event at the plugin (Figma sends them after the plugin's code yields). */
 export function emit(type: string, e?: any) { for (const fn of host.handlers.get(type) ?? []) fn(e); }
 const EVENTS = ["selectionchange", "currentpagechange", "close", "run", "drop", "documentchange", "stylechange", "textreview", "slidesviewchange", "canvasviewchange", "timerstart", "timerstop", "timerpause", "timerresume", "timeradjust", "timerdone"];
@@ -165,7 +210,7 @@ const onPage = <X extends N>(n: X): X => { (globalThis as any).figma.currentPage
 
 export function resetFigma() {
   nodes.clear(); loaded.clear(); seq = 0;
-  host.posted.length = 0; host.notified.length = 0; host.opened.length = 0; host.storage.clear(); host.handlers.clear();
+  host.posted.length = 0; host.notified.length = 0; host.toasts.length = 0; host.opened.length = 0; host.storage.clear(); host.handlers.clear();
   let pagesLoaded = false;
   let zoom = 1, center = { x: 500, y: 400 };
   const page = new N("PAGE", "0:1");
@@ -207,7 +252,15 @@ export function resetFigma() {
       getAsync: async (k: string) => structuredClone(host.storage.get(k)),
       setAsync: async (k: string, v: unknown) => { host.storage.set(k, structuredClone(v)); },
     },
-    notify: (m: string) => { host.notified.push(m); return { cancel() {} }; },
+    // Like Figma: a toast stays until its timeout (Figma closes it) or cancel(); a timeout must be a positive number.
+    notify: (m: string, o?: { timeout?: number; onDequeue?: (r: string) => void }) => {
+      if (typeof m !== "string") throw new Error("in notify: Expected string");
+      if (o?.timeout !== undefined && !(o.timeout > 0)) throw new Error("in notify: timeout must be a positive number");
+      host.notified.push(m);
+      const t = { text: m, timeout: o?.timeout, open: true };
+      host.toasts.push(t);
+      return { cancel() { if (t.open) { t.open = false; o?.onDequeue?.("dismiss"); } } };
+    },
     openExternal: (url: string) => { host.opened.push(url); },
     base64Encode: (b: Uint8Array) => Buffer.from(b).toString("base64"),
     createPage: () => { const p = Object.assign(new N("PAGE"), { selection: [] }); p.name = "Page"; root.appendChild(p); return p; },
@@ -268,6 +321,8 @@ export function resetFigma() {
       if (!png && !jpg && !gif) throw new Error("Image type is unsupported");
       const hash = `img:${images.size + 1}`; images.set(hash, bytes); return { hash };
     },
+    // Like Figma: an image is found by hash only when this file has it; otherwise null.
+    getImageByHash: (hash: string) => (images.has(hash) ? { hash, getBytesAsync: async () => images.get(hash)! } : null),
     createNodeFromSvg: (svg: string) => {
       if (!/^\s*<svg[\s>]/.test(svg) || !/<\/svg>\s*$/.test(svg)) throw new Error("Invalid SVG");
       const f = onPage(new N("FRAME")); f.fills = [];

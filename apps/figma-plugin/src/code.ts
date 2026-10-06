@@ -10,6 +10,7 @@ import { cursorBegin, cursorEnabled, cursorEnd, cursorGone, cursorsClear, isOver
 import { resultIds, setZoomEnabled, showResult, zoomAfter, zoomEnabled, zoomRequest, type Shown } from "./zoom.ts";
 import { NoteWatch, isNote, type NoteItem } from "./notes.ts";
 import { commitUndo, holdUndo, ownStep, releaseUndo } from "./undo.ts";
+import { working, workingClear } from "./working.ts";
 import { byLayerwright, inRun, lastRunEnd, lookAtView, openPage, ownSelection, pageIsOwn, runEnded, runStarted, select, selectionIsOwn, show, userActed, userWrote, wroteByRequest, wroteNodes } from "./own.ts";
 
 declare const __BUILD__: string;
@@ -73,7 +74,7 @@ async function handle(req: BridgeRequest): Promise<unknown> {
       const nodes = await resolveTarget(p.target, req.session);
       const depth = p.depth ?? (p.target === "page" ? 1 : 6);
       const out = [];
-      for (const n of nodes) out.push(await snapshot(n, { depth, maxNodes: p.maxNodes ?? 400, expandInstances: !!p.expandInstances, svg: !!p.svg }));
+      for (const n of nodes) out.push(await snapshot(n, { depth, maxNodes: p.maxNodes ?? 400, expandInstances: !!p.expandInstances, svg: !!p.svg, plan: !!p.plan }));
       return { page: figma.currentPage.name, nodes: out };
     }
     case "executePlan":
@@ -97,15 +98,34 @@ async function handle(req: BridgeRequest): Promise<unknown> {
       // A PNG/JPG of one node, capped so a huge frame doesn't produce a huge payload.
       const n = await figma.getNodeByIdAsync(p.nodeId);
       if (!n || !("exportAsync" in n)) throw new ExecError({ type: "NODE_NOT_FOUND", message: `Node ${p.nodeId} not found or can't be exported.` });
-      const node = n as SceneNode;
-      const longest = Math.max(node.width, node.height, 1);
+      const node = n as SceneNode | PageNode;
+      // A page (a link to a page) has no size of its own: the picture is of what's on it.
+      const size = node.type === "PAGE" ? pageSize(node) : { width: node.width, height: node.height };
+      if (!size) throw new ExecError({ type: "NODE_NOT_FOUND", message: `Page "${node.name}" is empty: nothing to take a picture of.` });
+      const longest = Math.max(size.width, size.height, 1);
       const scale = Math.max(0.05, Math.min(p.scale ?? 1, (p.maxDimension ?? 2000) / longest));
       const bytes = await node.exportAsync({ format: p.format === "jpg" ? "JPG" : "PNG", constraint: { type: "SCALE", value: scale } });
-      return { base64: figma.base64Encode(bytes), format: p.format === "jpg" ? "jpg" : "png", scale, width: Math.round(node.width * scale), height: Math.round(node.height * scale), name: node.name };
+      return { base64: figma.base64Encode(bytes), format: p.format === "jpg" ? "jpg" : "png", scale, width: Math.round(size.width * scale), height: Math.round(size.height * scale), name: node.name };
+    }
+    case "refs": {
+      // The layers a link is wanted for (read-only): the selection, the page, or ids. The server builds the links.
+      const ids: string[] = Array.isArray(p.nodeIds) ? p.nodeIds.filter((x: unknown): x is string => typeof x === "string").slice(0, 50) : [];
+      const nodes = ids.length ? (await Promise.all(ids.map((id) => figma.getNodeByIdAsync(id)))).filter((n): n is BaseNode => !!n) : await resolveTarget(p.target, req.session);
+      return { fileKey: figma.fileKey, fileName: figma.root.name, page: { id: figma.currentPage.id, name: figma.currentPage.name },
+        nodes: nodes.map((n) => ({ id: n.id, name: n.name, type: n.type, page: n.type === "PAGE" ? n.name : pageOf(n as SceneNode)?.name })), missing: ids.length ? ids.length - nodes.length || undefined : undefined };
     }
     case "select": {
-      // Selection only works on the current page: switch to the page of the first node, select what's on it.
-      const all = (await Promise.all((p.nodeIds as string[]).map((id) => figma.getNodeByIdAsync(id)))).filter((n): n is SceneNode => !!n && "x" in n);
+      // Selection only works on the current page: switch to the page of the first node, select what's on it. A page
+      // (a link to a page) opens that page and shows what's on it.
+      const found = (await Promise.all((p.nodeIds as string[]).map((id) => figma.getNodeByIdAsync(id)))).filter((n): n is BaseNode => !!n);
+      const asPage = found.find((n): n is PageNode => n.type === "PAGE");
+      if (asPage && !found.some((n) => "x" in n)) {
+        await openPage(asPage);
+        select([]);
+        if (asPage.children.length) show([...asPage.children]);
+        return { selected: 0, page: asPage.name, openedPage: true };
+      }
+      const all = found.filter((n): n is SceneNode => "x" in n);
       const page = all.length ? pageOf(all[0]) : undefined;
       if (page) await openPage(page);
       const nodes = all.filter((n) => pageOf(n)?.id === figma.currentPage.id);
@@ -119,6 +139,14 @@ async function handle(req: BridgeRequest): Promise<unknown> {
 }
 
 // protocol 2: this plugin understands sessions (the hub sends them only to plugins that do).
+/** The size of what's on a page (its visible layers together), or undefined when nothing is. */
+function pageSize(page: PageNode): { width: number; height: number } | undefined {
+  const boxes = page.children.filter((c) => c.visible).map((c) => c.absoluteBoundingBox ?? { x: c.x, y: c.y, width: c.width, height: c.height });
+  if (!boxes.length) return undefined;
+  const x0 = Math.min(...boxes.map((b) => b.x)), y0 = Math.min(...boxes.map((b) => b.y));
+  return { width: Math.max(...boxes.map((b) => b.x + b.width)) - x0, height: Math.max(...boxes.map((b) => b.y + b.height)) - y0 };
+}
+
 const hello = () => ({ type: "hello", fileName: figma.root.name, fileKey: figma.fileKey, page: figma.currentPage.name, user: figma.currentUser?.name, pluginBuild: BUILD, selection: figma.currentPage.selection.length, protocol: 2 });
 
 figma.ui.onmessage = async (msg: any) => {
@@ -140,7 +168,7 @@ figma.ui.onmessage = async (msg: any) => {
   if (msg?.type === "open-repo") { figma.openExternal(REPO_URL); return; }
   // A link in a skill's page (its source, a reference): only https, opened in the browser.
   if (msg?.type === "open-url" && typeof msg.url === "string" && /^https:\/\/[^\s]+$/.test(msg.url) && msg.url.length < 2000) { figma.openExternal(msg.url); return; }
-  if (msg?.type === "set-cursor") { setCursorEnabled(!!msg.on); await figma.clientStorage.setAsync("aiCursor", !!msg.on); return; }
+  if (msg?.type === "set-cursor") { setCursorEnabled(!!msg.on); if (!msg.on) workingClear(); await figma.clientStorage.setAsync("aiCursor", !!msg.on); return; }
   if (msg?.type === "guide-seen") { await figma.clientStorage.setAsync("guideSeen", true); return; }
   if (msg?.type === "set-zoom") { setZoomEnabled(!!msg.on); await figma.clientStorage.setAsync("zoomResult", !!msg.on); return; }
   if (msg?.type === "compose-action" && typeof msg.session === "string") {
@@ -161,6 +189,7 @@ figma.ui.onmessage = async (msg: any) => {
     const who = desk.sessions.find((x) => x.id === msg.session);
     if (msg.waiting) {
       const name = who?.name ?? "Claude";
+      workingClear(); // this matters more than "working": it takes the toast's place
       figma.notify(msg.kind === "permission" ? `${name} needs your OK in Claude Code. Answer in the chat.` : `${name} asked you something in Claude Code. Answer in the chat.`, { timeout: 8000 });
     }
     return;
@@ -248,6 +277,7 @@ figma.ui.onmessage = async (msg: any) => {
         runEnded();
       }
     };
+    working(whoFor(req.session, req.task)?.name, req.method, req.params, cursorEnabled()); // the toast: it's working (working.ts)
     res = { id: req.id, ok: true, result: await desk.run(req.method, req.params, req.session, work) };
   } catch (e) {
     const error = e instanceof ExecError || e instanceof DeskError ? e.detail : { type: "FIGMA_API_ERROR" as const, message: (e as Error)?.message ?? String(e) };
@@ -382,13 +412,17 @@ const notes = new NoteWatch({
 });
 setInterval(() => { try { if (!inRun()) takeLater(); notes.check(); } catch { /* a layer went away mid-look */ } }, 700);
 
-figma.on("currentpagechange", () => { figma.ui.postMessage({ type: "hello", hello: hello() }); if (!pageIsOwn()) userActed(); });
-figma.on("close", () => cursorsClear());
+figma.on("currentpagechange", () => {
+  figma.ui.postMessage({ type: "hello", hello: hello() });
+  // The user changed page: they work in this file (the window tells the hub). A page Layerwright opened isn't that.
+  if (!pageIsOwn()) { userActed(); figma.ui.postMessage({ type: "selection", count: figma.currentPage.selection.length, user: true }); }
+});
+figma.on("close", () => { cursorsClear(); workingClear(); });
 figma.on("selectionchange", () => {
   // A selection Layerwright didn't make is the user's, also while a request runs: the view stays where they work, and
   // it isn't credited to a session (sessions.ts).
   const own = selectionIsOwn();
-  figma.ui.postMessage({ type: "selection", count: figma.currentPage.selection.length });
+  figma.ui.postMessage({ type: "selection", count: figma.currentPage.selection.length, user: !own }); // user: the window tells the hub this file is in use
   desk.onSelectionChange(own);
   queueThumb();
   if (!own) userActed();

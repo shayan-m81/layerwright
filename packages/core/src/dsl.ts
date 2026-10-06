@@ -1,8 +1,12 @@
 // The Design DSL: what Claude writes. Validated with Zod before anything reaches Figma.
 import { z } from "zod";
+import { MAX_RADIUS } from "./types.ts";
 
 /** A number (raw px) or a token reference such as "spacing/md" or "$spacing.md". */
 export const NumberOrToken = z.union([z.number().min(0).max(10000), z.string().min(1)]);
+/** A corner radius: like NumberOrToken, but a larger number (Figma reports a pill as 33554400) is clamped to
+ *  MAX_RADIUS, fully round all the same, instead of rejected. */
+export const Radius = z.preprocess((v) => (typeof v === "number" && v > MAX_RADIUS ? MAX_RADIUS : v), NumberOrToken);
 /** A color: token reference ("color/bg/surface") or hex ("#1A73E8"). */
 export const ColorRef = z.string().min(1);
 
@@ -20,6 +24,8 @@ export const Layout = z
     align: z.enum(["start", "center", "end", "space-between"]).optional(), // primary axis
     crossAlign: z.enum(["start", "center", "end", "baseline"]).optional(), // counter axis
     wrap: z.boolean().optional(),
+    /** Gap between wrapped rows (Figma's counterAxisSpacing). Only with wrap: true on a horizontal layout. */
+    counterGap: NumberOrToken.optional(),
   })
   .strict();
 
@@ -50,6 +56,11 @@ export const Gradient = z.object({
   angle: z.number().default(180),
   stops: z.array(z.object({ color: z.string().min(1), position: z.number().min(0).max(1) }).strict()).min(2).max(16),
 }).strict();
+/** An image already in this Figma file, by its hash (as figma_inspect exports it): the bytes stay in Figma, nothing is
+ *  uploaded again. A hash that isn't in the file leaves the node without the image, with a warning. */
+export const ImageHash = z.string().min(1).max(100);
+export const ImageFit = z.enum(["fill", "fit", "crop", "tile"]);
+export const ImageFill = z.object({ hash: ImageHash, fit: ImageFit.default("fill") }).strict();
 /** Take a child out of the Auto Layout flow and place it at x/y inside its parent. */
 export const Position = z.object({ type: z.literal("absolute"), x: z.number(), y: z.number() }).strict();
 
@@ -114,7 +125,9 @@ const ContainerStyle = {
   strokeWeight: z.number().min(0).max(100).optional(),
   /** Draw the stroke only on these sides (e.g. ["top"] for a footer divider). Default: all sides. */
   strokeSides: z.array(z.enum(["top", "right", "bottom", "left"])).min(1).optional(),
-  radius: NumberOrToken.optional(),
+  radius: Radius.optional(),
+  /** An image from this file painted over the fill (below the gradient). */
+  image: ImageFill.optional(),
   effect: z.string().optional(), // effect style name
   /** Raw shadows, used when no effect style fits. */
   shadows: z.array(Shadow).max(8).optional(),
@@ -176,7 +189,7 @@ export const DesignNodeSchema: z.ZodType<any> = z.lazy(() =>
     z.object({ type: z.literal("divider"), ...Base, color: ColorRef.optional(), ...ComponentRef }).strict(),
     /** A basic shape: an ellipse (an arc makes rings, progress and pie slices), a horizontal line, a polygon or a star. */
     z.object({ type: z.literal("shape"), ...Base, shape: z.enum(["ellipse", "line", "polygon", "star"]),
-      fill: ColorRef.optional(), stroke: ColorRef.optional(), strokeWeight: z.number().min(0).max(100).optional(), gradient: Gradient.optional(),
+      fill: ColorRef.optional(), stroke: ColorRef.optional(), strokeWeight: z.number().min(0).max(100).optional(), gradient: Gradient.optional(), image: ImageFill.optional(),
       effect: z.string().optional(), shadows: z.array(Shadow).max(8).optional(), blur: z.number().min(0).max(250).optional(), backgroundBlur: z.number().min(0).max(250).optional(),
       /** Polygon sides / star points (default 3 / 5). */
       pointCount: z.number().int().min(3).max(60).optional(),
@@ -184,9 +197,11 @@ export const DesignNodeSchema: z.ZodType<any> = z.lazy(() =>
       innerRadius: z.number().min(0).max(1).optional(),
       /** Ellipse: draw from `start` to `end` degrees (0 = right, clockwise); innerRadius 0–1 cuts a hole (a ring). */
       arc: z.object({ start: z.number().min(-360).max(360), end: z.number().min(-360).max(360), innerRadius: z.number().min(0).max(1).default(0) }).strict().optional() }).strict(),
-    z.object({ type: z.literal("image"), ...Base, alt: z.string().optional(), fill: ColorRef.optional(), radius: NumberOrToken.optional(),
+    z.object({ type: z.literal("image"), ...Base, alt: z.string().optional(), fill: ColorRef.optional(), radius: Radius.optional(),
       /** data: URL or https URL (fetched by the MCP server, never by the plugin). */
-      src: z.string().min(1).max(15_000_000).optional(), fit: z.enum(["fill", "fit", "crop"]).default("fill") }).strict(),
+      src: z.string().min(1).max(15_000_000).optional(),
+      /** Or an image already in this file, by its hash. */
+      imageHash: ImageHash.optional(), fit: ImageFit.default("fill") }).strict(),
   ]) as any),
 );
 

@@ -292,6 +292,9 @@ test("a request still waiting says how to deliver it; a note from a session show
   assert.match(ui.els.requests.innerHTML, /next Figma step, or type \/layer:inbox.*data-act="copy" data-text="\/layer:inbox"/s);
   ui.sockets[0].onmessage({ data: JSON.stringify({ type: "action-update", id: "note-1", status: "done", message: "Which breakpoint first?", session: "sa" }) });
   assert.match(ui.els.activity.innerHTML, /✦.*Checkout: Which breakpoint first\?/s);
+  // Another file's request (a hub that restarted sends its updates to every window): not shown here.
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "action-update", id: "q77", status: "done", message: "Built the footer", session: "sa" }) });
+  assert.doesNotMatch(ui.els.activity.innerHTML, /Built the footer/);
 });
 
 test("an unpaired window can't send requests, and says how to pair; the hello carries the key", () => {
@@ -787,4 +790,51 @@ test("the question box: Enter sends, Shift+Enter and an input method's Enter don
   // ⌘+Enter (Mac) / Ctrl+Enter (Windows) send too.
   box.value = "again"; key({ metaKey: true }); key({ ctrlKey: true, key: "Enter" });
   assert.equal(sent(), 2, "⌘/Ctrl+Enter sends (the second has nothing left to send)");
+});
+
+test("one window per Figma file: its hello names the window; the user's selections tell the hub the file is in use; reopened elsewhere, it pauses instead of taking the file back", async () => {
+  const ui = withSession();
+  ui.fromPlugin({ type: "hello", hello: { type: "hello", fileName: "Shop", page: "Home" } }); // like a page change
+  const sentHello = (ui.sockets[0].sent as string[]).map((m) => JSON.parse(m)).filter((m) => m.type === "hello").at(-1);
+  assert.match(sentHello.window, /^w[0-9a-z]{8,}$/, "a window id the hub keeps per file");
+  ui.fromPlugin({ type: "hello", hello: { type: "hello", fileName: "Shop", page: "Other" } });
+  assert.equal((ui.sockets[0].sent as string[]).map((m) => JSON.parse(m)).filter((m) => m.type === "hello").at(-1).window, sentHello.window, "the same id for the window's life");
+  const active = () => (ui.sockets[0].sent as string[]).map((m) => JSON.parse(m)).filter((m) => m.type === "active").length;
+  const now = Date.now;
+  try {
+    let t = now(); Date.now = () => t;
+    ui.fromPlugin({ type: "selection", count: 1, user: true });
+    assert.equal(active(), 1, "the user selected something here");
+    ui.fromPlugin({ type: "selection", count: 2, user: true });
+    assert.equal(active(), 1, "at most every 2 s");
+    t += 2500;
+    ui.fromPlugin({ type: "selection", count: 1, user: false });
+    assert.equal(active(), 1, "Layerwright's own selection isn't the user working here");
+    ui.fromPlugin({ type: "selection", count: 1, user: true });
+    assert.equal(active(), 2);
+  } finally { Date.now = now; }
+  // The plugin was opened again for this file in another window: the hub closes this one with 4000.
+  const sockets = ui.sockets.length, timers = ui.timers.length;
+  ui.sockets[0].readyState = 3;
+  ui.sockets[0].onclose({ code: 4000, reason: "replaced by a newer window for this file" });
+  assert.equal(ui.timers.length, timers, "no reconnect scheduled");
+  assert.equal(ui.els.status.textContent, "Paused · opened in another window");
+  assert.match(ui.els.detail.textContent, /this file runs in another Figma window/);
+  assert.equal(ui.els.connText.textContent, "Paused");
+  assert.equal(ui.els.resume.hidden, false, "a button to take this file back");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(ui.sockets.length, sockets, "it doesn't knock again by itself (no back and forth between two windows)");
+  ui.els.resume.onclick();
+  assert.equal(ui.sockets.length, sockets + 1, "the user takes it back: it connects");
+  assert.equal(ui.els.resume.hidden, true);
+  // An older Layerwright (one window at a time) closes it when another file's window connects: it says so.
+  ui.sockets.at(-1).readyState = 3;
+  ui.sockets.at(-1).onclose({ code: 4000, reason: "replaced by a newer plugin connection" });
+  assert.match(ui.els.detail.textContent, /Another Figma window took over: this Layerwright serves one window at a time/);
+  // Another port is another Layerwright: not paused there.
+  ui.els.port.value = "7336";
+  ui.els.port.onchange();
+  assert.equal(ui.els.resume.hidden, true);
+  assert.notEqual(ui.els.connText.textContent, "Paused");
+  assert.equal(ui.sockets.at(-1).url, "ws://localhost:7336");
 });

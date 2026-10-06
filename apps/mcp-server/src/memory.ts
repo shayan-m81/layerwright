@@ -20,6 +20,9 @@ export interface ProjectMemory {
   problems: Problem[];
   /** The folder of the last imported export (where its fonts may be). */
   lastExport?: string;
+  /** Figma file name → its file key, learned from a link the user pasted, for files whose plugin can't read its own
+   *  key (links to layers need it). */
+  fileKeys?: Record<string, string>;
 }
 
 const MAX_PROBLEMS = 200;

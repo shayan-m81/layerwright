@@ -1,7 +1,7 @@
 // MCP tool surface. Claude reasons; these tools validate, resolve and execute deterministically.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, constants as fsc, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   AnnotationDsl, Resolver, Weight, accessibilityFindings, analyzeDesign, compilePlan, designMetrics, emptyDesignSystem, enrichDesignSystem, Interaction, resolveInteraction, retrieve, snapshotToPlan, summarize, validatePlan, verifyAgainstPlan,
@@ -12,7 +12,7 @@ import { MappingStore, scanCodebase, verifyCodeUsage } from "./code.ts";
 import { diffImages, importHtml, renderToPlan, screenshotHtml } from "@cde/html-import";
 import { inlineImages } from "./images.ts";
 import { PKG_VERSION, inboxFile, stateFile } from "./meta.ts";
-import { withTask } from "./task.ts";
+import { currentTask, withTask } from "./task.ts";
 import { describeOlder, olderServersCached } from "./others.ts";
 import { cachedUpdate, checkForUpdate, type UpdateInfo } from "./update.ts";
 import { MemoryStore } from "./memory.ts";
@@ -20,7 +20,7 @@ import { readPrefs, writePrefs } from "./prefs.ts";
 import { fontFix, groupFailures } from "./problems.ts";
 import { INSTRUCTIONS, registerPrompts } from "./prompts.ts";
 import { ACTION_LABELS, FigmaInbox, actionMeta, actionPrompt, layersLine, stopPrompt, waitingFor } from "./inbox.ts";
-import { duplicateNames } from "@cde/core";
+import { duplicateNames, figmaLink, parseFigmaLink, slugFits } from "@cde/core";
 import { SkillStore, skillIndex, skillPreamble } from "./skills.ts";
 
 type ToolResult = { content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[]; isError?: boolean };
@@ -45,7 +45,8 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
   const mappings = new MappingStore(join(home, "mapping.json"));
   const memory = new MemoryStore(join(home, "memory.json"));
   const skills = opts.skills ?? new SkillStore();
-  const plans = new Map<string, { plan: ResolvedPlan; summary: PlanSummary; report?: ExecutionReport; sources?: Record<string, { w: number; h?: number }>; webFonts?: Record<string, string[]> }>();
+  /** `file`: the file the plan was made for (its layer, component and variable ids are that file's). */
+  const plans = new Map<string, { plan: ResolvedPlan; summary: PlanSummary; file?: string; fileName?: string; report?: ExecutionReport; sources?: Record<string, { w: number; h?: number }>; webFonts?: Record<string, string[]> }>();
   const analyses = new Map<string, AnalysisResult>();
   let ds: DesignSystem | undefined;
   // Everything this server creates is tagged with the session (and run), so leftovers can be found and cleaned up.
@@ -55,16 +56,44 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
   let lastPage: string | undefined;
 
   const cacheFile = (fileName: string) => join(cacheDir, `${fileName.replace(/[^\w.-]+/g, "_")}.json`);
-  /** Where `save` points, refused when it leaves the project (an absolute path elsewhere, ../, or a link out of it):
-   *  an export never creates folders or overwrites files outside it. */
-  const saveTarget = (save: string) => {
-    const file = resolve(workdir, save);
-    const within = (root: string, p: string) => { const r = relative(root, p); return r !== ".." && !r.startsWith(`..${sep}`) && !isAbsolute(r); };
+  /** Where `save` (or a `planFile` to read) points, refused when it leaves the project (an absolute path elsewhere, ../,
+   *  or a link out of it): an export never creates folders or overwrites files outside it, nor reads files outside it. */
+  /** Is x inside root (or root itself)? */
+  const within = (root: string, x: string) => { const r = relative(root, x); return r !== ".." && !r.startsWith(`..${sep}`) && !isAbsolute(r); };
+  const projectPath = (p: string, field: "save" | "planFile" = "save", example = "exports/hero.png") => {
+    const file = resolve(workdir, p);
     let real = file;
     while (!existsSync(real)) real = dirname(real);
     let ok = within(workdir, file);
     try { ok &&= within(realpathSync(workdir), realpathSync(real)); } catch { ok = false; }
-    if (!ok) throw new BridgeError({ type: "UNSUPPORTED_PROPERTY", path: "save", message: `save must be a file or folder inside the project (${workdir}), relative to it, e.g. "exports/hero.png"; or true for .layerwright/exports. "${save}" is outside it.` });
+    if (!ok) throw new BridgeError({ type: "UNSUPPORTED_PROPERTY", path: field, message: field === "save"
+      ? `save must be a file or folder inside the project (${workdir}), relative to it, e.g. "${example}"; or true for .layerwright/exports. "${p}" is outside it.`
+      : `planFile must be a file inside the project (${workdir}), relative to it, e.g. "${example}". "${p}" is outside it.` });
+    return file;
+  };
+  const saveTarget = (save: string) => projectPath(save);
+  /** Write a file the user asked to save, after checking the final path too: a name inside the project that is a
+   *  link (or sits in a linked folder) pointing outside it is refused, never followed. */
+  const writeInProject = (file: string, data: string | Buffer) => {
+    const refuse = (why: string) => new BridgeError({ type: "UNSUPPORTED_PROPERTY", path: "save", message: `${file} ${why}; Layerwright doesn't write through links. Choose another name or folder.` });
+    if (lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink()) throw refuse("is a link"); // a dangling link too
+    if (file.startsWith(home + sep)) { if (!within(realpathSync(home), realpathSync(dirname(file)))) throw refuse("is in a folder linked outside .layerwright"); }
+    else projectPath(relative(workdir, file));
+    // And no link put there meanwhile is followed (O_NOFOLLOW, where the system has it).
+    let fd: number;
+    try { fd = openSync(file, fsc.O_WRONLY | fsc.O_CREAT | fsc.O_TRUNC | (fsc.O_NOFOLLOW ?? 0), 0o644); }
+    catch (e: any) { if (e?.code === "ELOOP") throw refuse("is a link"); throw e; }
+    try { writeFileSync(fd, data); } finally { closeSync(fd); }
+  };
+  /** A layer name as a file name. */
+  const fileStem = (name: string) => name.replace(/[^\p{L}\p{N}._]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "export";
+  /** Write a plan from figma_inspect as JSON: true → .layerwright/exports/<name>.plan.json; a path → that .json file, or that folder. */
+  const savePlan = (save: true | string, plan: { name: string }) => {
+    const fileName = `${fileStem(plan.name)}.plan.json`;
+    let file = save === true ? join(home, "exports", fileName) : projectPath(save, "save", `exports/${fileName}`);
+    if (save !== true && (/[\\/]$/.test(save) || (existsSync(file) && statSync(file).isDirectory()) || !/\.json$/i.test(file))) file = join(file, fileName);
+    mkdirSync(dirname(file), { recursive: true });
+    writeInProject(file, JSON.stringify(plan, null, 2));
     return file;
   };
   /** Write an exported image where the user can open it: true → .layerwright/exports/<node>.<ext>; a path → that file, or that folder. */
@@ -74,15 +103,18 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
     let file = save === true ? join(home, "exports", fileName) : saveTarget(save);
     if (save !== true && (/[\\/]$/.test(save) || (existsSync(file) && statSync(file).isDirectory()) || !/\.(png|jpe?g)$/i.test(file))) file = join(file, fileName);
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, Buffer.from(img.base64, "base64"));
+    writeInProject(file, Buffer.from(img.base64, "base64"));
     return file;
   };
+  /** The Design System of the file this session works in now (several files may be open: the cache is per file). */
   const loadDs = (): DesignSystem | undefined => {
-    if (ds) return ds;
     const name = bridge.info()?.fileName;
-    if (name && existsSync(cacheFile(name))) ds = JSON.parse(readFileSync(cacheFile(name), "utf8"));
+    if (ds && (!name || ds.fileName === name)) return ds;
+    ds = name && existsSync(cacheFile(name)) ? JSON.parse(readFileSync(cacheFile(name), "utf8")) : undefined;
     return ds;
   };
+  /** The file this session works in: its key, else its name. Plans are made for one file. */
+  const fileId = () => { const h = bridge.info(); return h ? h.fileKey ?? h.fileName : undefined; };
   const needDs = () => {
     const d = loadDs();
     if (!d) throw new BridgeError({ type: "DESIGN_SYSTEM_NOT_SCANNED", message: "No Design System cached. Call figma_scan_design_system first." });
@@ -166,10 +198,19 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
     tellWaiting(undefined); // it is working again: not waiting for the user
     // Work for a request the user stopped in the window goes no further.
     if (task && inbox.isStopped(task)) return fail([{ type: "STOPPED", message: stopPrompt(task) }]);
+    // A Figma link anywhere a layer goes (target, nodeId, nodeIds): the layer it points at, in its file.
+    if (/^figma_/.test(name) && a[0] && typeof a[0] === "object") {
+      // Read in the request's own file (work for a request from a window happens there).
+      try { a = [await withTask(task, () => linksToIds(a[0])), ...a.slice(1)]; } catch (e) { return fail([e instanceof BridgeError ? e.detail : { type: "NODE_NOT_FOUND", message: (e as Error).message }]); }
+    }
     const r = await withTask(task, () => handler(...a));
     if (r.isError) {
       try { const d = JSON.parse((r.content[0] as { text: string }).text); for (const e of (d.errors ?? []).slice(0, 3)) memory.problem(name, e.type, e.path ? `${e.path}: ${e.message}` : e.message); } catch { /* not JSON */ }
     }
+    // Moved to another Figma file without asking (the user works there now): node ids, planIds and the selection it
+    // had are from the other file. Said once, with whatever it called.
+    const moved = /^figma_/.test(name) ? bridge.takeMoved?.() : undefined;
+    if (moved) r.content.push({ type: "text", text: JSON.stringify({ movedToFile: moved.to, note: `This session now works in the Figma file "${moved.to}" (it was in "${moved.from}"): the user works there now. Node ids and plans from "${moved.from}" don't apply here. If you meant to keep working in "${moved.from}", call figma_status with file: "${moved.from}".` }) });
     // A request from the Figma window that this session hasn't seen yet rides along with whatever it called.
     const halted = inbox.takeStopped();
     if (halted.length) r.content.push({ type: "text", text: JSON.stringify({ stoppedInFigma: halted.map((x) => x.id), note: halted.map((x) => stopPrompt(x.id)).join(" ") }) });
@@ -179,6 +220,75 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
     return r;
     });
   };
+  // ---------- Figma links ----------
+  /** This file's key: the plugin reads it (the manifest asks for the private API), else one learned from a link. */
+  const fileKey = (hello = bridge.info()) => hello?.fileKey ?? (hello?.fileName ? memory.read().fileKeys?.[hello.fileName] : undefined);
+  const learnKey = (fileName: string | undefined, key: string) => {
+    if (fileName && memory.read().fileKeys?.[fileName] !== key) memory.update((m) => { m.fileKeys = { ...(m.fileKeys ?? {}), [fileName]: key }; });
+  };
+  const linkTo = (nodeId?: string, hello = bridge.info()) => { const key = fileKey(hello); return key ? figmaLink({ fileKey: key, fileName: hello?.fileName, nodeId }) : undefined; };
+  const linkError = (message: string) => new BridgeError({ type: "NODE_NOT_FOUND", message });
+  /** The layer a link points at, after making sure this session works in the link's file: the file open in its window,
+   *  or another open Figma file (the session moves there). undefined: a link to the whole file. */
+  const fromLink = async (text: string): Promise<string | undefined> => {
+    const link = parseFigmaLink(text)!;
+    if (!bridge.connected()) await bridge.join?.();
+    const known = fileKey();
+    if (known !== link.fileKey) {
+      // Work for a request from a Figma window stays in that window's file.
+      if (currentTask() && known) throw linkError(`This request came from the Figma file "${bridge.info()?.fileName}", and that link is to another file. Do this request's work in its own file; for the other file, work outside this request (without its requestId).`);
+      const moved = bridge.bind ? await bridge.bind(link.fileKey) : { ok: false, files: [] as string[] };
+      if (!moved.ok && known) {
+        const open = moved.files.length > 1 ? ` Open in Layerwright now: ${moved.files.join(", ")}.` : "";
+        throw linkError(`That link is to another Figma file than "${bridge.info()?.fileName ?? "the open one"}". Open that file in Figma and run the Layerwright plugin there, then try again.${open}`);
+      }
+      if (!moved.ok && !known) {
+        // This plugin can't read its file's key: a link to this file teaches it. Only one whose name is this file's:
+        // a link to an unrelated file must not become this file's key (its layer ids would point into the wrong file).
+        const name = bridge.info()?.fileName;
+        if (name && !slugFits(link.slug, name))
+          throw linkError(link.slug
+            ? `That link is to the Figma file "${link.slug.replace(/-+/g, " ").trim()}", not "${name}" (the one open in Layerwright). Open that file in Figma and run the Layerwright plugin there, then try again.`
+            : `That link doesn't name its file, so Layerwright can't tell it's "${name}". Ask the user for a link to a layer in it (in Figma: right-click a frame → Copy link).`);
+        learnKey(name, link.fileKey);
+      }
+    }
+    return link.nodeId;
+  };
+  /** Tool arguments with every Figma link turned into the layer id it points at: layer arguments (target, nodeId,
+   *  nodeIds, compareWith), edit ops (node, parent, nodes) and plan targets (target.parentId, inserts[].parentId). One
+   *  call works in one file: links to two different files in it are refused. */
+  const linksToIds = async (args: Record<string, any>) => {
+    // Only the layer fields count (a text in a plan may well mention a Figma link).
+    const fields: unknown[] = [typeof args.target === "string" ? args.target : args.target?.parentId, args.nodeId, ...(Array.isArray(args.nodeIds) ? args.nodeIds : []), args.compareWith?.nodeId,
+      ...(Array.isArray(args.ops) ? args.ops.flatMap((o: any) => [o?.node, o?.parent, ...(Array.isArray(o?.nodes) ? o.nodes : [])]) : []),
+      args.plan?.target?.parentId, ...(Array.isArray(args.plan?.inserts) ? args.plan.inserts.map((x: any) => x?.parentId) : [])];
+    const keys = new Set(fields.flatMap((v) => (typeof v === "string" ? [parseFigmaLink(v)?.fileKey] : [])).filter((k): k is string => !!k));
+    if (!keys.size) return args;
+    if (keys.size > 1) throw linkError("These links are to different Figma files. Work in one file per call (figma_status with file: to switch).");
+    const out = { ...args };
+    const one = async (v: unknown, whole: string | "error") => {
+      if (typeof v !== "string" || !parseFigmaLink(v)) return v;
+      const id = await fromLink(v);
+      if (id) return id;
+      if (whole === "error") throw linkError("That link is to the whole file, not a layer. Ask for a link to the frame (select it in Figma, then right-click → Copy link).");
+      return whole;
+    };
+    if ("target" in out) out.target = await one(out.target, "page");
+    if ("nodeId" in out) out.nodeId = await one(out.nodeId, "error");
+    if (Array.isArray(out.nodeIds)) out.nodeIds = await Promise.all(out.nodeIds.map((v: unknown) => one(v, "error")));
+    if (out.compareWith && typeof out.compareWith === "object") out.compareWith = { ...out.compareWith, nodeId: await one(out.compareWith.nodeId, "error") };
+    if (Array.isArray(out.ops)) out.ops = await Promise.all(out.ops.map(async (o: any) => o && typeof o === "object" ? {
+      ...o, ...(o.node !== undefined ? { node: await one(o.node, "error") } : {}), ...(o.parent !== undefined ? { parent: await one(o.parent, "error") } : {}),
+      ...(Array.isArray(o.nodes) ? { nodes: await Promise.all(o.nodes.map((n: unknown) => one(n, "error"))) } : {}) } : o));
+    const plan = (p: any) => p && typeof p === "object" ? (async () => ({ ...p,
+      ...(p.target?.parentId !== undefined ? { target: { ...p.target, parentId: await one(p.target.parentId, "error") } } : {}),
+      ...(Array.isArray(p.inserts) ? { inserts: await Promise.all(p.inserts.map(async (x: any) => ({ ...x, parentId: await one(x?.parentId, "error") }))) } : {}) }))() : p;
+    if (out.plan) out.plan = await plan(out.plan);
+    if (out.target && typeof out.target === "object" && out.target.parentId !== undefined) out.target = { ...out.target, parentId: await one(out.target.parentId, "error") };
+    return out;
+  };
+
   /** Choices made by id between same-named components are remembered and reused. */
   const rememberChoices = (plan: any) => {
     const d = loadDs();
@@ -216,13 +326,18 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
     inputSchema: {
       title: z.string().trim().min(2).max(40).optional().describe("2–4 words naming what this session is doing (e.g. \"Checkout redesign\", \"Login bug fix\"), in the user's language. The Figma plugin window shows it, so the user can tell sessions apart and give the right one their selection. Set it on the first call; again only when the task changes"),
       listen: z.boolean().optional().describe("Return doFirst (the watcher that wakes this session when the user sends a request from the Figma window) even if it was returned before: /layer:connect"),
+      file: z.string().max(400).optional().describe("Several Figma files open (each with its Layerwright window): work in this one from now on. Its name, a Figma link to it, or its file key"),
     },
-  }, async ({ title, listen }) => guard(async () => {
+  }, async ({ title, listen, file }) => guard(async () => {
     // Removed in the Figma window: this call brings it back. The user removed it on purpose, so they hear about it.
     const wasRemoved = !!bridge.kicked;
     if (title) bridge.setTitle?.(title); // first: a session that joins now shows up with its title, not its folder
     if (wasRemoved) await bridge.rejoin?.();
     else await bridge.join?.(); // the first Figma call of a session outside a Layerwright project: it joins now
+    // Which Figma file this session works in, when several are open (one Layerwright window each).
+    const want = file ? parseFigmaLink(file)?.fileKey ?? file : undefined;
+    const chosen = want ? bridge.bind ? await bridge.bind(want) : { ok: bridge.info()?.fileName === want || bridge.info()?.fileKey === want, files: bridge.info() ? [bridge.info()!.fileName] : [] } : undefined;
+    if (chosen && !chosen.ok) return fail([{ type: "NODE_NOT_FOUND", message: `No open Layerwright window shows "${file}". Open that file in Figma and run the Layerwright plugin there.${chosen.files.length ? ` Open now: ${chosen.files.join(", ")}.` : ""}` }]);
     // The language the user chose to be told things in (every project, every session): layerwright_memory language.
     const language = readPrefs().language;
     const base = { connected: bridge.connected(), file: bridge.info()?.fileName, designSystemCached: !!loadDs(), designSystemScannedAt: ds?.scannedAt, workdir,
@@ -246,10 +361,14 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
     if (update?.updateAvailable) warnings.push(`Layerwright ${update.latest} is available (this is ${update.current}). Tell the user once: ${update.steps?.join(" → ")}.`);
     if (lastPage && ping.page !== lastPage) warnings.push(`Figma now shows page "${ping.page}", but the last build went to "${lastPage}". Plans build on the current page unless target.page is set.`);
     const shared = bridge.session && (bridge.sessionCount ?? 1) > 1
-      ? { sharedFigma: { thisSession: bridge.session.name, sessions: bridge.sessionCount, note: "Other Claude/Cursor sessions use this Figma file too. Work on layers by id; a selection is yours only when the user gives it to this session in the Layerwright window (figma_inspect target 'selection' asks them)." } }
+      ? { sharedFigma: { thisSession: bridge.session.name, sessions: bridge.sessionCount, note: "Other Claude/Cursor sessions use Figma too (this file or others). Work on layers by id; a selection is yours only when the user gives it to this session in the Layerwright window (figma_inspect target 'selection' asks them)." } }
       : undefined;
+    const open = (await bridge.windows?.()) ?? [];
+    const files = open.length > 1 ? { files: open.map((w) => ({ file: w.file, page: w.page, ...(w.current ? { current: true } : {}) })),
+      filesNote: `Several Figma files are open in Layerwright (one window each). This session works in "${bridge.info()?.fileName}". When the user means another one, call figma_status with file: its name or a link to it.` } : undefined;
+    const fileLink = linkTo();
     if (bridge.session && !bridge.session.titled) warnings.push(`The plugin window calls this session "${bridge.session.name}" (its folder). Call figma_status again with title: 2–4 words naming the task, so the user can tell sessions apart.`);
-    return ok({ ...base, ...ping, ...shared, ...watch, session, version: PKG_VERSION, memory: memory.summary(), skills: skillList, update: update?.updateAvailable ? update : undefined, warnings: warnings.length ? warnings : undefined });
+    return ok({ ...base, ...ping, ...(fileLink ? { fileLink } : {}), ...files, ...shared, ...watch, session, version: PKG_VERSION, memory: memory.summary(), skills: skillList, update: update?.updateAvailable ? update : undefined, warnings: warnings.length ? warnings : undefined });
   }));
 
   server.registerTool("figma_inbox", {
@@ -321,15 +440,18 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
   }));
 
   server.registerTool("figma_inspect", {
-    description: "Read Figma nodes: the selection (default), the current page (top level) or a node id. format: tree (default; compact snapshot of layout, fills, bound variables, text styles, instances), summary (counts, instances per component, top-level children; cheap for big frames), text (every text layer, flat), instances (every instance with variants, props and overrides, flat), plan (the subtree as a Design Plan you can edit and send to figma_preview_plan: clone, refactor, or implement in code). Big answers are capped; use summary, a smaller depth, or offset/limit.",
+    description: "Read Figma nodes: the selection (default), the current page (top level) or a node id. format: tree (default; compact snapshot of layout, fills, bound variables, text styles, instances), summary (counts, instances per component, top-level children; cheap for big frames), text (every text layer, flat), instances (every instance with variants, props and overrides, flat), plan (the subtree as a Design Plan you can edit and send to figma_preview_plan: clone, refactor, or implement in code; images are kept by their hash in this file, and grid layouts become fixed frames with their children placed). For a big plan pass save, then figma_preview_plan with planFile. Big answers are capped; use summary, a smaller depth, or offset/limit.",
     inputSchema: { target: z.string().optional().describe("'selection' (default) | 'page' | a node id"), depth: z.number().int().min(0).max(20).optional(), maxNodes: z.number().int().min(1).max(5000).optional(),
       expandInstances: z.boolean().optional().describe("tree: descend into instances (their text, hidden layers, overrides)"),
       format: z.enum(["tree", "summary", "text", "instances", "plan"]).optional(),
+      values: z.enum(["tokens", "raw"]).optional().describe("plan: \"tokens\" writes the variables and text styles layers are bound to, by name, so the rebuild stays bound to the Design System (previewing it needs a scan; a token the scan doesn't know is written as its value); \"raw\" writes their values (hex, px, font fields), so the plan previews without a scan. Default: tokens when a Design System scan is cached, raw otherwise"),
+      save: z.union([z.boolean(), z.string().min(1)]).optional().describe("plan: write the plan to a JSON file in the project instead of returning it inline (a big frame's plan is too long to pass around): true → .layerwright/exports/<name>.plan.json, or a .json file or folder inside the project. Edit the file, then pass it to figma_preview_plan as planFile"),
       offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(500).optional().describe("text/instances: page through the list (default 100)") },
-  }, async ({ target, depth, maxNodes, expandInstances, format, offset, limit }) => guard(async () => {
+  }, async ({ target, depth, maxNodes, expandInstances, format, values, save, offset, limit }) => guard(async () => {
     const f = format ?? "tree";
     const deep = f !== "tree";
-    const res = await bridge.request<{ page: string; nodes: NodeSnapshot[] }>("inspect", { target, svg: f === "plan", depth: depth ?? (deep ? 20 : undefined), maxNodes: maxNodes ?? (deep ? 5000 : undefined), expandInstances: deep || expandInstances }, 120_000);
+    if (f === "plan" && typeof save === "string") projectPath(save, "save", "exports/home.plan.json"); // refused before Figma is asked
+    const res = await bridge.request<{ page: string; nodes: NodeSnapshot[] }>("inspect", { target, svg: f === "plan", plan: f === "plan", depth: depth ?? (deep ? 20 : undefined), maxNodes: maxNodes ?? (deep ? 5000 : undefined), expandInstances: deep || expandInstances }, 120_000);
     if (!res.nodes.length) return fail([{ type: "NODE_NOT_FOUND", message: "Nothing selected. Pass a node id or ask the user to select a frame." }]);
     const flat: { n: NodeSnapshot; path: string; inInstance: boolean }[] = [];
     const walk = (n: NodeSnapshot, path: string, inInstance: boolean) => { flat.push({ n, path, inInstance }); (n.children ?? []).forEach((c) => walk(c, `${path} / ${c.name}`, inInstance || n.type === "INSTANCE")); };
@@ -343,9 +465,21 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
     if (f === "text") return ok({ page: res.page, ...page(flat.filter((x) => x.n.type === "TEXT").map(({ n, path, inInstance }) => ({ id: n.id, path, text: n.text?.chars, style: n.text?.style ?? n.text?.font, size: n.text?.fontSize, inInstance: inInstance || undefined, hidden: n.visible === false || undefined }))) });
     if (f === "instances") return ok({ page: res.page, ...page(flat.filter((x) => x.n.type === "INSTANCE").map(({ n, path }) => ({ id: n.id, path, componentSet: n.instance?.componentSet, componentSetId: n.instance?.componentSetId, component: n.instance?.component, componentId: n.instance?.componentId, variants: n.instance?.variants, props: n.instance?.props, overrides: n.instance?.overrides }))) });
     if (f === "plan") {
-      const out = res.nodes.map((n) => snapshotToPlan(n, loadDs()));
+      // Token names only resolve against a scan: without one, the values themselves make a plan that builds as is.
+      const scanned = !!loadDs();
+      const v = values ?? (scanned ? "tokens" : "raw");
+      const out = res.nodes.map((n) => snapshotToPlan(n, loadDs(), { values: v }));
       const plan = { ...out[0].plan, screens: out.flatMap((o) => o.plan.screens) };
-      return ok({ plan, warnings: out.flatMap((o) => o.warnings).slice(0, 30), next: "Edit the plan (or reuse it as is), then figma_preview_plan. Instances point at their component set by id." });
+      const warnings = out.flatMap((o) => o.warnings).slice(0, 30);
+      const valuesNote = !values && !scanned ? "No Design System scan is cached, so the plan has raw values (hex, px, fonts) and previews without one; the rebuild isn't bound to variables or text styles. To keep them: figma_scan_design_system, then export again with values: \"tokens\"." : undefined;
+      const about = "Instances point at their component set by id (they need a Design System scan); images are reused by their hash, so they only show in this file.";
+      if (save !== undefined && save !== false) {
+        const file = savePlan(save, plan);
+        return ok({ file, bytes: statSync(file).size, screens: plan.screens.length, values: v, valuesNote, warnings,
+          next: `Edit the file (the plan as JSON), then figma_preview_plan({ planFile: ${JSON.stringify(relative(workdir, file))} }). ${about}` });
+      }
+      const kb = Math.round(JSON.stringify(plan).length / 1000);
+      return ok({ plan, values: v, valuesNote, warnings, next: `Edit the plan (or reuse it as is), then figma_preview_plan.${kb > 50 ? ` This plan is ${kb} KB: export it with save: true and preview it with planFile rather than pasting it.` : ""} ${about}` });
     }
     const text = JSON.stringify(res);
     if (text.length > 80_000) return ok({ truncated: true, chars: text.length, hint: "This tree is too big to return whole. Use format: \"summary\" first, then inspect a child by id, lower depth, or format text/instances with offset/limit.", preview: text.slice(0, 20_000) });
@@ -354,9 +488,18 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
 
   server.registerTool("figma_preview_plan", {
     description: "Validate a Design Plan (Design DSL JSON) with Zod, resolve every component/variant/property/token against the cached Design System, and return a planId + human-readable summary WITHOUT touching Figma. Invalid plans or unresolved components return structured errors with suggestions — fix the plan and preview again.",
-    inputSchema: { plan: z.any().describe("DesignPlan object: { name, screens: DesignNode[], target?, screenGap? }. See the figma-design skill for the DSL.") },
-  }, async ({ plan }) => guard(async () => {
-    const v = validatePlan(plan);
+    inputSchema: { plan: z.any().optional().describe("DesignPlan object: { name, screens: DesignNode[], target?, screenGap? }. See the figma-design skill for the DSL."),
+      planFile: z.string().min(1).optional().describe("Instead of plan: a plan saved as JSON in the project (figma_inspect format \"plan\" with save writes one), relative to the project or absolute inside it") },
+  }, async ({ plan, planFile }) => guard(async () => {
+    if ((plan === undefined) === (planFile === undefined)) return fail([{ type: "INVALID_PLAN", path: "plan", message: "Give plan (the plan itself) or planFile (a plan saved as JSON in the project), one of them." }]);
+    let input: unknown = plan;
+    if (planFile !== undefined) {
+      const file = projectPath(planFile, "planFile", ".layerwright/exports/home.plan.json");
+      if (!existsSync(file) || !statSync(file).isFile()) return fail([{ type: "INVALID_PLAN", path: "planFile", message: `No plan file at ${file}.` }]);
+      if (statSync(file).size > 50_000_000) return fail([{ type: "INVALID_PLAN", path: "planFile", message: `${file} is over 50 MB; that's not a plan.` }]);
+      input = readFileSync(file, "utf8");
+    }
+    const v = validatePlan(input);
     if (!v.success) return fail(v.errors);
     // A plan with only raw values needs no scan; one that references components or tokens gets a clear hint.
     const cachedDs = loadDs();
@@ -365,9 +508,9 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
     const c = compilePlan(d, v.plan, { preferred: preferred() });
     if (!c.ok || !c.plan) {
       const needsScan = !cachedDs && c.errors.some((e) => ["COMPONENT_NOT_FOUND", "TOKEN_NOT_FOUND", "STYLE_NOT_FOUND", "INVALID_VARIANT"].includes(e.type));
-      return fail(needsScan ? [{ type: "DESIGN_SYSTEM_NOT_SCANNED", message: "This plan uses components, tokens or styles; call figma_scan_design_system first." }, ...c.errors] : c.errors, { warnings: c.warnings, summary: c.summary });
+      return fail(needsScan ? [{ type: "DESIGN_SYSTEM_NOT_SCANNED", message: "This plan uses components, tokens or styles; call figma_scan_design_system first. (A plan from figma_inspect can instead be exported again with values: \"raw\", which needs no scan for colours, spacing and text; components always do.)" }, ...c.errors] : c.errors, { warnings: c.warnings, summary: c.summary });
     }
-    plans.set(c.plan.planId, { plan: c.plan, summary: c.summary });
+    plans.set(c.plan.planId, { plan: c.plan, summary: c.summary, file: fileId(), fileName: bridge.info()?.fileName });
     const destructive = !!c.plan.target.parentId || !!c.plan.inserts?.length;
     return ok({ success: true, planId: c.plan.planId, summary: c.summary, warnings: [...c.warnings, ...(staleWarning() ?? [])], requiresApproval: destructive, next: destructive ? "Show the summary to the user; call figma_execute_plan with approved=true only after they agree." : "Show the summary; then call figma_execute_plan (creates new frames only)." });
   }));
@@ -408,7 +551,7 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
     const c = compilePlan(d, page || target ? { ...r.plan, target: { ...(r.plan.target ?? {}), ...(target ?? {}), ...(page ? { page } : {}) } } : r.plan, { preferred: preferred() });
     const fromMemory = { fontMap: Object.keys(mem.fontMap).filter((k) => !fontMap?.[k]).length ? mem.fontMap : undefined, mappings: usedMappings.length - (userMappings?.length ?? 0) || undefined };
     if (!c.ok || !c.plan) return fail(c.errors, { warnings: [...r.warnings, ...c.warnings], summary: c.summary });
-    plans.set(c.plan.planId, { plan: c.plan, summary: c.summary, sources: r.sources, webFonts: r.webFonts });
+    plans.set(c.plan.planId, { plan: c.plan, summary: c.summary, sources: r.sources, webFonts: r.webFonts, file: fileId(), fileName: bridge.info()?.fileName });
     const intoExisting = !!c.plan.target.parentId;
     return ok({ success: true, planId: c.plan.planId, summary: c.summary, mappedToDesignSystem: r.mapped, fromMemory: fromMemory.fontMap || fromMemory.mappings ? fromMemory : undefined, webFonts: Object.keys(r.webFonts).length ? r.webFonts : undefined, warnings: [...r.warnings, ...c.warnings].slice(0, 30),
       requiresApproval: intoExisting || undefined, next: `${intoExisting ? "Show the summary; this builds inside an existing node, so call figma_execute_plan with approved: true after the user agrees." : "Show the summary; then call figma_execute_plan with this planId."} Afterwards, match it to the Design System: figma_analyze_design({ target, mode: "sync" }).` });
@@ -420,6 +563,11 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
   }, async ({ planId, approved }) => guard(async () => {
     const entry = plans.get(planId);
     if (!entry) return fail([{ type: "INVALID_PLAN", message: `Unknown planId ${planId}. Call figma_preview_plan first.` }]);
+    // A plan is built in the file it was made for (several files may be open): back to it, or refuse.
+    if (entry.file && fileId() && entry.file !== fileId()) {
+      const back = bridge.bind ? await bridge.bind(entry.file) : { ok: false };
+      if (!back.ok || fileId() !== entry.file) return fail([{ type: "INVALID_PLAN", message: `This plan was made for the Figma file "${entry.fileName ?? entry.file}", which isn't the one this session works in ("${bridge.info()?.fileName}") and isn't open in Layerwright now. Open that file and run the plugin there, or preview the plan again in this file.` }]);
+    }
     if ((entry.plan.target.parentId || entry.plan.inserts?.length) && !approved) return fail([{ type: "NOT_APPROVED", message: "This plan modifies an existing node. Ask the user, then call again with approved=true." }]);
     const images = await inlineImages(entry.plan);
     const m = meta();
@@ -428,7 +576,8 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
     lastPage = report.page?.name;
     const mismatches = await verifyPlan(entry.plan, report, entry.sources);
     if (mismatches.length) memory.problem("figma_execute_plan", "VERIFICATION", `${mismatches.length} mismatch(es): ${[...new Set(mismatches.map((m) => m.issue))].join("; ")}`);
-    return ok({ success: true, created: report.createdRootIds, page: report.page?.name, run: m.run, nodeCount: Object.keys(report.nodeIds).length, warnings: [...images.warnings, ...explainFonts(report.warnings, entry.webFonts)], verification: verdict(mismatches),
+    const builtLinks = report.createdRootIds.map((id) => linkTo(id)).filter(Boolean);
+    return ok({ success: true, created: report.createdRootIds, ...(builtLinks.length ? { links: builtLinks } : {}), page: report.page?.name, run: m.run, nodeCount: Object.keys(report.nodeIds).length, warnings: [...images.warnings, ...explainFonts(report.warnings, entry.webFonts)], verification: verdict(mismatches),
       next: "Check it visually with figma_export_image (pass compareWith: { html } for an HTML import)." });
   }));
 
@@ -830,9 +979,29 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
   }, async ({ scope, run, nodeIds, approved }) => guard(async () => ok(await bridge.request("cleanup", { session: !run && !nodeIds && scope !== "all" ? session : undefined, run, nodeIds, approved }, 120_000))));
 
   server.registerTool("figma_select", {
-    description: "Select and zoom to node ids in Figma (to show the user what was created or will change). Switches to the page of the first node.",
-    inputSchema: { nodeIds: z.array(z.string()).min(1) },
-  }, async ({ nodeIds }) => guard(async () => ok(await bridge.request("select", { nodeIds }))));
+    description: "Select and zoom to layers in Figma (to show the user what was created or will change, or what a link they pasted points at). Takes node ids or Figma links (a link to another open file moves this session there; a link to a page opens that page). Switches to the page of the first node, and returns links to what it selected.",
+    inputSchema: { nodeIds: z.array(z.string()).min(1).describe("Node ids or Figma links") },
+  }, async ({ nodeIds }) => guard(async () => {
+    const r = await bridge.request<Record<string, unknown>>("select", { nodeIds });
+    const links = nodeIds.map((id) => linkTo(id)).filter(Boolean);
+    return ok({ ...r, ...(links.length ? { links } : {}) });
+  }));
+
+  server.registerTool("figma_link", {
+    description: "Links to Figma layers, to give the user (a link opens the file at that layer): the selection (default), the current page ('page'), node ids, or what a Figma link points at. Also the file's own link. Give the user a link to what you built or changed.",
+    inputSchema: {
+      target: z.string().optional().describe("'selection' (default) | 'page' | a node id | a Figma link"),
+      nodeIds: z.array(z.string()).max(50).optional().describe("Several layers at once (node ids or links)"),
+    },
+  }, async ({ target, nodeIds }) => guard(async () => {
+    const r = await bridge.request<{ fileKey?: string; fileName: string; page: { id: string; name: string }; nodes: { id: string; name: string; type: string; page?: string }[]; missing?: number }>("refs", { target, nodeIds });
+    if (r.fileKey) learnKey(r.fileName, r.fileKey);
+    const hello = { type: "hello" as const, page: r.page.name, fileName: r.fileName, fileKey: r.fileKey ?? fileKey({ type: "hello", page: r.page.name, fileName: r.fileName }) };
+    if (!hello.fileKey) return fail([{ type: "FILE_KEY_UNKNOWN", message: `Figma doesn't tell this plugin the link of "${r.fileName}". Ask the user to paste any link from this file once (in Figma: right-click a frame → Copy link): Layerwright remembers it for this file, and links work from then on.` }]);
+    if (!r.nodes.length) return fail([{ type: "NODE_NOT_FOUND", message: "Nothing selected. Pass node ids, 'page', or ask the user to select the layers." }]);
+    return ok({ file: r.fileName, fileLink: linkTo(undefined, hello), links: r.nodes.map((n) => ({ name: n.name, type: n.type, page: n.page, link: linkTo(n.id, hello) })),
+      ...(r.missing ? { missing: `${r.missing} of the ids weren't found in this file.` } : {}) });
+  }));
 
   server.registerTool("code_scan_components", {
     description: "Scan the codebase (React/Next) for exported UI components, framework/Tailwind/shadcn signals, and suggest Figma↔code mappings by name. Use before implementing a Figma design so existing components are reused.",

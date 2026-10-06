@@ -44,16 +44,18 @@ HTML file/folder ──Chromium────────────────�
 
 The request is `{ id, method, params }` and the response is `{ id, ok, result | error }`. Methods:
 `ping`, `scanDesignSystem`, `inspect`, `executePlan`, `applyTransformations`, `editNodes`, `importTree`,
-`ensurePages`, `foundations`, `exportImage`, `cleanup`, `select`. The plugin announces itself with
-`{ type: "hello", fileName, page, pluginBuild }`; the build stamp lets `doctor` and `figma_status` spot a
-plugin window that still runs older code. `doctor` connects to `/doctor` and gets a status reply
+`ensurePages`, `foundations`, `exportImage`, `cleanup`, `select`, `refs` (a layer's page and file, for links). The
+plugin announces itself with `{ type: "hello", fileName, fileKey, page, pluginBuild, protocol }`, and the window adds
+its id and the pairing key (`window`, `key`). The build stamp lets `doctor` and `figma_status` spot a plugin window
+that still runs older code. `fileKey` needs the manifest's `enablePrivatePluginApi`; without it the server learns
+the key from a link the user pastes (`memory.json` `fileKeys`). `doctor` connects to `/doctor` and gets a status reply
 without displacing the plugin connection (browsers can't). The manifest allows localhost ports 7331–7340 only.
 
 ## Shared hub
 
 Every session's server is a client of one small process per computer, the hub (`apps/mcp-server/src/hub.ts`),
-which owns the bridge port. The first session that finds the port free starts it detached (`relay.ts`), the
-plugin connects to it once, and it exits by itself a minute after the last session leaves. A session joins when
+which owns the bridge port. The first session that finds the port free starts it detached (`relay.ts`), every
+plugin window connects to it, and it exits by itself a minute after the last session leaves. A session joins when
 it starts only in a project that uses Layerwright (its `.layerwright` folder: `init` makes it, and a session's
 first real Figma work there does); any other session joins on its first Figma call (`RelayBridge.start`, from
 `request`, the inbox or `figma_status`). The agent plugin runs the server in every Claude Code session on the
@@ -67,6 +69,24 @@ and the plugin reconnects. `LAYERWRIGHT_DIRECT=1` keeps the old one-session brid
   `Origin` header other than the plugin iframe's `null`) are refused, sessions present the per-computer key
   (`~/.layerwright/key`, mode 0600), and a plugin window must be paired with the same key: `init` and
   `layerwright plugin` write it into the installed plugin.
+- **One window per file.** Each Figma tab running the plugin is its own window, with an id (`ui.html` `WIN`); the
+  hub keeps them all (`Hub.windows`). A session's requests go to one window (`Hub.windowFor`):
+  - Work for a request sent from a window (its `task`) goes to that window, found by window id or file key, so a
+    reopened window counts. The relay sends the request's file too (`taskFile`, from the window's hello it got with
+    the request), and inside that work `RelayBridge.info()` is that file. The session's own binding doesn't change.
+  - Otherwise the session's bound window (`Client.window`). It is bound by `figma_status({ file })`, a link, its first
+    request (the window the user last worked in: a selection or page change, `active`), or a request from a window
+    while the session isn't busy elsewhere (unused for `Hub.STAY_MS`).
+  - After `Hub.STAY_MS` without Figma work, a read follows the user's tab, and the session is told it moved (`moved`,
+    shown to the agent as `movedToFile`). A change (any method not in `READS`) never goes to another file than the
+    session's own without it asking.
+  - When its window closes, a session waits `Hub.WAIT_MS` for that file to reconnect. After that a read may go to
+    another window, but a change is refused.
+  - A second window for the same file (same `fileKey`) replaces the first: it is closed with 4000, and it pauses
+    instead of reconnecting.
+  - Request updates go to the window the request came from. One the hub doesn't know (it restarted) goes to every
+    window, and only the window that sent it shows it. Whether a session waits for the user goes to every window.
+  - The hub's welcome says `multiFile`. An older hub has one window, and the relay answers `windows`/`bind` itself.
 - **Whose selection.** Decided in the plugin (`apps/figma-plugin/src/sessions.ts`, `SessionDesk.choose`) and shown
   by the window in Send to and the line under it: the only session; else the user's session (their last pick in
   the window, or a request sent from it, or the session they were using when it was the only one) until they

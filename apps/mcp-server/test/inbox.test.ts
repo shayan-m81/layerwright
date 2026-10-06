@@ -237,6 +237,17 @@ test("the chat hooks note what the session does (hook-event); its server tells t
   assert.deepEqual(told.at(-1), { type: "session-state", waiting: true, kind: "question", text: "Which style?" });
   await t.call("figma_status");
   assert.deepEqual(told.at(-1), { type: "session-state", waiting: false, kind: undefined, text: undefined }, "working again: the window stops asking");
+  // It ends its turn waiting for the user; the user replies in the chat (no Figma call follows): the window stops
+  // saying "waiting for you" as soon as the reply is sent (UserPromptSubmit), and shows the next one when it comes.
+  await hookEvent({ input: JSON.stringify({ session_id: "sess-chat-2", hook_event_name: "Stop", last_assistant_message: "Done. Should I add the hover state too?" }) });
+  await new Promise((r) => setTimeout(r, 1000));
+  assert.deepEqual(told.at(-1), { type: "session-state", waiting: true, kind: "question", text: "Should I add the hover state too?" });
+  await hookEvent({ input: JSON.stringify({ session_id: "sess-chat-2", hook_event_name: "UserPromptSubmit", prompt: "yes please" }) });
+  await new Promise((r) => setTimeout(r, 1000));
+  assert.deepEqual(told.at(-1), { type: "session-state", waiting: false, kind: undefined, text: undefined }, "answered in the chat: cleared");
+  await hookEvent({ input: JSON.stringify({ session_id: "sess-chat-2", hook_event_name: "Stop", last_assistant_message: "Added it. Which colour for the hover?" }) });
+  await new Promise((r) => setTimeout(r, 1000));
+  assert.deepEqual(told.at(-1), { type: "session-state", waiting: true, kind: "question", text: "Which colour for the hover?" }, "a new question shows the new one");
   delete process.env.CLAUDE_CODE_SESSION_ID;
 });
 

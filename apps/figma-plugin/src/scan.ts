@@ -292,8 +292,13 @@ export function effectsOf(list: readonly Effect[]): NodeSnapshot["effects"] {
 
 const isAutoParent = (n: SceneNode) => !!n.parent && "layoutMode" in n.parent && n.parent.layoutMode !== "NONE";
 
-/** svg: also export vectors and boolean shapes as SVG markup (for the plan export). */
-export async function snapshot(node: BaseNode, opts: { depth?: number; maxNodes?: number; expandInstances?: boolean; svg?: boolean } = {}): Promise<NodeSnapshot> {
+/** The one solid colour of a list of paints, as hex. */
+const solidHex = (p: readonly Paint[] | typeof figma.mixed | undefined) => { const f = paints(p); return f?.length === 1 && f[0].startsWith("#") ? f[0] : undefined; };
+
+/** svg: also export vectors and boolean shapes as SVG markup. plan: inspect for the plan export: SVG as with svg, the
+ *  whole of long texts, and the styled pieces (runs) of texts whose colour, font, size or link changes inside them. */
+export async function snapshot(node: BaseNode, opts: { depth?: number; maxNodes?: number; expandInstances?: boolean; svg?: boolean; plan?: boolean } = {}): Promise<NodeSnapshot> {
+  if (opts.plan) opts = { ...opts, svg: true };
   let budget = opts.maxNodes ?? 400;
   const varNames = new Map<string, string>();
   const varName = async (id: string) => {
@@ -310,10 +315,18 @@ export async function snapshot(node: BaseNode, opts: { depth?: number; maxNodes?
       const f = sn as FrameNode;
       s.layout = { mode: f.layoutMode, primaryAlign: f.primaryAxisAlignItems, counterAlign: f.counterAxisAlignItems, sizingH: f.layoutSizingHorizontal, sizingV: f.layoutSizingVertical };
       if (f.layoutMode !== "NONE") { s.layout.gap = f.itemSpacing; s.layout.padding = { top: f.paddingTop, right: f.paddingRight, bottom: f.paddingBottom, left: f.paddingLeft }; }
+      // A wrapping row and the gap between its rows (counterAxisSpacing reads as itemSpacing when not set apart).
+      if (f.layoutMode === "HORIZONTAL" && f.layoutWrap === "WRAP") { s.layout.wrap = true; s.layout.counterGap = f.counterAxisSpacing ?? f.itemSpacing; }
     }
+    if ("layoutPositioning" in sn && sn.layoutPositioning === "ABSOLUTE") s.absolute = true;
     if ("fills" in sn) s.fills = paints(sn.fills as readonly Paint[]);
     if ("strokes" in sn) s.strokes = paints(sn.strokes);
     if ("fills" in sn) { const g = gradientOf(sn.fills as readonly Paint[]); if (g) s.gradient = g; }
+    // The top image fill by hash: the bytes stay in the file, so a plan can paint the same image again.
+    if ("fills" in sn && Array.isArray(sn.fills)) {
+      const img = [...(sn.fills as Paint[])].reverse().find((p): p is ImagePaint => p.type === "IMAGE" && p.visible !== false && !!p.imageHash);
+      if (img) s.image = { hash: img.imageHash!, scaleMode: img.scaleMode };
+    }
     if ("effects" in sn && sn.effects.length) { const e = effectsOf(sn.effects); if (e) s.effects = e; }
     if ("effectStyleId" in sn && typeof sn.effectStyleId === "string" && sn.effectStyleId) s.effectStyle = sn.effectStyleId;
     // Not inside instances: the export refers to their component, so their icons' SVG would never be used.
@@ -357,12 +370,20 @@ export async function snapshot(node: BaseNode, opts: { depth?: number; maxNodes?
     }
     if (n.type === "TEXT") {
       const t = n as TextNode;
-      s.text = { chars: t.characters.length > 300 ? `${t.characters.slice(0, 300)}…` : t.characters, fontSize: typeof t.fontSize === "number" ? t.fontSize : undefined, font: t.fontName !== figma.mixed ? `${t.fontName.family} ${t.fontName.style}` : "mixed",
+      // A plan rebuilds the text, so it gets all of it; elsewhere a long text is cut short.
+      s.text = { chars: t.characters.length > 300 && !opts.plan ? `${t.characters.slice(0, 300)}…` : t.characters, fontSize: typeof t.fontSize === "number" ? t.fontSize : undefined, font: t.fontName !== figma.mixed ? `${t.fontName.family} ${t.fontName.style}` : "mixed",
         lineHeight: t.lineHeight === figma.mixed ? "mixed" : t.lineHeight.unit === "AUTO" ? "AUTO" : t.lineHeight.unit === "PIXELS" ? Math.round(t.lineHeight.value * 10) / 10 : `${t.lineHeight.value}%` };
       s.text.align = t.textAlignHorizontal;
       s.text.autoResize = t.textAutoResize;
       if (t.letterSpacing !== figma.mixed && t.letterSpacing.value) s.text.letterSpacing = t.letterSpacing.unit === "PIXELS" ? t.letterSpacing.value : Math.round((t.letterSpacing.value / 100) * (typeof t.fontSize === "number" ? t.fontSize : 16) * 100) / 100;
       if (typeof t.textStyleId === "string" && t.textStyleId) { s.text.styleId = t.textStyleId; s.text.style = (await figma.getStyleByIdAsync(t.textStyleId))?.name; }
+      // Pieces with their own colour, font, size or link (a coloured word, a bold label), so a plan keeps them.
+      if (opts.plan && !inInstance && t.characters.length) {
+        try {
+          const segs = t.getStyledTextSegments(["fontName", "fontSize", "fills", "hyperlink"]);
+          if (segs.length > 1) s.text.runs = segs.map((g) => ({ chars: g.characters, font: `${g.fontName.family} ${g.fontName.style}`, fontSize: g.fontSize, fill: solidHex(g.fills), href: g.hyperlink?.type === "URL" ? g.hyperlink.value : undefined }));
+        } catch { /* unreadable: the text keeps its base style */ }
+      }
     }
     if (n.type === "INSTANCE") {
       const i = n as InstanceNode;
