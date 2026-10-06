@@ -5,10 +5,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-06
+
 ### Added
-- One Layerwright window per Figma file, all at once: open the plugin in several Figma tabs and each stays connected (before, two tabs took the connection from each other every few seconds, and requests in flight failed). Each session works in one file: the one the user sends it a request from, the one it keeps working in, or (a session the user hasn't used for a few minutes) the tab the user works in. `figma_status` lists the open files and takes `file` (a name or a link) to switch; the Sessions tab shows which file each session works in. Opening the plugin again in the same file hands over to the new window; the old one pauses with a button to take it back, instead of reconnecting.
-- Figma links. `figma_link` gives links to the selection, any layer or the page, and the file's own link; `figma_execute_plan` and `figma_select` return links to what they built or selected. A link the user pastes works wherever a layer goes (`figma_select`, `figma_inspect`, `figma_export_image`, `figma_analyze_design`…): Layerwright finds the layer, opens its page and moves to its file when it's open in another window. The plugin reads its file's key (the manifest enables the private plugin API); when Figma doesn't give it, the first link the user pastes from that file teaches it.
-- While a session works in Figma, a toast at the bottom of the canvas says so ("✦ Checkout · scanning the Design System…"), also while it reads, scans or takes pictures, and through a multi-step job; it goes a few seconds after the last step. A toast isn't part of the document (no layers, no undo steps); the AI cursor still shows inside changes. The "AI cursor" switch covers both.
+- One Layerwright window per Figma file, all at once: open the plugin in several Figma tabs and each stays connected (before, two tabs took the connection from each other every few seconds, and requests in flight failed). Each session works in one file: the one the user sends it a request from, the one it keeps working in, or (a session the user hasn't used for a few minutes) the tab the user works in. Work for a request sent from a window happens in that window's file, without redirecting what the session was doing elsewhere. A change never goes to another file than the one the session works in unless it asks: a plan is built in the file it was previewed in (or refused), and a session whose window reconnects waits for it. A session is told when it moves to another file. `figma_status` lists the open files and takes `file` (a name or a link) to switch; the Sessions tab shows which file each session works in. Opening the plugin again in the same file hands over to the new window; the old one pauses with a button to take it back, instead of reconnecting.
+- Figma links. `figma_link` gives links to the selection, any layer or the page, and the file's own link; `figma_execute_plan` and `figma_select` return links to what they built or selected. A link the user pastes works wherever a layer goes (`figma_select`, `figma_inspect`, `figma_export_image`, `figma_analyze_design`…): Layerwright finds the layer, opens its page and moves to its file when it's open in another window; links to two different files in one call are refused. The plugin reads its file's key (the manifest enables the private plugin API); when Figma doesn't give it, the first link the user pastes from that file teaches it (only a link whose name is this file's).
+- While a session works in Figma, a toast at the bottom of the canvas says so ("✦ Checkout · scanning the Design System…"), also while it reads, scans or takes pictures, through a multi-step job and a long build (its progress keeps the toast up); it goes a few seconds after the last step, and two sessions at once don't make it flicker. A toast isn't part of the document (no layers, no undo steps); the AI cursor still shows inside changes. The "AI cursor" switch covers both.
 - `figma_inspect({ format: "plan", save: true })` writes the plan to `.layerwright/exports/<name>.plan.json` (or a `.json` file or folder inside the project) instead of returning it inline, and `figma_preview_plan({ planFile })` previews a plan from a file in the project. Paths outside the project are refused.
 - `layout.counterGap` in the Design DSL: the gap between the rows of a wrapping horizontal layout (Figma's `counterAxisSpacing`), compiled, built and exported.
 - `image: { hash, fit }` on frames and shapes, and `imageHash` on `image` nodes: an image already in the file, by hash. `fit` also takes `tile`.
@@ -19,9 +21,10 @@ All notable changes to this project are documented here. The format follows
 - Exported plans named the variables and text styles layers are bound to, so without a Design System scan the preview failed (`DESIGN_SYSTEM_NOT_SCANNED`, `TOKEN_NOT_FOUND`). Without a scan the export now writes the values themselves (hex, px, font fields) and says so; with a scan, a token the scan doesn't know is written as its value, with a warning. `values: "tokens"` or `"raw"` chooses.
 - Children of a grid layout lost their places in an exported plan and were stacked at 0,0 when it was built. The grid comes back as a fixed frame with each child at its position, with a warning; a child placed absolutely inside Auto Layout keeps its position too, and a frame without Auto Layout that fills its parent keeps filling it.
 - Image fills were left out of exported plans. They are exported by the file's image hash with their scale mode and painted again from it, without uploading anything (a hash the file doesn't have is left out with a warning).
-- A text with several colours, weights or sizes was exported with none of them. It is exported with `runs` now, and a plan gets long texts whole instead of cut at 300 characters (a text that really ends with "…" keeps it).
+- A text with several colours, weights or sizes was exported with none of them. It is exported with `runs` now (up to 200 per text), and a plan gets long texts whole instead of cut at 300 characters, up to 5000 (a text that really ends with "…" keeps it; a longer one is cut with a warning).
 - Wrapping rows were exported without `wrap`.
 - Images given as https links inside `inserts` (nodes added into existing frames) weren't fetched, so they stayed placeholders.
+- `figma_export_image` of a page (now also reachable with a link to a page) failed with a Figma validation error, since a page has no size of its own. It takes a picture of what's on the page; an empty page is said plainly.
 
 ## [1.2.0] - 2026-10-06
 
@@ -231,7 +234,8 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 - The plugin no longer opens a duplicate connection after the port is changed.
 
-[Unreleased]: https://github.com/shayan-m81/layerwright/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/shayan-m81/layerwright/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/shayan-m81/layerwright/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/shayan-m81/layerwright/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/shayan-m81/layerwright/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/shayan-m81/layerwright/compare/v0.2.2...v1.0.0
