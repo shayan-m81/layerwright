@@ -70,10 +70,11 @@ Layerwright closes that gap locally:
 
 ### Work together with your agents
 
-- **Several sessions, one Figma.** Claude Code, Codex and Cursor sessions on your computer share one connection to the plugin, with no port to configure. Sessions in a project that uses Layerwright join when they start; any other session joins on its first Figma call, so the plugin window lists only the sessions you use with Figma, and what each is doing (sessions name themselves after their task). Your selection and requests from the window go to the session you pick there, until you pick another, and a session never overwrites a layer another one just changed.
+- **Several sessions, several files.** Claude Code, Codex and Cursor sessions on your computer share one connection to the plugin, with no port to configure. Open Layerwright in several Figma files at once: each stays connected, and each session works in one file (the one you send it a request from, or the one it's told to use). A change never lands in another file than the one the session works in. Sessions in a project that uses Layerwright join when they start; any other session joins on its first Figma call, so the plugin window lists only the sessions you use with Figma, and what each is doing (sessions name themselves after their task). Your selection and requests from the window go to the session you pick there, until you pick another, and a session never overwrites a layer another one just changed.
 - **Ask from Figma.** Select layers in the plugin window, pick a session and send a request: *Build in code*, *Polish design*, *Make component*, *Mobile version*, or your own words. A Claude Code session with the plugin starts on it by itself (the plugin's monitor wakes the session); Codex gets it on its next Figma step or with `/layer:inbox`. Progress and the session's answer come back to the window.
 - **Notes on the canvas.** Type a text layer that starts with `@<session>` (or `@claude` when one session is connected) on the frame it's about, and that session gets it like a request from the window. Only notes you type count: edits by collaborators and text Layerwright writes never start a task.
-- **AI cursor.** While a session changes the canvas, a cursor in its colour with its name shows where it works, like a collaborator's. It exists only during that change and is gone before the change's undo step closes, so undo never brings it back. Waiting and questions show in the plugin window instead (Settings → AI cursor to turn it off).
+- **AI cursor and a working toast.** While a session changes the canvas, a cursor in its colour with its name shows where it works, like a collaborator's. It exists only during that change and is gone before the change's undo step closes, so undo never brings it back. While a session works at all (reading, scanning, taking pictures, building), a toast at the bottom of the canvas says what it's doing; it is never a layer. Waiting and questions show in the plugin window (Settings → AI cursor turns both off).
+- **Figma links.** Ask for a link to the selection, a frame, a section or a page (`figma_link`); what a session builds or selects comes back with links. Paste a Figma link to a session and it finds the layer, opens its page and works in its file.
 - **A guide in the window.** The **?** in the plugin window's header explains each tab, the actions and canvas notes. It opens by itself the first time.
 - **`/layer:` commands in Claude Code and Codex.** `init` installs the Layerwright plugin for the agents it finds (it asks; Claude Code by default): `/layer:help`, `/layer:connect`, `/layer:import`, `/layer:design`, `/layer:edit`, `/layer:code`, `/layer:check`, `/layer:components`, `/layer:prototype`, `/layer:shot`, `/layer:inbox`, `/layer:doctor`, `/layer:report`.
 
@@ -139,7 +140,7 @@ flowchart LR
 3. **Execute.** The plugin builds the resolved plan with fixed Plugin API calls. There is no `eval` and no model-written code.
 4. **Verify.** The result is re-inspected and compared with the plan and, for HTML imports, with the page's rendered boxes. `figma_export_image` shows the result next to the source.
 
-Every session reaches Figma through one small local process, the **hub**. The first session that needs it starts it, and it stops by itself a minute after the last session leaves. It routes each request to the plugin and the answer back to the session that asked, so several agents can work in one file.
+Every session reaches Figma through one small local process, the **hub**. The first session that needs it starts it, and it stops by itself a minute after the last session leaves. It routes each request to the right Figma file's plugin window and the answer back to the session that asked, so several agents can work in one file, or in several files at once.
 
 Read more in [docs/architecture.md](https://github.com/shayan-m81/layerwright/blob/main/docs/architecture.md). The DSL is documented in [docs/dsl.md](https://github.com/shayan-m81/layerwright/blob/main/docs/dsl.md).
 
@@ -153,8 +154,9 @@ Read more in [docs/architecture.md](https://github.com/shayan-m81/layerwright/bl
 | `figma_edit` | Rename, move, duplicate, set, delete, resize to fit, group / ungroup, boolean shapes, componentize (variants, text properties), swap instances, bind variables, apply styles, annotations, prototype links and flows |
 | `figma_export_image` | A node as an image; compared with the source HTML or another node, with a diff heatmap. `save: true` writes it to `.layerwright/exports/` to show the user |
 | `figma_inbox` / `figma_reply` | Requests the user sent from the Figma window to this session, and the answer shown back in the window |
-| `figma_status` / `figma_scan_design_system` / `figma_get_design_context` | Connection and page, Design System scan (components, variants, variables, styles, duplicate names), task-scoped context |
-| `figma_inspect` / `figma_verify` / `figma_select` | Snapshots (tree, summary, text, instances, or the subtree as a plan), plan-vs-canvas checks, select and zoom (switches page) |
+| `figma_status` / `figma_scan_design_system` / `figma_get_design_context` | Connection, page and the open Figma files (`file` to switch), Design System scan (components, variants, variables, styles, duplicate names), task-scoped context |
+| `figma_inspect` / `figma_verify` / `figma_select` | Snapshots (tree, summary, text, instances, or the subtree as a plan, saved to a file with `save`), plan-vs-canvas checks, select and zoom (switches page) |
+| `figma_link` | Links to the selection, layers or the page, and the file's own link. Any layer argument also takes a Figma link |
 | `figma_analyze_design` / `figma_apply_transformations` | Audit a frame against the DS, or `mode: "sync"` after an import; apply the groups you approve |
 | `figma_import_html` / `figma_pages` / `figma_foundations` | Pixel-faithful import, page setup, variables and text styles |
 | `figma_migrate` | Move every instance of one component set to another, variant by variant, keeping overrides (dry run first) |
@@ -208,7 +210,8 @@ Start with `npx layerwright doctor`. It checks Node, `.mcp.json`, the skill, the
 - Images must be PNG, JPEG or GIF (a Figma limit), up to 10 MB each.
 - The scan finds library components only when an instance of them exists in the open file. Others can be used by key (e.g. found with the official Figma MCP's library search).
 - Prototype overlays open centred (their position can't be set through the Plugin API). Plans can't hide instance layers by override yet.
-- One Figma window is connected at a time: every session on your computer shares it through the hub. Sessions from an older Layerwright are asked to update before they can join.
+- One Layerwright window per Figma file: running the plugin again in the same file hands over to the new window. Sessions from an older Layerwright are asked to update before they can join.
+- Figma lets a development plugin read its file's link key; if it doesn't, paste one link from that file once and Layerwright remembers it.
 - AI cursors are real, locked layers while a change runs (Figma has no API for overlays), so collaborators in the file see them briefly. They are removed before the change's undo step closes.
 
 ## Roadmap
