@@ -92,6 +92,12 @@ export class RelayBridge implements FigmaTransport {
   private starting?: Promise<void>;
   /** The file this session worked in last: kept through a disconnect, so a reconnect comes back to it. */
   private lastFile?: string;
+  /** The file each request from a Figma window came from: work for it (requestId) happens in that file. */
+  private taskFiles = new Map<string, BridgeHello>();
+  private lastFileName?: string;
+  /** The hub moved this session to another file without it asking (the user works there now): told once (takeMoved). */
+  private moved?: { from: string; to: string };
+  takeMoved() { const m = this.moved; this.moved = undefined; return m; }
   /** The hub keeps one window per Figma file and answers `windows` / `bind` (1.3+; its welcome says so). */
   private hubFiles = false;
   private used = false;
@@ -160,7 +166,7 @@ export class RelayBridge implements FigmaTransport {
       const was = this.session;
       ws.on("open", () => ws.send(JSON.stringify({ type: "hello", protocol: HUB_PROTOCOL, version: this.version, workdir: this.o.workdir ?? process.cwd(), client: this.client, title: this.title, pid: process.pid, key: this.key(),
         resume: was?.id, color: was?.color, name: was && !was.titled ? was.name : undefined, since: was?.connectedAt,
-        file: this.lastFile })));
+        file: this.lastFile, fileName: this.lastFileName })));
       ws.on("message", (raw) => {
         let msg: any;
         try { msg = JSON.parse(String(raw)); } catch { return; }
@@ -212,15 +218,15 @@ export class RelayBridge implements FigmaTransport {
   private setPlugin(connected: boolean, hello?: BridgeHello) {
     this.plugin = connected;
     this.hello = connected ? hello ?? this.hello : undefined;
-    if (this.hello) this.lastFile = this.hello.fileKey ?? this.hello.fileName;
+    if (this.hello) { this.lastFile = this.hello.fileKey ?? this.hello.fileName; this.lastFileName = this.hello.fileName; }
     if (connected && hello) { try { this.onHello?.(); } catch { /* listener */ } }
   }
 
   private onMessage(msg: any) {
-    if (msg.type === "plugin") return this.setPlugin(!!msg.connected, msg.hello);
+    if (msg.type === "plugin") { if (msg.moved && typeof msg.moved.from === "string" && typeof msg.moved.to === "string") this.moved = { from: msg.moved.from, to: msg.moved.to }; return this.setPlugin(!!msg.connected, msg.hello); }
     if (msg.type === "sessions") { this.sessionCount = Number(msg.count) || this.sessionCount; return; }
     if (msg.type === "session" && msg.session) { this.session = msg.session; return; }
-    if (msg.type === "action" && msg.action && typeof msg.action.id === "string") { try { this.onAction?.(msg.action); } catch { /* listener */ } return; }
+    if (msg.type === "action" && msg.action && typeof msg.action.id === "string") { this.taskFile(msg.action.id, msg.hello); try { this.onAction?.(msg.action); } catch { /* listener */ } return; }
     if (msg.type === "action-stop" && typeof msg.id === "string") { try { this.onActionStop?.(msg.id); } catch { /* listener */ } return; }
     if (msg.type === "action-drop" && typeof msg.id === "string") { try { this.onActionDrop?.(msg.id, typeof msg.by === "string" ? msg.by : undefined); } catch { /* listener */ } return; }
     if ((msg.type === "inbox-list" || msg.type === "inbox-claim" || msg.type === "windows" || msg.type === "bind") && this.asks.has(msg.rid)) { const done = this.asks.get(msg.rid)!; this.asks.delete(msg.rid); done(msg); return; }
@@ -276,7 +282,6 @@ export class RelayBridge implements FigmaTransport {
       this.send({ ...msg, rid });
     });
   }
-  /** Every open request from the Figma window, whichever session it was sent to. */
   /** An older hub has one window and doesn't answer `windows` / `bind`: they're answered here instead. */
   private multiFile() { return this.hubFiles; }
   /** The Figma files open in Layerwright, and which one this session works in. */
@@ -295,12 +300,14 @@ export class RelayBridge implements FigmaTransport {
     if (r?.ok && r.hello) this.setPlugin(true, r.hello);
     return { ok: !!r?.ok, files: (r?.files ?? []).filter(Boolean) };
   }
+  /** Every open request from the Figma windows, whichever session it was sent to. */
   async inboxList(): Promise<{ action: FigmaAction; status: string; session: string; sessionName?: string }[]> { return (await this.ask({ type: "inbox-list" }))?.requests ?? []; }
   /** Take a request that was sent to another session (force: the user moved it here with /layer:inbox). Refused while
    *  that session handles it: then who has it. */
   async inboxClaim(id: string, force = false): Promise<FigmaAction | undefined> { return (await this.inboxTake(id, force)).action; }
   async inboxTake(id: string, force = false): Promise<{ action?: FigmaAction; heldBy?: string; status?: string }> {
     const r = await this.ask({ type: "inbox-claim", id, force });
+    if (r?.ok) this.taskFile(id, r.hello);
     return r?.ok ? { action: r.action } : { heldBy: r?.heldBy, status: r?.status };
   }
   /** Join again after being removed in the Figma window. */
@@ -316,7 +323,19 @@ export class RelayBridge implements FigmaTransport {
   }
 
   connected() { return this.plugin && this.ws?.readyState === WebSocket.OPEN; }
-  info() { return this.hello; }
+  /** The file this session works in; inside the work for a request from a window, that request's file. */
+  info() {
+    const t = currentTask();
+    const f = t ? this.taskFiles.get(t) : undefined;
+    return f && !(this.hello && (f.fileKey ? f.fileKey === this.hello.fileKey : f.fileName === this.hello.fileName)) ? f : this.hello;
+  }
+  private taskFile(id: string, hello: unknown) {
+    const h = hello as BridgeHello | undefined;
+    if (!h || typeof h.fileName !== "string") return;
+    this.taskFiles.delete(id);
+    this.taskFiles.set(id, h);
+    for (const k of this.taskFiles.keys()) { if (this.taskFiles.size <= 100) break; this.taskFiles.delete(k); }
+  }
 
   request<T>(method: BridgeMethod, params?: unknown, timeoutMs = 60_000): Promise<T> {
     if (!this.starting) return this.start().then(() => this.request<T>(method, params, timeoutMs)); // first Figma call: join now
@@ -328,7 +347,8 @@ export class RelayBridge implements FigmaTransport {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => this.expire(id), timeoutMs);
       this.pending.set(id, { resolve, reject, timer, method, timeoutMs, started: Date.now() });
-      this.send({ type: "request", id, method, params, task: currentTask() });
+      const task = currentTask();
+      this.send({ type: "request", id, method, params, task, taskFile: task ? this.taskFiles.get(task)?.fileKey : undefined });
     });
   }
 
@@ -342,4 +362,3 @@ export class RelayBridge implements FigmaTransport {
     p.reject(new BridgeError({ type: "TIMEOUT", message: `Figma did not answer "${p.method}" after ${took}s without progress.${last} The operation may still be running; inspect before retrying.` }));
   }
 }
-

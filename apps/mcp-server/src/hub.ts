@@ -1,6 +1,7 @@
-// The hub: one small process per computer that owns the bridge port. The Figma plugin connects to it once, and
-// every MCP server (each Claude Code or Cursor session, any project) connects to it as a client. It only routes:
-// requests go to the plugin tagged with the session that sent them, answers come back to that session.
+// The hub: one small process per computer that owns the bridge port. Each Figma file's Layerwright window (one per
+// tab running the plugin) connects to it, and every MCP server (each Claude Code or Cursor session, any project)
+// connects to it as a client. It only routes: a session works in one file, its requests go to that file's window
+// tagged with the session, and the answers come back to that session.
 //
 //   paths on ws://127.0.0.1:<port>
 //     /doctor   status for `doctor` and for clients deciding what holds the port; answered, then closed
@@ -43,7 +44,13 @@ interface Win { id: string; ws: WebSocket; hello?: BridgeHello; paired: boolean;
 /** A session. `window`: the file it works in (bound on its first request, by a request sent to it from a window, or
  *  when it names the file); `usedAt`: its last request, so a binding left alone for a while is chosen again.
  *  `pending`: its requests in flight, and the window each went to. */
-interface Client { ws: WebSocket; info: SessionInfo; pending: Map<string, Win>; pid?: number; window?: Win; usedAt: number; wantFile?: string }
+interface Client {
+  ws: WebSocket; info: SessionInfo; pending: Map<string, Win>; pid?: number; window?: Win; usedAt: number;
+  /** The file it worked in while that window is away (a hub restart, a window reconnecting): a key or a window id. */
+  wantFile?: string; wantSince: number;
+  /** The name of the file it worked in last, for "now working in X (was Y)". */
+  fileName?: string;
+}
 
 export interface HubOptions {
   version?: string;
@@ -61,6 +68,9 @@ export interface HubOptions {
 }
 
 const SEP = "~"; // request ids on the plugin side: <session id>~<the session's own id>
+/** Methods that change nothing in the file. Any other (a new one too) is a change: it never goes to another file than
+ *  the one the session works in without the session asking. */
+const READS = new Set(["ping", "inspect", "select", "exportImage", "scanDesignSystem", "refs"]);
 
 export class Hub {
   private wss?: WebSocketServer;
@@ -70,7 +80,9 @@ export class Hub {
   /** Sessions the user removed in the window, shown there (faded) until they join again or an hour passes. */
   private removed = new Map<string, { info: SessionInfo; at: number; pid?: number }>();
   /** Requests from the Figma window, whichever session has them, so any session can pick them up (/layer:inbox). */
-  private requests = new Map<string, { action: FigmaAction; session: string; status: string; at: number; touched: number }>();
+  /** Requests from the windows, with the window and file each came from (by id and key: a window that reconnects or
+   *  is reopened is a new socket). */
+  private requests = new Map<string, { action: FigmaAction; session: string; status: string; at: number; touched: number; window: string; fileKey?: string }>();
   private seq = 0;
   private idle?: NodeJS.Timeout;
   private stopping = false;
@@ -153,10 +165,10 @@ export class Hub {
   private open() { return [...this.windows.values()].filter((w) => w.ws.readyState === WebSocket.OPEN); }
   /** The window the user used last (selection, page, a request from it). */
   private active(): Win | undefined { return this.open().sort((a, b) => b.activeAt - a.activeAt)[0]; }
-  /** Two hellos for one file: the same Figma file (its key, else its name). */
+  /** Two hellos for one file: the same file key. Names aren't enough (two files may both be "Untitled"), so windows
+   *  whose plugin can't read the key are told apart by their window id only. */
   private sameFile(a?: BridgeHello, b?: BridgeHello) {
-    if (!a || !b) return false;
-    return a.fileKey && b.fileKey ? a.fileKey === b.fileKey : a.fileName === b.fileName;
+    return !!a?.fileKey && !!b?.fileKey && a.fileKey === b.fileKey;
   }
 
   private addPlugin(ws: WebSocket) {
@@ -191,9 +203,11 @@ export class Hub {
       if (!w || this.windows.get(w.id) !== w) return;
       this.windows.delete(w.id);
       this.failPending(w, "Figma plugin disconnected during the request.");
-      for (const c of this.clients.values()) if (c.window === w) c.window = undefined;
+      // Its sessions keep their file: if the window comes back (it reconnects, the plugin is reopened), they're there.
+      for (const c of this.clients.values()) if (c.window === w) { c.window = undefined; c.wantFile = w.hello?.fileKey ?? w.id; c.wantSince = Date.now(); }
       this.log(`plugin window closed${w.hello?.fileName ? ` ("${w.hello.fileName.slice(0, 60)}")` : ""} (${this.open().length} left)`);
       this.broadcastPlugin();
+      this.sendSessions();
     });
   }
 
@@ -229,10 +243,9 @@ export class Hub {
       const pairing = checked ?? this.pairing(w.ws, msg);
       if (pairing === "rejected") return;
       w.paired = pairing === "paired";
-      w.hello = hello;
-      w.activeAt = Date.now();
+      w.hello = hello; // again on every page change: not the user's doing when Layerwright opened the page (the window sends `active` for theirs)
       if (w.paired) try { this.o.onPluginSeen?.(); } catch { /* only a hint for new sessions */ }
-      for (const c of this.clients.values()) if (!c.window && c.wantFile && this.matches(w, c.wantFile)) c.window = w; // a session that reconnected comes back to its file
+      for (const c of this.clients.values()) if (!c.window && c.wantFile && this.matches(w, c.wantFile)) this.moveTo(c, w, true); // back to its file
       this.toWindow(w, { type: "pairing", paired: w.paired }, true);
       this.broadcastPlugin();
       this.sendSessions();
@@ -247,7 +260,7 @@ export class Hub {
       r.status = "stopped"; r.touched = Date.now();
       const c = this.clients.get(r.session);
       if (c) this.toClient(c, { type: "action-stop", id: msg.id });
-      this.toWindows({ type: "action-update", id: msg.id, status: "stopped", session: r.session, message: "Stopped" });
+      this.toRequestWindow(msg.id, { type: "action-update", id: msg.id, status: "stopped", session: r.session, message: "Stopped" });
       this.log(`request ${msg.id} stopped from the Figma window`);
       return;
     }
@@ -292,16 +305,62 @@ export class Hub {
     return w.id === f || (!!w.hello?.fileKey && w.hello.fileKey === k) || (!!w.hello?.fileName && w.hello.fileName.toLowerCase() === f.toLowerCase());
   }
 
-  /** The window a session's request goes to: its file while it keeps working there; else (unbound, its window
-   *  closed, or a while since it last used Figma) the only window, or the one the user used last. */
-  private windowFor(c: Client): Win | undefined {
+  /** The window for a session that isn't bound (or whose window is gone): the only one, else the one used last. */
+  private fallback(): Win | undefined { const open = this.open(); return open.length === 1 ? open[0] : this.active(); }
+
+  /** The window a request from the Figma window came from, also after it reconnected or was reopened in that file. */
+  private requestWindow(r: { window: string; fileKey?: string } | undefined): Win | undefined {
+    if (!r) return undefined;
+    const w = this.windows.get(r.window);
+    return w && this.open().includes(w) ? w : r.fileKey ? this.open().find((x) => x.hello?.fileKey === r.fileKey) : undefined;
+  }
+
+  /** The window a session's request goes to, or why it can't go anywhere now.
+   *  - Work for a request from a window (`task`, or the file the session says it's for): that file's window. The
+   *    session itself stays where it is.
+   *  - Else its own file, while it works there. Its file's window reconnecting: it waits (WAIT_MS).
+   *  - A session that hasn't used Figma for a while (STAY_MS) follows the user to the window they use, but only with
+   *    a read: a change never goes to another file than the one the session worked in (its node ids and plans are
+   *    that file's). It is told it moved, with the result.
+   *  - Unbound: the only window, or the one the user used last. */
+  private windowFor(c: Client, task?: string, write = false, taskFile?: string): Win | { error: string } {
     const open = this.open();
-    if (c.window && open.includes(c.window) && (open.length === 1 || Date.now() - c.usedAt < Hub.STAY_MS)) return c.window;
-    const w = open.length === 1 ? open[0] : this.active();
-    if (w !== c.window) { c.window = w; this.toClient(c, { type: "plugin", connected: !!w, hello: w?.hello }); }
+    if (task || taskFile) {
+      const r = task ? this.requests.get(task) : undefined;
+      const from = this.requestWindow(r) ?? (taskFile ? open.find((x) => x.hello?.fileKey === taskFile) : undefined);
+      if (from) return from;
+      if (r || taskFile) return { error: `The Layerwright window of the file this request came from${r?.action.file ? ` ("${r.action.file}")` : ""} is closed. Ask the user to run the plugin in that file again, then retry.` };
+    }
+    if (c.window && open.includes(c.window) && (open.length === 1 || write || Date.now() - c.usedAt < Hub.STAY_MS)) return c.window;
+    const back = c.wantFile ? open.find((x) => this.matches(x, c.wantFile!)) : undefined;
+    if (back) { this.moveTo(c, back, true); return back; }
+    const name = c.fileName ?? "this session's file";
+    if (c.wantFile && open.length && Date.now() - c.wantSince < Hub.WAIT_MS)
+      return { error: `The Layerwright window of "${name}" is reconnecting. Try again in a few seconds; if it doesn't come back, ask the user to run the plugin in that file (or call figma_status with file: another open file).` };
+    if (c.wantFile && write && open.length)
+      return { error: `The Layerwright window of "${name}", the file this session works in, is closed, so nothing was changed. Ask the user to run the plugin in that file again, or call figma_status with file: to work in another open file (${open.map((x) => `"${x.hello?.fileName}"`).join(", ")}) and look at it first: node ids and plans from "${name}" don't apply there.` };
+    const w = this.fallback();
+    if (!w) return { error: `Figma plugin is not connected. In Figma desktop: Plugins → Development → "Layerwright" (it connects to ws://localhost:${this.port}).` };
+    this.moveTo(c, w);
     return w;
   }
-  /** How long a session stays with its file after its last request, whatever the user looks at meanwhile. */
+
+  /** The session works in this window now. It hears about it, and when it moved from another file without asking
+   *  (`quiet`: it asked, or came back to its own file), its agent is told on its next tool call. */
+  private moveTo(c: Client, w: Win | undefined, quiet = false) {
+    const was = c.window;
+    if (w === was && !c.wantFile) return;
+    const fromName = c.fileName;
+    c.window = w;
+    c.wantFile = undefined;
+    const to = w?.hello?.fileName;
+    const moved = !quiet && w && fromName && to && fromName !== to ? { from: fromName, to } : undefined;
+    if (to) c.fileName = to;
+    this.toClient(c, { type: "plugin", connected: !!w, hello: w?.hello, ...(moved ? { moved } : {}) });
+    if (w !== was) this.sendSessions();
+  }
+  /** How long a session waits for its file's window to come back before it works where the user is. */
+  static WAIT_MS = 15_000;
   static STAY_MS = 5 * 60_000;
 
   /** The Skills tab: the list, and (from the paired window only, since a web page can reach localhost too) turning a
@@ -349,10 +408,11 @@ export class Hub {
     if (!w.paired) return failed("This plugin window isn't paired with Layerwright on this computer, so it can't send requests. Run npx layerwright init, then reopen the plugin.");
     const c = this.clients.get(msg.session);
     if (!c) return failed("That session has closed.");
-    if (c.window !== w) { c.window = w; this.toClient(c, { type: "plugin", connected: true, hello: w.hello }); }
-    c.usedAt = Date.now();
-    this.toClient(c, { type: "action", action: msg.action });
-    this.requests.set(id, { action: msg.action, session: c.info.id, status: "sent", at: Date.now(), touched: Date.now() });
+    // The user sent it this file's work: a session that isn't busy in another file moves here. A busy one keeps its
+    // file: this request's own calls (requestId) go to this window anyway, and the rest of its work isn't redirected.
+    if (!c.window || !this.open().includes(c.window) || Date.now() - c.usedAt >= Hub.STAY_MS) { this.moveTo(c, w); c.usedAt = Date.now(); }
+    this.requests.set(id, { action: msg.action, session: c.info.id, status: "sent", at: Date.now(), touched: Date.now(), window: w.id, fileKey: w.hello?.fileKey });
+    this.toClient(c, { type: "action", action: msg.action, hello: w.hello });
     for (const [k, r] of this.requests) if (Date.now() - r.at > 2 * 3600_000) this.requests.delete(k);
   }
 
@@ -407,14 +467,17 @@ export class Hub {
           return;
         }
         c = { ws, pending: new Map(), info: this.register(msg), pid: Number.isInteger(msg.pid) && msg.pid > 0 ? msg.pid : undefined, usedAt: 0,
-          wantFile: typeof msg.file === "string" && msg.file ? msg.file.slice(0, 200) : undefined };
-        // A session that reconnects (the hub restarted) comes back to the file it worked in, when that window is open.
-        if (c.wantFile) { c.window = this.open().find((x) => this.matches(x, c!.wantFile!)); if (c.window) c.usedAt = Date.now(); }
+          wantFile: typeof msg.file === "string" && msg.file ? msg.file.slice(0, 200) : undefined, wantSince: Date.now(),
+          fileName: typeof msg.fileName === "string" ? msg.fileName.slice(0, 200) : undefined };
+        // A session that reconnects (the hub restarted) comes back to the file it worked in, when that window is open
+        // (or once it reconnects: windowFor waits for it a moment).
+        const back = c.wantFile ? this.open().find((x) => this.matches(x, c!.wantFile!)) : undefined;
+        if (back) { c.window = back; c.wantFile = undefined; c.usedAt = Date.now(); }
         this.clients.set(c.info.id, c);
         if (this.removed.delete(c.info.id)) this.log(`session ${c.info.name} joined again after it was removed`);
         clearTimeout(this.idle);
         this.log(`session ${c.info.name} connected (${this.clients.size} now)`);
-        const shows = c.window ?? (this.open().length === 1 ? this.open()[0] : this.active());
+        const shows = c.window ?? this.fallback();
         this.toClient(c, { type: "welcome", session: c.info, protocol: HUB_PROTOCOL, version: this.version, plugin: { connected: !!shows, hello: shows?.hello }, sessions: this.clients.size, multiFile: true });
         this.sendSessions();
         this.broadcastCount();
@@ -461,28 +524,30 @@ export class Hub {
   private fromClient(c: Client, msg: any) {
     if (msg?.type === "request") {
       const own = String(msg.id);
-      const w = this.windowFor(c);
-      if (!w) {
-        const error: StructuredError = { type: "PLUGIN_DISCONNECTED", message: `Figma plugin is not connected. In Figma desktop: Plugins → Development → "Layerwright" (it connects to ws://localhost:${this.port}).` };
+      const task = typeof msg.task === "string" && msg.task ? msg.task.slice(0, 40) : undefined;
+      const taskFile = task && typeof msg.taskFile === "string" ? msg.taskFile.slice(0, 64) : undefined;
+      const w = this.windowFor(c, task, !READS.has(String(msg.method)), taskFile);
+      if ("error" in w) {
+        const error: StructuredError = { type: "PLUGIN_DISCONNECTED", message: w.error };
         return this.toClient(c, { type: "response", res: { id: own, ok: false, error } });
       }
       c.pending.set(own, w);
       c.usedAt = Date.now();
       // The task (a request from the window this is for) gives that work its own cursor in the plugin.
-      const task = typeof msg.task === "string" && msg.task ? msg.task.slice(0, 40) : undefined;
       this.toWindow(w, { id: `${c.info.id}${SEP}${own}`, method: msg.method, params: msg.params, session: c.info, task });
       return;
     }
     if (msg?.type === "windows") {
       // The Figma files open in Layerwright, and which one this session works in.
-      const mine = this.windowFor(c);
+      const found = this.windowFor(c);
+      const mine = "error" in found ? undefined : found;
       this.toClient(c, { type: "windows", rid: msg.rid, windows: this.open().map((x) => ({ file: x.hello?.fileName, fileKey: x.hello?.fileKey, page: x.hello?.page, current: x === mine, activeAt: x.activeAt })) });
       return;
     }
     if (msg?.type === "bind" && typeof msg.file === "string") {
       // The session names the file to work in: a Figma link, a file key, or the file's name.
       const w = this.open().find((x) => this.matches(x, msg.file));
-      if (w) { c.window = w; c.usedAt = Date.now(); this.toClient(c, { type: "plugin", connected: true, hello: w.hello }); this.sendSessions(); }
+      if (w) { this.moveTo(c, w, true); c.usedAt = Date.now(); }
       this.toClient(c, { type: "bind", rid: msg.rid, ok: !!w, hello: w?.hello, files: this.open().map((x) => x.hello?.fileName) });
       return;
     }
@@ -523,15 +588,18 @@ export class Hub {
       r.session = c.info.id;
       r.status = "seen";
       r.touched = Date.now();
-      this.toWindows({ type: "action-update", id: msg.id, status: "seen", session: c.info.id, message: `Picked up by ${c.info.name}` });
-      this.toClient(c, { type: "inbox-claim", rid: msg.rid, ok: true, action: r.action });
+      this.toRequestWindow(msg.id, { type: "action-update", id: msg.id, status: "seen", session: c.info.id, message: `Picked up by ${c.info.name}` });
+      this.toClient(c, { type: "inbox-claim", rid: msg.rid, ok: true, action: r.action, hello: this.requestWindow(r)?.hello });
       return;
     }
     if (msg?.type === "action-update" && typeof msg.id === "string") {
       const r = this.requests.get(msg.id);
       if (r?.status === "stopped") return; // the user stopped it: a late update from the session doesn't revive it
       if (r) { r.status = String(msg.status); r.session = c.info.id; r.touched = Date.now(); }
-      this.toWindows({ type: "action-update", id: msg.id, status: msg.status, message: str(msg.message, 400), session: c.info.id });
+      // To the window the request came from; a note (figma_reply without a request) to the session's own window. A
+      // request this hub doesn't know (it restarted since) goes to every window: only the one that sent it knows it.
+      const upd = { type: "action-update", id: msg.id, status: msg.status, message: str(msg.message, 400), session: c.info.id };
+      if (r || !msg.id.startsWith("note-")) this.toRequestWindow(msg.id, upd); else this.toWindow(c.window ?? this.fallback(), upd, true);
       return;
     }
     if (msg?.type === "notify" && msg.msg && typeof msg.msg === "object") {
@@ -539,7 +607,11 @@ export class Hub {
       // the user in the chat. Nothing else is passed through.
       const m = msg.msg;
       if (m.type === "server-info") this.toWindows({ type: "server-info", version: str(m.version, 40), update: m.update && typeof m.update === "object" ? m.update : undefined, session: c.info.id }, false);
-      else if (m.type === "session-state") this.toWindows({ type: "session-state", waiting: !!m.waiting, kind: str(m.kind, 20), text: str(m.text, 400), session: c.info.id });
+      else if (m.type === "session-state") {
+        // Every window lists every session: each says it waits for the user (whichever file the user looks at), and
+        // each stops saying so (it may have moved since it asked).
+        this.toWindows({ type: "session-state", waiting: !!m.waiting, kind: str(m.kind, 20), text: str(m.text, 400), session: c.info.id });
+      }
       return;
     }
   }
@@ -549,9 +621,15 @@ export class Hub {
   /** Each session hears about the window it works in (or would go to). */
   private broadcastPlugin() {
     for (const c of this.clients.values()) {
-      const w = c.window && this.open().includes(c.window) ? c.window : this.open().length === 1 ? this.open()[0] : this.active();
+      const w = c.window && this.open().includes(c.window) ? c.window : this.fallback();
       this.toClient(c, { type: "plugin", connected: !!w, hello: w?.hello });
     }
+  }
+
+  /** An update about a request from the window: to the window it came from (another file's window doesn't know it). */
+  private toRequestWindow(id: string, msg: unknown) {
+    const w = this.requestWindow(this.requests.get(id));
+    if (w) this.toWindow(w, msg, true); else this.toWindows(msg);
   }
 
   private broadcastCount() {

@@ -32,7 +32,11 @@ export class N {
   set maxWidth(v: number | null) { this.checkMinMax(); this._maxW = v; }
   private checkMinMax() { if (this.layoutMode === "NONE" && (!this.parent || this.parent.layoutMode === "NONE")) throw new Error("min/max width only apply to auto-layout frames and their children"); }
   findAll(fn: (n: any) => boolean): any[] { return this.children.flatMap((c) => [...(fn(c) ? [c] : []), ...(c.findAll ? c.findAll(fn) : [])]); }
-  constructor(public type: string, id?: string) { this.id = id ?? `n:${++seq}`; nodes.set(this.id, this); }
+  constructor(public type: string, id?: string) {
+    this.id = id ?? `n:${++seq}`; nodes.set(this.id, this);
+    // Like Figma: a page (and the document) has no position or size ("x" in page is false).
+    if (type === "PAGE" || type === "DOCUMENT") for (const k of ["x", "y", "width", "height"]) delete (this as any)[k];
+  }
   appendChild(c: any) { this.insertChild(this.children.length, c); }
   insertChild(i: number, c: any) { if (c.parent) c.parent.children = c.parent.children.filter((x: any) => x !== c); this.children.splice(i, 0, c); c.parent = this; }
   remove() { this.removed = true; if (this.parent) this.parent.children = this.parent.children.filter((x: any) => x !== this); }
@@ -45,7 +49,11 @@ export class N {
     const scale = (n: any, top: boolean) => { if (!top) { n.x *= s; n.y *= s; } n.width *= s; n.height *= s; if (n.type === "TEXT") n.fontSize *= s; for (const c of n.children) scale(c, false); };
     scale(this, true);
   }
-  async exportAsync(o?: { format?: string }) { if (o?.format === "SVG_STRING") return `<svg xmlns="http://www.w3.org/2000/svg" width="${this.width}" height="${this.height}"><path d="M0 0H${this.width}V${this.height}Z" fill="#000"/></svg>`; return new Uint8Array([0x89, 0x50]); }
+  async exportAsync(o?: { format?: string; constraint?: { type: string; value: number } }) {
+    // Like Figma: the size constraint is validated (a page has no size of its own: its "scale" can't come from it).
+    if (o?.constraint && (!["SCALE", "WIDTH", "HEIGHT"].includes(o.constraint.type) || !Number.isFinite(o.constraint.value))) throw new Error(`in exportAsync: Property "settings" failed validation: Expected number, received ${o.constraint.value} at .constraint.value`);
+    if (o?.format === "SVG_STRING") return `<svg xmlns="http://www.w3.org/2000/svg" width="${this.width}" height="${this.height}"><path d="M0 0H${this.width}V${this.height}Z" fill="#000"/></svg>`; return new Uint8Array([0x89, 0x50]);
+  }
   setBoundVariable(f: string, v: any) { this.boundVariables[f] = { type: "VARIABLE_ALIAS", id: v.id }; }
   findAllWithCriteria(q: any): any[] {
     if (q.pluginData) return this.findAllWithCriteriaPlugin(q.pluginData.keys);

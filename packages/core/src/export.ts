@@ -5,6 +5,9 @@ import type { DesignPlan } from "./dsl.ts";
 import { Resolver } from "./resolver.ts";
 import { weightOfStyle } from "./weights.ts";
 
+/** What a plan holds (dsl.ts: text content, runs per text). */
+const MAX_TEXT = 5000, MAX_RUNS = 200;
+
 export interface PlanExport { plan: DesignPlan; warnings: string[] }
 
 /** values: "tokens" (default) writes the variables and text styles a layer is bound to, by name, so the rebuild stays
@@ -103,7 +106,15 @@ export function snapshotToPlan(root: NodeSnapshot, ds?: DesignSystem, opts: Expo
     }
     // Runs must spell the whole content; a piece that changes nothing isn't worth one.
     if (out.map((r) => r.text).join("") !== content || out.every((r) => Object.keys(r).length === 1)) return undefined;
-    return out;
+    // Neighbours that look the same are one run; a plan holds at most MAX_RUNS of them.
+    const merged: any[] = [];
+    for (const r of out) {
+      const prev = merged[merged.length - 1];
+      const same = prev && JSON.stringify({ ...prev, text: "" }) === JSON.stringify({ ...r, text: "" });
+      if (same) prev.text += r.text; else merged.push({ ...r });
+    }
+    if (merged.length > MAX_RUNS) { warnings.push(`${n.name}: ${merged.length} differently styled pieces of text; a plan holds ${MAX_RUNS}, so it keeps the first piece's style.`); return undefined; }
+    return merged;
   };
 
   const node = (n: NodeSnapshot, parent: NodeSnapshot | undefined, path: string): any => {
@@ -121,7 +132,8 @@ export function snapshotToPlan(root: NodeSnapshot, ds?: DesignSystem, opts: Expo
     if (n.type === "TEXT" && n.text) {
       // An inspect outside a plan export cuts a long text to 300 characters and marks it with "…".
       const chars = n.text.chars;
-      const content = chars.length === 301 && chars.endsWith("…") ? chars.slice(0, 300) : chars;
+      let content = chars.length === 301 && chars.endsWith("…") ? chars.slice(0, 300) : chars;
+      if (content.length > MAX_TEXT) { warnings.push(`${path}: the text is ${content.length} characters; a plan holds ${MAX_TEXT}, so it was cut (add the rest after building).`); content = content.slice(0, MAX_TEXT); }
       const t: any = { type: "text", ...common, content };
       // A text whose font, size or colour changes inside it reports them per piece: its first piece is the base.
       const first = n.text.runs?.[0];

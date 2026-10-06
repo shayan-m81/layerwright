@@ -13,9 +13,12 @@ const SAYS: Record<string, string> = {
 };
 /** How long it stays after the last call: long enough to cover the agent's next step, short enough to go soon after. */
 export const WORKING_MS = 6000;
+/** Another session's toast replaces this one no sooner than this (two sessions at once would make it flicker). */
+export const FLICKER_MS = 1500;
 
 let shown: NotificationHandler | undefined;
 let text = "";
+let by = "";
 let at = 0;
 
 /** What the toast says for a call. */
@@ -27,14 +30,25 @@ export function workingText(who: string | undefined, method: string, params: any
 /** A session's call starts: show (or renew) the toast. `on`: the user's "AI cursor" switch covers it too. */
 export function working(who: string | undefined, method: string, params: unknown, on: boolean, now = Date.now()): void {
   if (!on || QUIET.has(method)) return;
-  const t = workingText(who, method, params);
+  show(workingText(who, method, params), who || "Claude", now);
+}
+
+/** A long call reports progress (a big build, a scan): the toast stays up as long as it runs. */
+export function workingStill(now = Date.now()): void {
+  if (shown && text) show(text, by, now);
+}
+
+function show(t: string, who: string, now: number) {
   // The same words a moment ago: leave it up (renewing every call would make it jump); renew before it times out.
   if (shown && t === text && now - at < WORKING_MS / 2) return;
+  // Another session's step right after this one's: this one stays a moment first.
+  if (shown && who !== by && now - at < FLICKER_MS) return;
   try {
     shown?.cancel();
     const h: NotificationHandler = figma.notify(t, { timeout: WORKING_MS, onDequeue: () => { if (shown === h) shown = undefined; } });
     shown = h;
     text = t;
+    by = who;
     at = now;
   } catch { /* a notice, nothing more */ }
 }

@@ -2,7 +2,7 @@
 // values and previews as it is; a big plan goes to a file in the project and is previewed from there (planFile).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -119,4 +119,21 @@ test("save and planFile stay inside the project; preview takes a plan or a planF
   assert.match((await call("figma_preview_plan", {})).data.errors[0].message, /one of them/);
   writeFileSync(join(work, "broken.json"), "{ nope");
   assert.match((await call("figma_preview_plan", { planFile: "broken.json" })).data.errors[0].message, /Malformed JSON/);
+});
+
+test("a save never goes through a link: a link to a file that doesn't exist yet, or a linked exports folder", async () => {
+  const work = mkdtempSync(join(tmpdir(), "lw-plan-"));
+  const outside = mkdtempSync(join(tmpdir(), "lw-outside-"));
+  symlinkSync(join(outside, "new.json"), join(work, "dangling.json")); // points at nothing (yet)
+  const { call } = await connect(work);
+  const r = await call("figma_inspect", { target: "1:2", format: "plan", save: "dangling.json" });
+  assert.ok(r.isError);
+  assert.match(r.data.errors[0].message, /is a link; Layerwright doesn't write through links/);
+  assert.equal(existsSync(join(outside, "new.json")), false, "nothing written outside the project");
+  mkdirSync(join(work, ".layerwright"), { recursive: true });
+  symlinkSync(outside, join(work, ".layerwright", "exports"));
+  const home = await call("figma_inspect", { target: "1:2", format: "plan", save: true });
+  assert.ok(home.isError);
+  assert.match(home.data.errors[0].message, /folder linked outside \.layerwright/);
+  assert.deepEqual(readdirSync(outside), [], "nothing written there either");
 });

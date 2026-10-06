@@ -815,6 +815,7 @@
   const WIN = "w" + Math.random().toString(36).slice(2, 12).replace(/[^0-9a-z]/g, "0").padEnd(8, "0");
   const withKey = (h) => Object.assign({}, h, { key: KEY, window: WIN });
   let replaced = false;      // the plugin was opened again for this file (another window took over): wait for the user
+  let elsewhere = false;     // …or, with an older Layerwright (one window at a time), in another Figma file
   let activeSent = 0;        // the last time this window told the hub the user works here (selection, page)
   const isOpen = () => !!ws && ws.readyState === 1;
 
@@ -939,7 +940,7 @@
       $("detail").textContent = hello ? (hello.fileName + " · " + String(hello.page || "").trim() + (sel ? " · " + count(sel, "layer", "layers") + " selected" : "")) : "Ready";
     } else if (replaced) {
       $("status").textContent = "Paused · opened in another window";
-      $("detail").textContent = "Layerwright for this file runs in another Figma window now";
+      $("detail").textContent = elsewhere ? "Another Figma window took over: this Layerwright serves one window at a time" : "Layerwright for this file runs in another Figma window now";
     } else if (rejected) {
       $("status").textContent = "Not paired with Layerwright";
       $("detail").textContent = "Run npx layerwright plugin, then reopen the plugin";
@@ -1588,6 +1589,7 @@
         // This file's plugin was opened again in another window: that one has it now. Knocking again would take it
         // back and forth between the two; wait until the user wants this one.
         replaced = true; failures = 0;
+        elsewhere = !/for this file/.test(e.reason || "");
         render();
         return;
       }
@@ -1648,8 +1650,8 @@
     const q = requests.find((x) => x.id === u.id);
     const s = byId(u.session);
     if (!q) {
-      // A note a session posted to this window (figma_reply without a request).
-      if (u.message) { events.unshift({ ok: true, note: true, text: (s ? s.name + ": " : "") + u.message, at: Date.now(), session: s }); if (tab !== "activity") unseen++; renderActivity(); render(); }
+      // A note a session posted to this window (figma_reply without a request). Another window's request: not ours.
+      if (u.message && String(u.id).indexOf("note-") === 0) { events.unshift({ ok: true, note: true, text: (s ? s.name + ": " : "") + u.message, at: Date.now(), session: s }); if (tab !== "activity") unseen++; renderActivity(); render(); }
       return;
     }
     if (q.status === "stopped") return; // the user stopped it: a late update from the session doesn't revive it
@@ -1685,6 +1687,7 @@
     if (save) post({ type: "set-port", port: n });
     failures = 0;
     rejected = null;
+    replaced = false; // another port is another Layerwright: nothing took this window's place there
     const old = ws; ws = null;
     gen++; // invalidate the old socket's handlers before closing it
     try { old && old.close(); } catch (e) {}

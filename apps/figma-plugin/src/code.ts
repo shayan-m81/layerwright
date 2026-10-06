@@ -98,11 +98,14 @@ async function handle(req: BridgeRequest): Promise<unknown> {
       // A PNG/JPG of one node, capped so a huge frame doesn't produce a huge payload.
       const n = await figma.getNodeByIdAsync(p.nodeId);
       if (!n || !("exportAsync" in n)) throw new ExecError({ type: "NODE_NOT_FOUND", message: `Node ${p.nodeId} not found or can't be exported.` });
-      const node = n as SceneNode;
-      const longest = Math.max(node.width, node.height, 1);
+      const node = n as SceneNode | PageNode;
+      // A page (a link to a page) has no size of its own: the picture is of what's on it.
+      const size = node.type === "PAGE" ? pageSize(node) : { width: node.width, height: node.height };
+      if (!size) throw new ExecError({ type: "NODE_NOT_FOUND", message: `Page "${node.name}" is empty: nothing to take a picture of.` });
+      const longest = Math.max(size.width, size.height, 1);
       const scale = Math.max(0.05, Math.min(p.scale ?? 1, (p.maxDimension ?? 2000) / longest));
       const bytes = await node.exportAsync({ format: p.format === "jpg" ? "JPG" : "PNG", constraint: { type: "SCALE", value: scale } });
-      return { base64: figma.base64Encode(bytes), format: p.format === "jpg" ? "jpg" : "png", scale, width: Math.round(node.width * scale), height: Math.round(node.height * scale), name: node.name };
+      return { base64: figma.base64Encode(bytes), format: p.format === "jpg" ? "jpg" : "png", scale, width: Math.round(size.width * scale), height: Math.round(size.height * scale), name: node.name };
     }
     case "refs": {
       // The layers a link is wanted for (read-only): the selection, the page, or ids. The server builds the links.
@@ -136,6 +139,14 @@ async function handle(req: BridgeRequest): Promise<unknown> {
 }
 
 // protocol 2: this plugin understands sessions (the hub sends them only to plugins that do).
+/** The size of what's on a page (its visible layers together), or undefined when nothing is. */
+function pageSize(page: PageNode): { width: number; height: number } | undefined {
+  const boxes = page.children.filter((c) => c.visible).map((c) => c.absoluteBoundingBox ?? { x: c.x, y: c.y, width: c.width, height: c.height });
+  if (!boxes.length) return undefined;
+  const x0 = Math.min(...boxes.map((b) => b.x)), y0 = Math.min(...boxes.map((b) => b.y));
+  return { width: Math.max(...boxes.map((b) => b.x + b.width)) - x0, height: Math.max(...boxes.map((b) => b.y + b.height)) - y0 };
+}
+
 const hello = () => ({ type: "hello", fileName: figma.root.name, fileKey: figma.fileKey, page: figma.currentPage.name, user: figma.currentUser?.name, pluginBuild: BUILD, selection: figma.currentPage.selection.length, protocol: 2 });
 
 figma.ui.onmessage = async (msg: any) => {
@@ -178,6 +189,7 @@ figma.ui.onmessage = async (msg: any) => {
     const who = desk.sessions.find((x) => x.id === msg.session);
     if (msg.waiting) {
       const name = who?.name ?? "Claude";
+      workingClear(); // this matters more than "working": it takes the toast's place
       figma.notify(msg.kind === "permission" ? `${name} needs your OK in Claude Code. Answer in the chat.` : `${name} asked you something in Claude Code. Answer in the chat.`, { timeout: 8000 });
     }
     return;
@@ -400,7 +412,11 @@ const notes = new NoteWatch({
 });
 setInterval(() => { try { if (!inRun()) takeLater(); notes.check(); } catch { /* a layer went away mid-look */ } }, 700);
 
-figma.on("currentpagechange", () => { figma.ui.postMessage({ type: "hello", hello: hello() }); if (!pageIsOwn()) userActed(); });
+figma.on("currentpagechange", () => {
+  figma.ui.postMessage({ type: "hello", hello: hello() });
+  // The user changed page: they work in this file (the window tells the hub). A page Layerwright opened isn't that.
+  if (!pageIsOwn()) { userActed(); figma.ui.postMessage({ type: "selection", count: figma.currentPage.selection.length, user: true }); }
+});
 figma.on("close", () => { cursorsClear(); workingClear(); });
 figma.on("selectionchange", () => {
   // A selection Layerwright didn't make is the user's, also while a request runs: the view stays where they work, and

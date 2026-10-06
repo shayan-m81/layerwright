@@ -25,13 +25,23 @@ export function parseFigmaLink(text: string): FigmaLink | undefined {
   if (!m) return undefined;
   const node = url.searchParams.get("node-id") ?? url.searchParams.get("starting-point-node-id") ?? undefined;
   const nodeId = node ? node.replace(/-/g, ":") : undefined;
-  return { kind: m[1], fileKey: m[3] ?? m[2], nodeId: nodeId && /^[\w:;-]+$/.test(nodeId) ? nodeId : undefined, slug: m[4] ? decodeURIComponent(m[4]) : undefined };
+  return { kind: m[1], fileKey: m[3] ?? m[2], nodeId: nodeId && /^[\w:;-]+$/.test(nodeId) ? nodeId : undefined, slug: m[4] ? decoded(m[4]) : undefined };
 }
 
-/** Does this look like a Figma link (and not a layer id or a name)? */
-export const isFigmaLink = (text: string) => /figma\.com\/(?:design|file|proto|board|slides)\//i.test(text);
+const decoded = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
+const letters = (s: string) => decoded(s).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 
-/** The name part of a link, the way Figma writes it ("Talent Club - Evaluation (Copy)" → "Talent-Club---Evaluation--Copy-"). */
+/** Is a link with this name part to a file with this name? Figma writes each space or sign as a dash ("Talent Club -
+ *  Evaluation (Copy)" → "Talent-Club---Evaluation--Copy-"), so the letters and digits are compared, all of them: "Talent
+ *  Club - Evaluation" is another file than its copy. No name part: unknown (false). */
+export function slugFits(slug: string | undefined, fileName: string): boolean {
+  const a = letters(slug ?? "");
+  return !!a && a === letters(fileName);
+}
+
+
+/** The name part of a link Layerwright makes ("Talent Club - Evaluation (Copy)" → "Talent-Club-Evaluation-Copy"). Figma
+ *  only reads the key and the node id; the name is for people. */
 export function linkSlug(fileName: string): string {
   return encodeURIComponent(fileName.trim().replace(/[\s/\\?#%&()[\]{}<>'"`|^]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "Untitled");
 }

@@ -10,6 +10,7 @@ import WebSocket from "ws";
 import { CLOSE_REPLACED, HUB_PROTOCOL, Hub } from "../src/hub.ts";
 import { pluginKey } from "../src/meta.ts";
 import { RelayBridge, probePort, spawnHub } from "../src/relay.ts";
+import { withTask } from "../src/task.ts";
 
 // This computer's pairing key, in a home of its own: the hubs and sessions below read it from there by default.
 process.env.LAYERWRIGHT_HOME = mkdtempSync(join(tmpdir(), "lw-hub-"));
@@ -24,13 +25,13 @@ async function until(fn: () => boolean, ms = 3000) {
 
 /** A fake Figma plugin (paired: it has this computer's key): answers every request with who asked, records what it
  *  was sent. `silent` methods are never answered. */
-function fakePlugin(port: number, o: { protocol?: number; key?: string | null; origin?: string; file?: string; fileKey?: string; window?: string } = {}) {
+function fakePlugin(port: number, o: { protocol?: number; key?: string | null; origin?: string; file?: string; fileKey?: string | null; window?: string } = {}) {
   const got: any[] = [];
   const closed: number[] = [];
   const ws = new WebSocket(`ws://127.0.0.1:${port}`, o.origin ? { origin: o.origin } : {});
   ws.on("error", () => {});
   ws.on("close", (code) => closed.push(code));
-  ws.on("open", () => ws.send(JSON.stringify({ type: "hello", fileName: o.file ?? "TEST", fileKey: o.fileKey, page: "Page 1", protocol: o.protocol ?? 2, key: o.key === null ? undefined : o.key ?? KEY, window: o.window })));
+  ws.on("open", () => ws.send(JSON.stringify({ type: "hello", fileName: o.file ?? "TEST", fileKey: o.fileKey === null ? undefined : o.fileKey ?? `KEY${(o.file ?? "TEST").replace(/\W/g, "").toUpperCase()}000000`, page: "Page 1", protocol: o.protocol ?? 2, key: o.key === null ? undefined : o.key ?? KEY, window: o.window })));
   ws.on("message", (raw) => {
     const m = JSON.parse(String(raw));
     got.push(m);
@@ -604,9 +605,13 @@ test("one Layerwright window per Figma file: all stay connected; each session wo
   assert.deepEqual((await a.windows()).map((w) => [w.file, w.current]), [["Shop", true], ["Blog", false]]);
   assert.deepEqual(await a.bind("Nope"), { ok: false, files: ["Shop", "Blog"] });
 
-  // A request the user sends from the Blog window binds that session to Blog.
-  blog.ws.send(JSON.stringify({ type: "action", session: a.session!.id, action: { id: "q1", kind: "ask", text: "hi", nodes: [], at: 1 } }));
-  await until(() => a.info()?.fileName === "Blog");
+  // A request the user sends from the Blog window to a session that isn't busy in another file: it moves to Blog.
+  const STAY2 = Hub.STAY_MS;
+  try {
+    Hub.STAY_MS = 0;
+    blog.ws.send(JSON.stringify({ type: "action", session: a.session!.id, action: { id: "q1", kind: "ask", text: "hi", nodes: [], at: 1 } }));
+    await until(() => a.info()?.fileName === "Blog");
+  } finally { Hub.STAY_MS = STAY2; }
   assert.equal(((await a.request("inspect", {})) as any).file, "Blog");
 
   // Every window lists every session, with the file each works in.
@@ -614,10 +619,15 @@ test("one Layerwright window per Figma file: all stay connected; each session wo
   const listed = [...shop.got].reverse().find((m) => m.type === "sessions").sessions;
   assert.ok(listed.every((x: any) => x.file === "Blog" || x.file === "Shop"));
 
-  // The Blog window closes: only its requests fail; its sessions go to the window that's left.
-  blog.ws.close();
-  await until(() => hub.status().windows.length === 1);
-  assert.equal(((await a.request("inspect", {})) as any).file, "Shop");
+  // The Blog window closes for good: its sessions go to the window that's left (once they stop waiting for it to
+  // reconnect: the next test).
+  const WAIT = Hub.WAIT_MS;
+  try {
+    Hub.WAIT_MS = 0;
+    blog.ws.close();
+    await until(() => hub.status().windows.length === 1);
+    assert.equal(((await a.request("inspect", {})) as any).file, "Shop");
+  } finally { Hub.WAIT_MS = WAIT; }
   a.close(); b.close(); shop.ws.close(); hub.close();
 });
 
@@ -656,6 +666,10 @@ test("after the hub restarts, a session comes back to the file it worked in", as
   const s = new RelayBridge(port, { log: quiet, workdir: "/work/s", startHub: () => {}, anyPort: true }); open.push(s);
   await s.start();
   await s.bind("Shop");
+  const got: any[] = [];
+  s.onAction = (x) => got.push(x);
+  blog.ws.send(JSON.stringify({ type: "action", session: s.session!.id, action: { id: "q5", kind: "ask", text: "hi", nodes: [], at: 1 } }));
+  await until(() => got.length === 1);
   hub.close();
   hub = new Hub(port, { log: quiet }); open.push({ close: () => hub.close() });
   await hub.start();
@@ -667,5 +681,112 @@ test("after the hub restarts, a session comes back to the file it worked in", as
   await until(() => hub.sessions().length === 1, 5000);
   await wait(400);
   assert.equal(((await s.request("inspect", {})) as any).file, "Shop");
+  // The new hub doesn't know the request Blog sent before: its work still goes to Blog (the session says which file),
+  // and its updates go to every window (only Blog's knows it).
+  assert.equal(((await withTask("q5", () => s.request("inspect", {}))) as any).file, "Blog");
+  s.actionUpdate("q5", "done", "Done");
+  await until(() => [shop2, blog2].every((w) => w.got.some((m) => m.type === "action-update" && m.id === "q5")));
   s.close(); shop2.ws.close(); blog2.ws.close(); hub.close();
+});
+
+test("two different files with the same name (and no file key) both stay connected: only the same file key replaces a window", async (ctx) => {
+  const port = 17313;
+  const hub = new Hub(port, { log: quiet });
+  await hub.start();
+  ctx.after(() => hub.close());
+  const one = fakePlugin(port, { file: "Untitled", fileKey: null, window: "wuntitled1" }); // a plugin that can't read its file's key
+  await one.open();
+  await until(() => hub.status().windows.length === 1);
+  const two = fakePlugin(port, { file: "Untitled", fileKey: null, window: "wuntitled2" });
+  await two.open();
+  await until(() => hub.status().windows.length === 2);
+  await wait(100);
+  assert.deepEqual(one.closed, [], "not pushed out by a namesake");
+  one.ws.close(); two.ws.close();
+});
+
+test("with two files open: a request from the other window doesn't redirect a busy session (only that request's work goes there), changes never follow the user to another file, and waits and updates reach the right windows", async (ctx) => {
+  const open: { close(): void }[] = [];
+  ctx.after(() => { for (const x of open) try { x.close(); } catch { /* closed */ } });
+  const port = 17312;
+  const hub = new Hub(port, { log: quiet }); open.push({ close: () => hub.close() });
+  await hub.start();
+  const shop = fakePlugin(port, { file: "Shop", fileKey: "SHOPKEY12345", window: "wshop0003" }); open.push({ close: () => shop.ws.close() });
+  const blog = fakePlugin(port, { file: "Blog", fileKey: "BLOGKEY12345", window: "wblog0003" }); open.push({ close: () => blog.ws.close() });
+  await shop.open(); await blog.open();
+  await until(() => hub.status().windows.length === 2);
+  shop.ws.send(JSON.stringify({ type: "active" }));
+  await wait(30);
+  const a = new RelayBridge(port, { log: quiet, workdir: "/work/a", startHub: () => {}, anyPort: true }); open.push(a);
+  await a.start();
+  assert.equal(((await a.request("inspect", {})) as any).file, "Shop");
+  assert.equal(a.takeMoved(), undefined, "its first file isn't a move");
+
+  // The user sends a request from the Blog window while the session is busy in Shop: the session stays in Shop…
+  const got: any[] = [];
+  a.onAction = (x) => got.push(x);
+  blog.ws.send(JSON.stringify({ type: "action", session: a.session!.id, action: { id: "q9", kind: "ask", text: "hi", nodes: [], at: 1, file: "Blog" } }));
+  await until(() => got.length === 1);
+  assert.equal(a.info()?.fileName, "Shop");
+  assert.equal(((await a.request("editNodes", {})) as any).file, "Shop", "its own work isn't redirected");
+  assert.equal(a.takeMoved(), undefined);
+  // …and the work for that request (requestId) happens in Blog, reads and changes, with Blog's file as the session's.
+  assert.equal(((await withTask("q9", () => a.request("inspect", {}))) as any).file, "Blog");
+  assert.equal(((await withTask("q9", () => a.request("editNodes", {}))) as any).file, "Blog");
+  assert.equal(withTask("q9", () => a.info()?.fileKey), "BLOGKEY12345", "links and plans for it are Blog's");
+  assert.equal(a.info()?.fileName, "Shop");
+
+  // Its reply about that request reaches the Blog window only. Waiting for the user shows in every window, and so
+  // does the end of it.
+  const before = { shop: shop.got.length, blog: blog.got.length };
+  a.actionUpdate("q9", "working", "On it");
+  a.notify({ type: "session-state", waiting: true, kind: "question", text: "Which colour?" });
+  await until(() => blog.got.slice(before.blog).some((m) => m.type === "session-state") && shop.got.slice(before.shop).some((m) => m.type === "session-state"));
+  assert.ok(blog.got.slice(before.blog).some((m) => m.type === "action-update" && m.id === "q9" && m.status === "working"));
+  await wait(50);
+  assert.deepEqual(shop.got.slice(before.shop).filter((m) => m.type === "action-update"), [], "the other file's window doesn't hear about Blog's request");
+
+  // A while later the user works in Blog: a change still goes to Shop (its ids are Shop's); a read follows the user,
+  // and the session is told.
+  const STAY = Hub.STAY_MS;
+  try {
+    Hub.STAY_MS = 0;
+    blog.ws.send(JSON.stringify({ type: "active" }));
+    await wait(30);
+    assert.equal(((await a.request("editNodes", {})) as any).file, "Shop");
+    assert.equal(a.takeMoved(), undefined);
+    assert.equal(((await a.request("inspect", {})) as any).file, "Blog");
+    assert.deepEqual(a.takeMoved(), { from: "Shop", to: "Blog" });
+  } finally { Hub.STAY_MS = STAY; }
+
+  // Its window goes away for a moment: the session waits for it rather than working in the other file…
+  blog.ws.close();
+  await until(() => hub.status().windows.length === 1);
+  await assert.rejects(a.request("inspect", {}), /"Blog" is reconnecting/);
+  // …and is back in Blog once it reconnects.
+  const blog2 = fakePlugin(port, { file: "Blog", fileKey: "BLOGKEY12345", window: "wblog0003" }); open.push({ close: () => blog2.ws.close() });
+  await blog2.open();
+  await until(() => hub.status().windows.length === 2);
+  assert.equal(((await a.request("inspect", {})) as any).file, "Blog");
+  // The plugin is opened again in Blog (a new window): the request's updates go to it, and only to it.
+  const blog3 = fakePlugin(port, { file: "Blog", fileKey: "BLOGKEY12345", window: "wblog0004" }); open.push({ close: () => blog3.ws.close() });
+  await blog3.open();
+  await until(() => blog2.closed.length > 0);
+  const shopBefore = shop.got.length;
+  a.actionUpdate("q9", "done", "Done");
+  await until(() => blog3.got.some((m) => m.type === "action-update" && m.status === "done"));
+  await wait(50);
+  assert.deepEqual(shop.got.slice(shopBefore).filter((m) => m.type === "action-update"), []);
+  // Blog closes for good: a change is refused (nothing done in Shop with Blog's ids), a read goes where it can.
+  const WAIT = Hub.WAIT_MS;
+  try {
+    Hub.WAIT_MS = 0;
+    blog3.ws.close();
+    await until(() => hub.status().windows.length === 1);
+    await assert.rejects(a.request("editNodes", {}), /window of "Blog", the file this session works in, is closed, so nothing was changed/);
+    await assert.rejects(withTask("q9", () => a.request("inspect", {})), /file this request came from \("Blog"\) is closed/);
+    assert.equal(((await a.request("inspect", {})) as any).file, "Shop");
+    assert.deepEqual(a.takeMoved(), { from: "Blog", to: "Shop" });
+  } finally { Hub.WAIT_MS = WAIT; }
+  a.close(); shop.ws.close(); hub.close();
 });

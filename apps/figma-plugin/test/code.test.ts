@@ -67,6 +67,39 @@ test("reads draw nothing and write nothing: status, inspect, a picture, a scan, 
   assert.deepEqual(commits, [], "and no undo step");
 });
 
+test("links: refs reads the file and each layer's page without drawing anything; a link to a page opens that page", async () => {
+  const other = F().createPage(); other.name = "Checkout flow";
+  frame("8:8", "Pay", 0, 0, 100, 100, other);
+  const empty = F().createPage(); empty.name = "Empty";
+  const before = nodes.size;
+  const r = await request("refs", { nodeIds: ["5:5", "8:8", "404:1"] });
+  assert.ok(r.ok, JSON.stringify(r.error));
+  assert.deepEqual([r.result.fileKey, r.result.page.name, r.result.missing], ["file1", page.name, 1]);
+  assert.deepEqual(r.result.nodes.map((n: any) => [n.id, n.page]), [["5:5", page.name], ["8:8", "Checkout flow"]]);
+  assert.deepEqual((await request("refs", { target: "page" })).result.nodes.map((n: any) => [n.type, n.name]), [["PAGE", page.name]]);
+  // A picture of a page (a link to a page): of what's on it, sized by its layers.
+  const shot = await request("exportImage", { nodeId: other.id, maxDimension: 50 });
+  assert.ok(shot.ok, JSON.stringify(shot.error));
+  assert.deepEqual([shot.result.width, shot.result.height, shot.result.scale], [50, 50, 0.5]);
+  assert.match((await request("exportImage", { nodeId: empty.id })).error.message, /Page "Empty" is empty/);
+  const opened = await request("select", { nodeIds: [other.id] });
+  assert.deepEqual(opened.result, { selected: 0, page: "Checkout flow", openedPage: true });
+  assert.equal(F().currentPage, other);
+  // Layerwright opened that page: not the user working there. The user opening a page is (the window tells the hub).
+  const quiet = own.userActiveAt();
+  emit("currentpagechange");
+  assert.equal(own.userActiveAt(), quiet);
+  skew += 10_000;
+  const from = host.posted.length;
+  await F().setCurrentPageAsync(page);
+  emit("currentpagechange");
+  assert.ok(own.userActiveAt() > quiet, "the user's page change counts as them working");
+  assert.ok(host.posted.slice(from).some((m) => m.type === "selection" && m.user), "and the window hears it");
+  assert.equal(nodes.size, before, "nothing drawn");
+  assert.deepEqual(commits, [], "no undo step");
+  other.remove(); empty.remove();
+});
+
 test("a change is one undo step: the cursor is drawn while it runs and erased before the commit; nothing is left, nothing keeps running", async () => {
   const baseline = pendingTimers();
   commits.length = 0;

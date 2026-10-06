@@ -32,6 +32,8 @@ export interface FigmaTransport {
   join?(): Promise<void>;
   /** Shared bridge only: the Figma files open in Layerwright (one window each), and which one this session works in. */
   windows?(): Promise<{ file?: string; fileKey?: string; page?: string; current: boolean }[]>;
+  /** Shared bridge only: the hub moved this session to another file without it asking (once, then forgotten). */
+  takeMoved?(): { from: string; to: string } | undefined;
   /** Shared bridge only: work in that file (a Figma link, file key or name) from now on. */
   bind?(file: string): Promise<{ ok: boolean; files: string[] }>;
   /** Shared bridge only: removed in the Figma window, and joining again. */

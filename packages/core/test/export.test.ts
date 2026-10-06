@@ -200,3 +200,24 @@ test("a wrapping row exports wrap and its row gap (counterGap), compiled to coun
   assert.equal((cn.plan!.roots[0] as ResolvedFrame).layout!.counterGap, undefined);
   assert.ok(cn.warnings.some((w) => /counterGap only applies to a horizontal layout with wrap: true/.test(w)));
 });
+
+test("an exported plan always validates: a very long text is cut to what a plan holds, and too many styled pieces fall back to one style, each with a warning", () => {
+  const long: NodeSnapshot = { id: "80:1", type: "TEXT", name: "Terms", w: 300, h: 2000, layout: { mode: "NONE", sizingH: "FIXED", sizingV: "HUG" },
+    text: { chars: "a".repeat(7000), font: "Inter Regular", fontSize: 12, autoResize: "HEIGHT" } };
+  const a = snapshotToPlan(long);
+  assert.equal((a.plan.screens[0] as any).content.length, 5000);
+  assert.match(a.warnings.join(" "), /7000 characters; a plan holds 5000/);
+  assert.ok(validatePlan(a.plan).success, "it validates");
+  // 260 pieces alternating two colours (a link-heavy paragraph): more than a plan holds.
+  const pieces = Array.from({ length: 260 }, (_, i) => ({ chars: `w${i} `, font: "Inter Regular", fontSize: 12, fill: i % 2 ? "#D92D20" : "#101828" }));
+  const rich: NodeSnapshot = { id: "80:2", type: "TEXT", name: "Rich", w: 300, h: 400, layout: { mode: "NONE", sizingH: "FIXED", sizingV: "HUG" },
+    text: { chars: pieces.map((p) => p.chars).join(""), font: "mixed", autoResize: "HEIGHT", runs: pieces } };
+  const b = snapshotToPlan(rich);
+  assert.equal((b.plan.screens[0] as any).runs, undefined);
+  assert.match(b.warnings.join(" "), /260 differently styled pieces/);
+  assert.ok(validatePlan(b.plan).success);
+  // Neighbouring pieces that look the same are one run.
+  const same: NodeSnapshot = { ...rich, id: "80:3", text: { chars: "ab cd", font: "mixed", autoResize: "HEIGHT", runs: [
+    { chars: "ab", font: "Inter Regular", fontSize: 12, fill: "#101828" }, { chars: " ", font: "Inter Regular", fontSize: 12, fill: "#D92D20" }, { chars: "cd", font: "Inter Regular", fontSize: 12, fill: "#D92D20" }] } };
+  assert.deepEqual((snapshotToPlan(same).plan.screens[0] as any).runs.map((r: any) => r.text), ["ab", " cd"]);
+});

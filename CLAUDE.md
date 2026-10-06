@@ -44,7 +44,7 @@ Agent ──stdio/MCP──▶ MCP server (one per session) ──ws──▶ hu
 
 Flow of a plan: Claude or the HTML importer produces a Design Plan → server validates (Zod) and `compilePlan` resolves it against the DS scan → `planId` → `figma_execute_plan` sends it over the bridge → plugin executes it as one undo step with full rollback on failure → server re-inspects and verifies against the plan (and, for HTML, against rendered boxes).
 
-Bridge protocol is `{ id, method, params }` → `{ id, ok, result | error }`; the plugin announces `{ type: "hello", fileName, page, pluginBuild, protocol, key }`. `HUB_PROTOCOL` in `hub.ts` must be bumped on incompatible hub ⇄ client changes, and messages a 0.2.x plugin doesn't know go through `toModern()`.
+Bridge protocol is `{ id, method, params }` → `{ id, ok, result | error }`; the plugin announces `{ type: "hello", fileName, fileKey, page, pluginBuild, protocol }` and its window adds `window` (its id) and `key`. The hub keeps one window per Figma file and routes each session to one (`Hub.windowFor`). `HUB_PROTOCOL` in `hub.ts` must be bumped on incompatible hub ⇄ client changes; features a hub may lack are announced in its welcome (`multiFile`), and messages added after 0.2.2 go only to plugin windows whose `protocol` knows them.
 
 Who may connect (keep this when touching `hub.ts`/`bridge.ts`): `originAllowed()` refuses any upgrade with a browser Origin (the plugin iframe sends `null`; Node clients send none), sessions and the plugin window must present `pluginKey()` (`~/.layerwright/key`), and only whitelisted `notify` message types are passed to the window.
 
