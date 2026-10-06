@@ -22,6 +22,23 @@ export function projectDir(): string {
   return w && !w.includes("${") ? resolve(w) : process.cwd();
 }
 
+/** Has Layerwright been set up or used in this project? Its `.layerwright/` folder (init makes it, the server keeps
+ *  its memory and mappings there; `.design-engineer/` is the old name). Sessions in such a project join the Figma
+ *  connection at once; anywhere else a session joins on its first Figma call, so the plugin window doesn't list every
+ *  Claude Code session on the computer (the agent plugin is installed for all of them). The home folder's own
+ *  ~/.layerwright doesn't count. */
+export function projectUsesLayerwright(dir = projectDir()): boolean {
+  const home = resolve(layerwrightHome());
+  return [".layerwright", ".design-engineer"].some((d) => { const p = resolve(dir, d); return p !== home && existsSync(p); });
+}
+
+/** Mark this project as one that uses Layerwright (see projectUsesLayerwright). Never throws. */
+export function markProject(dir = projectDir()): void {
+  const p = resolve(dir, ".layerwright");
+  if (p === resolve(layerwrightHome())) return;
+  try { mkdirSync(p, { recursive: true }); } catch { /* read-only folder: it joins on first use again next time */ }
+}
+
 /** True when running from a git checkout (TypeScript sources) rather than the published bundle. */
 export const FROM_SOURCE = here.endsWith(`${"src"}`) && existsSync(resolve(here, "../../../packages/core"));
 export const REPO_ROOT = FROM_SOURCE ? resolve(here, "../../..") : undefined;

@@ -96,3 +96,29 @@ test("init --cursor: .cursor/mcp.json merged and the skill as a Cursor rule; doc
   await doctor({ dir, port: 7399, skipBrowserCheck: true, olderServers: () => [], out: (s) => lines.push(s) });
   assert.ok(lines.some((l) => /✓ Cursor set up/.test(l)));
 });
+
+test("a project uses Layerwright once init ran there or it used Figma: its .layerwright folder; the home folder's own doesn't count", async () => {
+  const { projectUsesLayerwright, markProject, layerwrightHome } = await import("../src/meta.ts");
+  const dir = tmp();
+  assert.equal(projectUsesLayerwright(dir), false, "a folder where Layerwright was never set up or used");
+  assert.equal(await init({ dir, skipInstall: true, skipBrowserCheck: true, out: () => {} }), 0);
+  assert.ok(existsSync(join(dir, ".layerwright")), "init marks it");
+  assert.equal(projectUsesLayerwright(dir), true);
+  const used = tmp();
+  markProject(used); // the server's first Figma call there
+  assert.equal(projectUsesLayerwright(used), true);
+  const legacy = tmp();
+  mkdirSync(join(legacy, ".design-engineer"));
+  assert.equal(projectUsesLayerwright(legacy), true, "the old folder name counts");
+  // A session started in the folder that holds ~/.layerwright (the home folder) isn't a Layerwright project.
+  const home = layerwrightHome();
+  mkdirSync(home, { recursive: true });
+  const parent = join(home, "..");
+  process.env.LAYERWRIGHT_HOME = join(parent, ".layerwright");
+  try {
+    mkdirSync(process.env.LAYERWRIGHT_HOME, { recursive: true });
+    assert.equal(projectUsesLayerwright(parent), false);
+    markProject(parent);
+    assert.equal(projectUsesLayerwright(parent), false, "and isn't marked as one");
+  } finally { process.env.LAYERWRIGHT_HOME = home; }
+});

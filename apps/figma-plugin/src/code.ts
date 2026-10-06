@@ -151,6 +151,7 @@ figma.ui.onmessage = async (msg: any) => {
     const text = typeof msg.text === "string" ? msg.text.trim().slice(0, 2000) : "";
     if (!sel.length && kind !== "ask") { figma.ui.postMessage({ type: "action-error", message: "Select the layers first." }); return; }
     const skills: string[] = Array.isArray(msg.skills) ? [...new Set<string>(msg.skills.filter((s: unknown): s is string => typeof s === "string" && /^[\w-]{1,60}$/.test(s)))].slice(0, 6) : [];
+    desk.assign(msg.session); // sent from the window: the selection goes with it, and that's the user's session now
     composeAction(msg.session, kind, text, sel, { skills: skills.length ? skills : undefined });
     return;
   }
@@ -262,8 +263,9 @@ function createdBy(method: string, r: any): string[] {
   return [];
 }
 /** A request for one session about these layers, handed to the window to send (the window's actions, annotations). */
+/** A request for a session about these layers. Notes and annotations on the canvas carry their own layers: they
+ *  don't hand over the selection or change the user's session (the window's compose-action does, before this). */
 function composeAction(session: string, kind: string, text: string, nodes: readonly SceneNode[], extra: { skills?: string[]; via?: "annotation" | "note"; note?: string } = {}): string {
-  desk.assign(session);
   const action = { id: `q${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, kind, text: text || undefined, ...extra,
     nodes: nodes.slice(0, 20).map((n) => ({ id: n.id, name: n.name, type: n.type })), more: nodes.length > 20 ? nodes.length - 20 : undefined,
     page: figma.currentPage.name, file: figma.root.name, at: Date.now() };

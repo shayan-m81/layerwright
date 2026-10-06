@@ -169,7 +169,7 @@ test("a note typed while a request runs is held until it ends, then sent; text t
   settle();
   assert.equal(sentNotes().length, before, "nothing goes while the request runs");
   const res = await r;
-  assert.ok(res.ok, JSON.stringify(res.error));
+  assert.ok(res.ok && !res.result.failed, JSON.stringify(res.error ?? res.result));
   assert.equal(label.characters, "@Checkout follow us");
   skew += 500; // past the moment Figma's late events of the request still count as its own
   settle();
@@ -201,4 +201,43 @@ test("a page whose only layer is an AI cursor counts as blank, and is reused", a
   assert.ok(r.ok, JSON.stringify(r.error));
   assert.deepEqual(r.result.pages, [{ name: "Home", id: page.id, created: true }]);
   assert.equal(F().root.children.length, 1);
+});
+
+test("the user's pick holds: another session's edit doesn't take the next selection; Send to and the plugin agree", async () => {
+  const S2 = { id: "s2", name: "Admin", color: "#14ae5c", connectedAt: 5 };
+  await F().ui.onmessage({ type: "sessions", sessions: [S, S2] });
+  const card = frame("8:8", "Card", 900, 300, 200, 120);
+  const desk = () => host.posted.filter((m) => m.type === "desk").at(-1);
+  F().currentPage.selection = [card];
+  emit("selectionchange", {});
+  await F().ui.onmessage({ type: "assign-selection", session: "s2" });
+  assert.deepEqual([desk().owner, desk().to, desk().why], ["s2", "s2", "picked"]);
+  // Checkout edits a layer; the user selects another one: still Admin's.
+  const id = `r${++seq}`;
+  await F().ui.onmessage({ type: "request", req: { id, method: "editNodes", params: { ops: [{ op: "rename", node: "8:8", name: "Card · new" }] }, session: S } });
+  F().currentPage.selection = [nodes.get("5:5")];
+  emit("selectionchange", {});
+  assert.deepEqual([desk().owner, desk().to, desk().why], ["s2", "s2", "picked"]);
+  F().currentPage.selection = [];
+  emit("selectionchange", {});
+  await F().ui.onmessage({ type: "sessions", sessions: [S] });
+});
+
+test("a note on the canvas goes to its session without changing the user's session or handing over their selection", async () => {
+  const S2 = { id: "s2", name: "Admin", color: "#14ae5c", connectedAt: 5 };
+  await F().ui.onmessage({ type: "sessions", sessions: [S, S2] });
+  const desk = () => host.posted.filter((m) => m.type === "desk").at(-1);
+  F().currentPage.selection = [nodes.get("5:5")];
+  emit("selectionchange", {});
+  await F().ui.onmessage({ type: "assign-selection", session: "s2" }); // the user's session: Admin
+  skew += 5000;
+  const before = sentNotes().length;
+  typed("@Checkout make the footer blue", nodes.get("5:5"));
+  settle();
+  assert.equal(sentNotes().length, before + 1, "the note went to Checkout");
+  assert.equal(sentNotes().at(-1).session, "s1");
+  assert.deepEqual([desk().owner, desk().to, desk().why], ["s2", "s2", "picked"], "Admin is still the user's session, and still has the selection");
+  F().currentPage.selection = [];
+  emit("selectionchange", {});
+  await F().ui.onmessage({ type: "sessions", sessions: [S] });
 });

@@ -27,6 +27,9 @@ export interface FigmaTransport {
   inboxList?(): Promise<{ action: FigmaAction; status: string; session: string; sessionName?: string }[]>;
   inboxClaim?(id: string, force?: boolean): Promise<FigmaAction | undefined>;
   inboxTake?(id: string, force?: boolean): Promise<{ action?: FigmaAction; heldBy?: string; status?: string }>;
+  /** Shared bridge only: join the Figma connection now if this session hasn't yet (outside a Layerwright project it
+   *  joins on its first Figma call). */
+  join?(): Promise<void>;
   /** Shared bridge only: removed in the Figma window, and joining again. */
   kicked?: boolean;
   rejoin?(): Promise<void>;

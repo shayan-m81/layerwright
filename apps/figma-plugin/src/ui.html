@@ -265,7 +265,9 @@
   .kick:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad-text); }
   .kick[data-confirm="1"] { opacity: 1; padding: 0 10px; background: var(--bad); color: #fff; }
   #sessions li[data-confirm="1"] .pill { display: none; }
-  #selHint { margin: 8px 2px 0; display: flex; gap: 6px; color: var(--fg2); font-size: 10.5px; }
+  #selHint { margin: 8px 2px 0; color: var(--fg2); font-size: 10.5px; }
+  /* The session's name in the hint: bold, in its own colour, so who gets it reads at a glance. */
+  #selHint .who { color: var(--c, var(--fg)); font-weight: 650; }
   .acts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
   .act { position: relative; overflow: hidden; display: flex; align-items: center; gap: 8px; text-align: left; padding: 8px 9px; border-radius: 10px; background: var(--bg); font-size: 11px; font-weight: 550; line-height: 1.25; }
   .act .ic { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; color: var(--a); background: color-mix(in srgb, var(--a) 13%, transparent); transition: transform .35s var(--spring); }
@@ -273,13 +275,18 @@
   .act:hover .ic { transform: scale(1.12) rotate(-6deg); }
   .act::after { content: ""; position: absolute; inset: 0; background: radial-gradient(circle, color-mix(in srgb, var(--a) 25%, transparent), transparent 65%); opacity: 0; transition: opacity .45s; }
   .act:active::after { opacity: 1; transition: none; }
-  .askbox { display: flex; align-items: center; gap: 6px; margin-top: 8px; padding: 4px 4px 4px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; transition: border-color .2s, box-shadow .2s; }
+  .askbox { display: flex; align-items: flex-end; gap: 6px; margin-top: 8px; padding: 4px 4px 4px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; transition: border-color .2s, box-shadow .2s; }
   .askbox:focus-within { border-color: var(--brand2); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand2) 18%, transparent); }
   .askbox input { flex: 1; min-width: 0; width: auto; border: 0; padding: 4px 0; background: none; box-shadow: none !important; }
   /* The field holds the picked skills as tokens, then the text: one box, wrapping when it fills up. */
   .askbox { position: relative; }
   .askbox .tokens { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
   .askbox .tokens input { min-width: 90px; }
+  /* The question: one line to start, it grows with what's written (Shift+Enter for a new line), then scrolls. */
+  .askbox textarea { flex: 1; min-width: 90px; width: auto; display: block; margin: 0; border: 0; padding: 5px 0; background: none; box-shadow: none !important; outline: none;
+    font: inherit; line-height: 18px; color: var(--fg); resize: none; overflow-y: hidden; max-height: 152px; }
+  .askbox textarea::placeholder { color: var(--fg3); }
+  #mini .askbox textarea { max-height: 116px; }
   .send { width: 28px; height: 28px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 8px; color: #fff; background: linear-gradient(135deg, var(--brand2), var(--brand)); box-shadow: 0 4px 12px -6px var(--brand); }
   .send:hover { background: linear-gradient(135deg, #9d74f8, #6d28d9); }
   .send:hover svg { animation: nudge .5s var(--ease); }
@@ -355,7 +362,6 @@
   .req .stop:hover { background: color-mix(in srgb, var(--bad) 10%, var(--bg)); }
   .req .stop[data-armed="1"] { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
   .pill.off { background: var(--bg3); color: var(--fg2); }
-  .pill.new { padding: 0 5px; margin-left: 4px; font-size: 9px; vertical-align: 1px; background: color-mix(in srgb, var(--brand2) 14%, transparent); color: var(--brand2); }
   #activity li:last-child { border-bottom: 0; }
   #activity .ic { flex: none; width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; font-size: 9px; font-weight: 700; }
   #activity .ic.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 15%, transparent); }
@@ -569,7 +575,7 @@
     <div id="mAsks" role="alert"></div>
     <div class="m-sel"><div id="mThumb" title="Zoom to this layer in Figma"></div><div class="meta"><b id="mName">Select something in Figma</b><small id="mMeta">A frame, a component or a few layers</small></div></div>
     <div id="mActs" class="m-acts"></div>
-    <div class="askbox"><div id="mSkMenu" class="sk-menu" role="listbox" aria-label="Skills"></div><div class="tokens"><span id="mPicked" class="sk-picked"></span><input id="mInput" placeholder="Ask anything… @ to use a skill" maxlength="2000" /></div><button id="mSend" class="send" title="Send to the session" aria-label="Send">
+    <div class="askbox"><div id="mSkMenu" class="sk-menu" role="listbox" aria-label="Skills"></div><div class="tokens"><span id="mPicked" class="sk-picked"></span><textarea id="mInput" rows="1" dir="auto" placeholder="Ask anything… @ to use a skill" maxlength="2000"></textarea></div><button id="mSend" class="send" title="Send to the session" aria-label="Send">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3 10 14M21 3l-7 18-4-7-7-4z"/></svg></button></div>
     <div id="mLast"></div>
   </section>
@@ -635,7 +641,7 @@
         </div>
         <div id="selHint"></div>
         <div id="actions" class="acts-grid"></div>
-        <div class="askbox"><div id="skMenu" class="sk-menu" role="listbox" aria-label="Skills"></div><div class="tokens"><span id="skPicked" class="sk-picked"></span><input id="askInput" placeholder="Ask anything about it… @ to use a skill" maxlength="2000" /></div><button id="askSend" class="send" title="Send to the session" aria-label="Send">
+        <div class="askbox"><div id="skMenu" class="sk-menu" role="listbox" aria-label="Skills"></div><div class="tokens"><span id="skPicked" class="sk-picked"></span><textarea id="askInput" rows="1" dir="auto" placeholder="Ask anything about it… @ to use a skill" maxlength="2000"></textarea></div><button id="askSend" class="send" title="Send to the session" aria-label="Send">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3 10 14M21 3l-7 18-4-7-7-4z"/></svg></button></div>
       </section>
       <div id="emptySel" class="empty">
@@ -763,7 +769,7 @@
   const KEY = "__LAYERWRIGHT_KEY__"; // init writes this computer's key here (pluginKey in the server)
   let ws = null, gen = 0, timer = null, hello = null, failures = 0, server = null;
   let sessions = [];           // from the hub: { id, name, color, client, workdir, titled }
-  let desk = { count: 0, names: [], owner: null, asks: [] }; // from the plugin: who has the selection, who is waiting
+  let desk = { count: 0, names: [], owner: null, to: null, why: null, asks: [] }; // from the plugin: who has the selection, who a request goes to and why, who is waiting
   let noteAsks = [];          // from the plugin: notes on the canvas whose @name isn't a session { key, text, name }
   let thumb = null;            // from the plugin: a small picture of the selection { name, kind, w, h, png? }
   let settings = { cursor: true, zoom: true, mini: false, guideSeen: true };
@@ -963,15 +969,13 @@
     return '<span class="pill">Idle</span>';
   }
   const layerTags = () => desk.names.map((n) => '<span class="tag">' + esc(n) + '</span>').join("") + (desk.count > desk.names.length ? '<span class="tag">+' + (desk.count - desk.names.length) + '</span>' : "");
-  // Who a request from here goes to: the session that has the selection, or the only one.
-  /** Who gets a request: the session picked by hand, until a newer session joins; else the newest (sessions are kept
-   *  newest first). */
-  let pinned = null; // { id, at }
-  const target = () => {
-    const p = pinned && byId(pinned.id);
-    if (p && !sessions.some((s) => (s.connectedAt || 0) > pinned.at)) return p;
-    return sessions[0] || null;
-  };
+  /** Who a request from this window goes to: the plugin decides (desk.to, with desk.why: sessions.ts choose) and both
+   *  Send to and the line under it show that, so they always name the session that gets it: the only session, else
+   *  the user's session (their last pick here, or the one they were using when it was the only one), else nobody and
+   *  the user chooses. */
+  const WHY = { picked: ", your pick", kept: ", the session you were using", only: "" };
+  const whyTarget = (s) => (desk.to === s.id && WHY[desk.why]) || "";
+  const target = () => (desk.to && byId(desk.to)) || (sessions.length === 1 ? sessions[0] : null);
   const CHEV = '<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
   const isBusy = (s) => [...running.values()].some((x) => x.session && x.session.id === s.id && !QUIET[x.method]) || requests.some((x) => x.session === s.id && (x.status === "working" || x.status === "seen"));
   const stateText = (s) => asking.has(s.id) ? "asks you in the chat" : desk.asks.some((a) => a.session === s.id) ? "waiting for you" : openFor(s) > 1 ? "on " + openFor(s) + " requests" : isBusy(s) ? "working" : thinking(s) ? "thinking" : "idle";
@@ -1033,7 +1037,6 @@
     $("emptySel").style.display = showSel || !isOpen() ? "none" : "block";
     if (!showSel) return;
     renderThumb();
-    const owner = byId(desk.owner);
     const to = target();
     $("selCount").textContent = count(desk.count, "layer", "layers");
     setHTML($("selNames"), many && !(thumb && thumb.png) ? layerTags() : ""); // the picture already names the layer
@@ -1045,12 +1048,16 @@
       ? '<span class="avatar ring" data-live="' + (isBusy(to) ? 1 : 0) + '" style="--c:' + col(to.color) + '">' + esc(initials(to.name)) + '</span><span class="meta"><b>' + esc(to.name) + '</b><small>' + esc(sub2(to)) + '</small></span>' + CHEV
       : '<span class="avatar" style="--c:#8b5cf6">?</span><span class="meta"><b>Choose a session</b><small>' + count(sessions.length, "session", "sessions") + ' connected</small></span>' + CHEV);
     $("pickerBtn").style.setProperty && to && $("pickerBtn").style.setProperty("--c", col(to.color));
-    setHTML($("selChips"), sessions.map((s, i) => { const on = to === s; return '<button class="opt" role="option" style="--c:' + col(s.color) + '" data-act="assign" data-session="' + esc(s.id) + '" aria-pressed="' + on + '" title="Give the selection to ' + esc(s.name) + '">' +
-      '<span class="avatar" style="--c:' + col(s.color) + ';width:24px;height:24px;border-radius:7px;font-size:9.5px">' + esc(initials(s.name)) + '</span><span class="meta"><b>' + esc(s.name) + (i === 0 && many ? ' <span class="pill new">Newest</span>' : "") + '</b><small>' + esc([sub2(s), short(s.workdir)].filter(Boolean).join(" · ")) + '</small></span>' +
+    setHTML($("selChips"), sessions.map((s) => { const on = to === s; return '<button class="opt" role="option" style="--c:' + col(s.color) + '" data-act="assign" data-session="' + esc(s.id) + '" aria-pressed="' + on + '" title="Give the selection to ' + esc(s.name) + '">' +
+      '<span class="avatar" style="--c:' + col(s.color) + ';width:24px;height:24px;border-radius:7px;font-size:9.5px">' + esc(initials(s.name)) + '</span><span class="meta"><b>' + esc(s.name) + '</b><small>' + esc([sub2(s), short(s.workdir)].filter(Boolean).join(" · ")) + '</small></span>' +
       (on ? '<span class="check">✓</span>' : "") + '</button>'; }).join("")); // Remove lives on the Sessions tab: here a second click would remove the session
-    $("selHint").textContent = !sessions.length ? "No session is connected. Start Claude Code or Codex in a project to send this."
-      : !many ? "" : owner ? "Only " + owner.name + " can use it. Any other session has to ask you here first." : to ? "Goes to " + to.name + (to === sessions[0] ? ", the newest session" : "") + ". Pick another above." : "";
-    $("selHint").style.display = $("selHint").textContent ? "flex" : "none";
+    const who = (s) => '<b class="who" style="--c:' + col(s.color) + '">' + esc(s.name) + '</b>';
+    // One line, about the session Send to names: who gets it and why. Other sessions ask the user first (the asks
+    // show above when they do).
+    setHTML($("selHint"), !sessions.length ? "No session is connected. Start Claude Code or Codex in a project to send this."
+      : !many ? "" : !to ? "Choose the session to send this to above. It stays your choice until you pick another."
+      : "Goes to " + who(to) + esc(whyTarget(to)) + ". It stays until you pick another above.");
+    $("selHint").style.display = $("selHint").innerHTML ? "block" : "none";
     const can = !!to && paired !== false;
     setHTML($("actions"), ACTIONS.map((a) => '<button class="act" style="--a:' + a.color + '" data-act="ask" data-kind="' + a.kind + '"' + (can ? "" : " disabled") + ' title="' + esc(ACTION_LABEL[a.kind] + (to ? " (" + to.name + ")" : "")) + '">' +
       '<span class="ic"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + a.icon + '</svg></span>' + esc(a.label) + '</button>').join(""));
@@ -1222,7 +1229,8 @@
     }
     if (d.act === "note-send") { post({ type: "note-send", key: d.key, session: d.session }); return; }
     if (d.act === "note-dismiss") { post({ type: "note-dismiss", key: d.key }); return; }
-    if (d.act === "assign") { pinned = { id: d.session, at: Date.now() }; render(); post({ type: "assign-selection", session: d.session }); $("picker").dataset.open = ""; $("mMenu").dataset.open = ""; }
+    // A pick shows at once in Send to and the line under it; the plugin confirms with its next desk message.
+    if (d.act === "assign") { desk.to = d.session; desk.why = "picked"; desk.owner = desk.count ? d.session : desk.owner; render(); post({ type: "assign-selection", session: d.session }); $("picker").dataset.open = ""; $("mMenu").dataset.open = ""; }
     if (d.act === "approve" || d.act === "deny") post({ type: "answer-selection", id: d.id, ok: d.act === "approve" });
     if (d.act === "show") post({ type: "show-selection" });
     if (d.act === "ask") sendRequest(d.kind);
@@ -1255,7 +1263,7 @@
     // "/skill <link or SKILL.md>" in the chat box adds a skill (no session needed); "/skills" opens the tab.
     const typed = String((settings.mini ? $("mInput") : $("askInput")).value || "").trim();
     const sk = /^\/skills?\b\s*([\s\S]*)$/i.exec(typed);
-    if (kind === "ask" && sk) { (settings.mini ? $("mInput") : $("askInput")).value = ""; if (sk[1].trim()) addSkill(sk[1].trim()); else { if (settings.mini) setMini(false, true); setTab("skills"); } return; }
+    if (kind === "ask" && sk) { (settings.mini ? $("mInput") : $("askInput")).value = ""; grow(settings.mini ? $("mInput") : $("askInput")); if (sk[1].trim()) addSkill(sk[1].trim()); else { if (settings.mini) setMini(false, true); setTab("skills"); } return; }
     const to = target();
     if (!to) { toast("Pick a session first", "bad"); return; }
     const box = settings.mini ? $("mInput") : $("askInput");
@@ -1266,14 +1274,44 @@
     if (kind === "ask" && !text && !picked.length) { toast("Write what you'd like first", "bad"); return; }
     post({ type: "compose-action", session: to.id, kind, text, ...(picked.length ? { skills: picked.slice() } : {}) });
     box.value = "";
+    grow(box); // back to one line
     picked = []; closeSkMenu(); renderPicked();
   }
+  /** The question box fits what's written: one line to start, taller with every line, then it scrolls (its CSS
+   *  max-height). In the compact window the window grows with it. */
+  function grow(box) {
+    if (!box || !box.style) return;
+    box.style.height = "auto";
+    const max = box.id === "mInput" ? 116 : 152;
+    const full = box.scrollHeight || 0;
+    if (full) box.style.height = Math.min(full, max) + "px";
+    box.style.overflowY = full > max ? "auto" : "hidden";
+    if (box.id === "mInput") fitMini();
+  }
+  /** Keys in the question box, the same on a Mac and on Windows: Enter (or ⌘/Ctrl+Enter) sends; Shift+Enter and
+   *  Option/Alt+Enter start a new line. Enter that finishes a character in an input method (composing) is neither. */
+  const composing = (ev) => !!ev.isComposing || ev.keyCode === 229;
+  const sendKey = (ev) => !!ev && ev.key === "Enter" && !ev.shiftKey && !ev.altKey && !composing(ev);
+  /** A text box adds a line for Shift+Enter by itself, but not for Option/Alt+Enter: add it where the caret is. */
+  function newLine(box, which) {
+    const v = String(box.value || ""), max = Number(box.maxLength) > 0 ? Number(box.maxLength) : 2000;
+    if (v.length >= max) return;
+    const a = typeof box.selectionStart === "number" ? box.selectionStart : v.length, b = typeof box.selectionEnd === "number" ? box.selectionEnd : a;
+    if (box.setRangeText) box.setRangeText("\n", a, b, "end");
+    else box.value = v.slice(0, a) + "\n" + v.slice(b);
+    onType(which); grow(box);
+  }
+  const boxKey = (which) => (ev) => {
+    if (menuKey(ev) || !ev || ev.key !== "Enter" || composing(ev)) return;
+    if (ev.altKey && !ev.shiftKey) { ev.preventDefault && ev.preventDefault(); newLine(boxOf(which), which); return; }
+    if (sendKey(ev)) { ev.preventDefault && ev.preventDefault(); sendRequest("ask"); }
+  };
   $("askSend").onclick = () => sendRequest("ask");
-  $("askInput").onkeydown = (ev) => { if (!menuKey(ev) && ev && ev.key === "Enter" && !ev.shiftKey) sendRequest("ask"); };
-  $("askInput").oninput = () => onType("ask");
+  $("askInput").onkeydown = boxKey("ask");
+  $("askInput").oninput = () => { onType("ask"); grow($("askInput")); };
   $("mSend").onclick = () => sendRequest("ask");
-  $("mInput").onkeydown = (ev) => { if (!menuKey(ev) && ev && ev.key === "Enter" && !ev.shiftKey) sendRequest("ask"); };
-  $("mInput").oninput = () => onType("m");
+  $("mInput").onkeydown = boxKey("m");
+  $("mInput").oninput = () => { onType("m"); grow($("mInput")); };
   $("cursorToggle").onclick = () => { settings.cursor = !settings.cursor; post({ type: "set-cursor", on: settings.cursor }); renderSettings(); toast(settings.cursor ? "AI cursor on" : "AI cursor off"); };
   $("zoomToggle").onclick = () => { settings.zoom = !settings.zoom; post({ type: "set-zoom", on: settings.zoom }); renderSettings(); toast(settings.zoom ? "Zoom to the result on" : "Zoom to the result off"); };
   $("resultBar").onclick = () => { if (resultIds) post({ type: "show-result", ids: resultIds }); $("resultBar").dataset.show = ""; resultIds = null; };
@@ -1396,6 +1434,7 @@
   function pick(id, which) {
     const box = boxOf(which || (skMenu ? skMenu.which : settings.mini ? "m" : "ask"));
     box.value = String(box.value || "").replace(/(^|\s)@[\w-]*$/, "$1");
+    grow(box);
     if (!picked.includes(id)) picked.push(id);
     skMenu = null; renderSkMenu();
     try { box.focus(); } catch (e) {}
@@ -1640,7 +1679,7 @@
     if (msg.type === "selection") { if (hello) hello.selection = msg.count; if (thumb) thumb.loading = msg.count > 0; render(); }
     if (msg.type === "thumb") { thumb = msg.count ? { id: msg.id, name: msg.name, kind: msg.kind, w: msg.w, h: msg.h, png: msg.png } : null; render(); }
     if (msg.type === "note-asks") { noteAsks = Array.isArray(msg.asks) ? msg.asks : []; if (noteAsks.some((n) => !n.quiet) && !settings.mini && tab !== "home") setTab("home"); render(); }
-    if (msg.type === "desk") { desk = { count: msg.count || 0, names: msg.names || [], owner: msg.owner || null, asks: msg.asks || [] }; render(); }
+    if (msg.type === "desk") { desk = { count: msg.count || 0, names: msg.names || [], owner: msg.owner || null, to: msg.to || null, why: msg.why || null, asks: msg.asks || [] }; render(); }
     if (msg.type === "settings") {
       settings.cursor = msg.cursor !== false; settings.zoom = msg.zoom !== false; renderSettings();
       if (!!msg.mini !== settings.mini) setMini(!!msg.mini, false);

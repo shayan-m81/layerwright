@@ -2,7 +2,7 @@
 // goes away, when an older single-session server holds the port, and when a session leaves.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { createServer as tcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -407,20 +407,25 @@ test("the hub's log lines carry the local time", async () => {
   assert.equal(logTime(new Date(2026, 9, 6, 2, 11, 3)), "2026-10-06 02:11:03");
 });
 
-test("the plugin's SessionStart hook: tells a new session to start watching when a Figma window is connected or was used recently", async () => {
+test("the plugin's SessionStart hook: tells a new session in a Layerwright project to start watching when a Figma window is connected or was used recently; other projects hear nothing", async () => {
   const { sessionHint } = await import("../src/cli.ts");
+  const project = mkdtempSync(join(tmpdir(), "lw-proj-"));
+  mkdirSync(join(project, ".layerwright"));
+  const elsewhere = mkdtempSync(join(tmpdir(), "lw-other-")); // Layerwright was never set up or used here
   const port = 17326;
   const hub = new Hub(port, { log: quiet });
   await hub.start();
   const out: string[] = [];
   const push = (s: string) => { out.push(s); };
-  await sessionHint({ port, self: "node cli.js", out: push, recent: false });
+  await sessionHint({ port, self: "node cli.js", out: push, recent: false, project });
   assert.deepEqual(out, [], "no Figma window, none used lately: nothing said");
-  await sessionHint({ port, self: "node cli.js", out: push, recent: true });
+  await sessionHint({ port, self: "node cli.js", out: push, recent: true, project });
   assert.match(JSON.parse(out.pop()!).hookSpecificOutput.additionalContext, /used on this computer recently[\s\S]*"node cli\.js inbox-watch"/, "used lately: watch before the window is open again");
   const plugin = fakePlugin(port);
   await until(() => plugin.got.some((m) => m.type === "pairing"));
-  await sessionHint({ port, self: "node cli.js", out: push, recent: false });
+  await sessionHint({ port, self: "node cli.js", out: push, recent: true, project: elsewhere });
+  assert.deepEqual(out, [], "a project that never used Layerwright: nothing, even with Figma open");
+  await sessionHint({ port, self: "node cli.js", out: push, recent: false, project });
   const ctx = JSON.parse(out[0]).hookSpecificOutput;
   assert.equal(ctx.hookEventName, "SessionStart");
   assert.match(ctx.additionalContext, /start the Monitor tool with command "node cli\.js inbox-watch"/);
@@ -472,6 +477,7 @@ test("a session that reconnects keeps its id, colour and name; one whose id is i
   for (const s of [before.a, before.b]) {
     assert.equal(back.get(s.id)?.name, s.name, "whichever comes back first, names don't swap");
     assert.equal(back.get(s.id)?.color, s.color);
+    assert.equal(back.get(s.id)?.connectedAt, s.connectedAt, "and keeps when it first joined: a reconnect isn't a new session");
   }
   // Someone else asks for an id a live session has: it gets its own.
   const ws = new WebSocket(`ws://127.0.0.1:${port}/client`);
@@ -480,6 +486,30 @@ test("a session that reconnects keeps its id, colour and name; one whose id is i
   assert.notEqual(welcome.session.id, before.a.id);
   assert.notEqual(welcome.session.color, before.a.color);
   ws.close(); a.close(); b.close(); hub.close();
+});
+
+test("a session joins on its first Figma call when it wasn't started (outside a Layerwright project)", async () => {
+  const port = 17317;
+  const hub = new Hub(port, { log: quiet });
+  await hub.start();
+  const plugin = fakePlugin(port);
+  await plugin.open();
+  let marked = 0;
+  const idle = new RelayBridge(port, { log: quiet, workdir: "/work/notes", startHub: () => {}, anyPort: true, onUse: () => { marked++; } });
+  const busy = new RelayBridge(port, { log: quiet, workdir: "/work/shop", startHub: () => {}, anyPort: true });
+  await busy.start();
+  await wait(150);
+  assert.deepEqual(hub.sessions().map((x) => x.workdir), ["/work/shop"], "a session that never used Figma isn't listed");
+  assert.equal(idle.started, false);
+  // Its first Figma call joins it, and the call goes through.
+  assert.deepEqual(await idle.request("ping", {}), { by: "notes", method: "ping" });
+  assert.equal(marked, 0, "a status check (figma_status, /layer:help) doesn't mark the project");
+  assert.deepEqual(await idle.request("inspect", {}), { by: "notes", method: "inspect" });
+  assert.equal(marked, 1, "its first real Figma work does (index.ts: markProject)");
+  await idle.request("inspect", {});
+  assert.equal(marked, 1, "once");
+  assert.equal(hub.sessions().length, 2);
+  idle.close(); busy.close(); plugin.ws.close(); hub.close();
 });
 
 test("an older hub gives the port to a newer session once, and its own sessions wait for the newer hub instead of starting an old one", async () => {

@@ -204,6 +204,7 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
   bridge.onHello = () => bridge.notify?.(serverInfo());
 
   // Sessions on this computer still running a 0.x (single-session) Layerwright: they can't reach Figma next to a hub.
+  if (!(opts.noProcessScan ?? opts.noUpdateCheck)) olderServersCached(); // the first scan starts now, in the background
   const olderNote = () => {
     if (opts.noProcessScan ?? opts.noUpdateCheck) return {};
     const older = olderServersCached();
@@ -219,8 +220,9 @@ export function createServer(bridge: FigmaTransport, opts: ServerOptions = {}) {
   }, async ({ title, listen }) => guard(async () => {
     // Removed in the Figma window: this call brings it back. The user removed it on purpose, so they hear about it.
     const wasRemoved = !!bridge.kicked;
+    if (title) bridge.setTitle?.(title); // first: a session that joins now shows up with its title, not its folder
     if (wasRemoved) await bridge.rejoin?.();
-    if (title) bridge.setTitle?.(title);
+    else await bridge.join?.(); // the first Figma call of a session outside a Layerwright project: it joins now
     // The language the user chose to be told things in (every project, every session): layerwright_memory language.
     const language = readPrefs().language;
     const base = { connected: bridge.connected(), file: bridge.info()?.fileName, designSystemCached: !!loadDs(), designSystemScannedAt: ds?.scannedAt, workdir,

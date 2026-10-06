@@ -1,6 +1,6 @@
 {
   "name": "layerwright",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Turn Claude Design and Claude Code designs into native, editable Figma files (HTML to Figma with Auto Layout and your Design System components), and Figma frames into code that uses your own React components. An MCP server and Figma plugin for Claude Code.",
   "mcpName": "io.github.shayan-m81/layerwright",
   "keywords": [

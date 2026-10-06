@@ -140,15 +140,16 @@ test("several sessions: each is listed with what it's doing; a request for the s
   ui.fromPlugin({ type: "desk", count: 2, names: ["Button", "Card"], owner: null, asks: [] });
   assert.equal(ui.els.selCard.style.display, "block");
   assert.match(ui.els.selNames.innerHTML, /<span class="tag">Button<\/span><span class="tag">Card<\/span>/);
-  assert.match(ui.els.selHint.textContent, /^Goes to shop, the newest session/);
+  assert.equal(ui.els.selHint.innerHTML, "Choose the session to send this to above. It stays your choice until you pick another.", "two sessions, no pick yet: no guess (not the newest, not the one that just worked)");
+  assert.equal(ui.els.selHint.style.display, "block");
   ui.els.selChips.onclick({ target: { dataset: { act: "assign", session: "sa" } } });
   assert.deepEqual({ ...ui.posted.at(-1) }, { type: "assign-selection", session: "sa" });
-  ui.fromPlugin({ type: "desk", count: 2, names: ["Button", "Card"], owner: "sa", asks: [] });
-  assert.match(ui.els.selHint.textContent, /^Only shop can use it/);
+  ui.fromPlugin({ type: "desk", count: 2, names: ["Button", "Card"], owner: "sa", to: "sa", why: "picked", asks: [] });
+  assert.match(ui.els.selHint.innerHTML, /^Goes to <b class="who" style="--c:#7c3aed">shop<\/b>, your pick\. It stays until you pick another above\.$/, "its name in bold, in its colour");
   assert.match(ui.els.selChips.innerHTML, /aria-pressed="true"[^>]*>.*shop/s);
 
   // admin asks for it: a prominent card, answered with one click.
-  ui.fromPlugin({ type: "desk", count: 2, names: ["Button", "Card"], owner: "sa", asks: [{ id: "a1", session: "sb" }] });
+  ui.fromPlugin({ type: "desk", count: 2, names: ["Button", "Card"], owner: "sa", to: "sa", why: "picked", asks: [{ id: "a1", session: "sb" }] });
   assert.match(ui.els.asks.innerHTML, /admin wants to use your selection.*title="2 layers: Button, Card".*>Button<.*>Card<.*Use for admin/s);
   assert.match(ui.els.sessions.innerHTML, /admin.*Waiting for you/s);
   ui.els.asks.onclick({ target: { dataset: { act: "approve", id: "a1" } } });
@@ -257,7 +258,7 @@ function withSession() {
   ui.sockets[0].open();
   ui.sockets[0].onmessage({ data: JSON.stringify({ type: "pairing", paired: true }) });
   ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [{ id: "sa", name: "Checkout", color: "#7c3aed", client: "claude-code" }] }) });
-  ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: "sa", asks: [] });
+  ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: "sa", to: "sa", why: "picked", asks: [] });
   return ui;
 }
 
@@ -300,7 +301,7 @@ test("an unpaired window can't send requests, and says how to pair; the hello ca
   assert.equal(JSON.parse(ui.sockets[0].sent[0]).key, "__LAYERWRIGHT_KEY__");
   ui.sockets[0].onmessage({ data: JSON.stringify({ type: "pairing", paired: false }) });
   ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [{ id: "sa", name: "Checkout", color: "#7c3aed" }] }) });
-  ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: "sa", asks: [] });
+  ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: "sa", to: "sa", why: "picked", asks: [] });
   assert.match(ui.els.actions.innerHTML, /disabled/);
   assert.equal(ui.els.askSend.disabled, true);
   assert.match(ui.els.pairing.textContent, /^Not paired: run npx layerwright init/);
@@ -333,7 +334,7 @@ test("a session that never acknowledges a request (an older Layerwright) is poin
   ui.fromPlugin({ type: "send-action", session: "sa", action: { id: "q3", kind: "code", nodes: [{ id: "1:2", name: "Card", type: "FRAME" }], at: 1 } });
   try {
     Date.now = () => realNow() + 9000;
-    ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: "sa", asks: [] }); // any render
+    ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: "sa", to: "sa", why: "picked", asks: [] }); // any render
     assert.match(ui.els.requests.innerHTML, /didn't answer: it may run an older Layerwright/);
   } finally { Date.now = realNow; }
 });
@@ -341,7 +342,7 @@ test("a session that never acknowledges a request (an older Layerwright) is poin
 test("the session picker: the chosen session up top, every session in the menu, no Remove in it; work brings Activity forward", () => {
   const ui = withSession();
   ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [{ id: "sa", name: "Checkout", color: "#7c3aed", client: "claude-code" }, { id: "sb", name: "Admin", color: "#0d99ff", client: "codex-mcp-client" }] }) });
-  ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: "sa", asks: [] });
+  ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: "sa", to: "sa", why: "picked", asks: [] });
   assert.match(ui.els.pickerBtn.innerHTML, /Checkout.*Claude Code · idle/s);
   assert.match(ui.els.selChips.innerHTML, /Checkout.*Admin.*Codex/s);
   ui.els.pickerBtn.onclick();
@@ -372,7 +373,7 @@ const plain = (x: unknown) => JSON.parse(JSON.stringify(x)); // objects from the
 
 test("the picture of the selection zooms Figma to that layer; a request tells the cursor what kind it is", () => {
   const ui = withSession();
-  ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: "sa", asks: [] });
+  ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: "sa", to: "sa", why: "picked", asks: [] });
   ui.fromPlugin({ type: "thumb", count: 1, id: "1:2", name: "Card", kind: "FRAME", w: 320, h: 200, png: "AAAA" });
   assert.match(ui.els.thumb.innerHTML, /Zoom to layer/);
   ui.els.thumb.onclick();
@@ -384,7 +385,7 @@ test("the picture of the selection zooms Figma to that layer; a request tells th
 test("compact mode: remembered by the plugin, sized to fit; the selection, the four actions, the chat box and the last request", () => {
   const ui = withSession();
   ui.el("mini").offsetHeight = 212;
-  ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: "sa", asks: [] });
+  ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: "sa", to: "sa", why: "picked", asks: [] });
   ui.fromPlugin({ type: "thumb", count: 1, id: "1:2", name: "Card", kind: "FRAME", w: 320, h: 200, png: "AAAA" });
   ui.fromPlugin({ type: "settings", cursor: true, mini: true });
   assert.equal(ui.els.app.dataset.mini, "1");
@@ -576,27 +577,31 @@ test("a skill alone is a request: picked with no words it sends, reads 'Apply <s
   assert.match(ui.els.requests.innerHTML, /Apply Design Critique · Checkout/);
 });
 
-test("the session picker: newest first, the newest is picked by itself; a pick by hand holds until a newer session joins", () => {
+test("the session picker: with several sessions nobody is chosen until the user picks; the pick holds, whoever joins, reconnects or works", () => {
   const ui = boot();
   ui.sockets[0].open();
   ui.sockets[0].onmessage({ data: JSON.stringify({ type: "pairing", paired: true }) });
   const old = { id: "s1", name: "Old one", color: "#7c3aed", connectedAt: 1000 };
   const mid = { id: "s2", name: "Middle", color: "#0d99ff", connectedAt: 2000 };
   ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [old, mid] }) });
-  ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: null, asks: [] });
-  assert.match(ui.els.pickerBtn.innerHTML, /<b>Middle<\/b>/, "the newest is chosen");
-  assert.match(ui.els.selChips.innerHTML, /Middle <span class="pill new">Newest<\/span>[\s\S]*Old one/, "newest first");
-  ui.els.selChips.onclick({ target: { dataset: { act: "assign", session: "s1" } } });
-  assert.match(ui.els.pickerBtn.innerHTML, /<b>Old one<\/b>/, "a pick by hand holds");
-  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [old, mid] }) });
-  assert.match(ui.els.pickerBtn.innerHTML, /<b>Old one<\/b>/);
-  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [old, mid, { id: "s3", name: "Brand new", color: "#14ae5c", connectedAt: Date.now() + 1000 }] }) });
-  assert.match(ui.els.pickerBtn.innerHTML, /<b>Brand new<\/b>/, "a session that joins later takes over");
+  ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: null, to: null, why: null, asks: [] });
+  assert.match(ui.els.pickerBtn.innerHTML, /<b>Choose a session<\/b>/, "no guess");
+  assert.match(ui.els.selChips.innerHTML, /<b>Middle<\/b>[\s\S]*<b>Old one<\/b>/, "newest first in the menu");
+  assert.doesNotMatch(ui.els.selChips.innerHTML, /Newest/, "no label that reads like a default");
   ui.els.askInput.value = "hi";
   ui.els.askSend.onclick();
-  assert.equal(ui.posted.filter((m: any) => m.type === "compose-action").at(-1).session, "s3");
+  assert.ok(!ui.posted.some((m: any) => m.type === "compose-action"), "nothing is sent before a pick");
+  ui.els.selChips.onclick({ target: { dataset: { act: "assign", session: "s1" } } });
+  assert.match(ui.els.pickerBtn.innerHTML, /<b>Old one<\/b>/, "the pick shows at once");
+  ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: "s1", to: "s1", why: "picked", asks: [] });
+  const brandNew = { id: "s3", name: "Brand new", color: "#14ae5c", connectedAt: Date.now() + 1000 };
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [old, { ...mid, connectedAt: Date.now() + 2000 }, brandNew] }) });
+  ui.sockets[0].onmessage({ data: JSON.stringify({ id: "s2~r1", method: "editNodes", session: mid }) });
+  assert.match(ui.els.pickerBtn.innerHTML, /<b>Old one<\/b>/, "not the one that joined, reconnected or worked");
+  ui.els.askInput.value = "hi";
+  ui.els.askSend.onclick();
+  assert.equal(ui.posted.filter((m: any) => m.type === "compose-action").at(-1).session, "s1");
 });
-
 test("a window that isn't paired: the hub says so; the window shows what to do and stops knocking every few seconds", () => {
   const ui = boot();
   ui.sockets[0].open();
@@ -717,4 +722,69 @@ test("with no session the window says so; a session removed here stays listed, f
   assert.equal(ui.els.status.textContent, "Connected to Claude Code");
   assert.equal(ui.els.dot.dataset.state, "connected");
   assert.equal(ui.els.detail.title, "", "the hint goes with the state");
+});
+
+test("Send to and the line under it always name the same session: the plugin's choice, with its reason", () => {
+  const ui = boot();
+  ui.sockets[0].open();
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "pairing", paired: true }) });
+  const cd = { id: "sa", name: "claude-design-engineer", color: "#14ae5c", client: "claude-code", connectedAt: 1 };
+  const home = { id: "sb", name: "shayan 2", color: "#7c3aed", client: "cursor-vscode", connectedAt: 9 };
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [cd, home] }) });
+  const both = () => [/<b>([^<]+)<\/b>/.exec(ui.els.pickerBtn.innerHTML)?.[1], /class="who"[^>]*>([^<]+)<\/b>/.exec(ui.els.selHint.innerHTML)?.[1]];
+  // The screenshot: the plugin had given "Undo test C" to shayan 2 while the window guessed claude-design-engineer.
+  ui.fromPlugin({ type: "desk", count: 1, names: ["Undo test C"], owner: "sb", to: "sb", why: "picked", asks: [] });
+  assert.deepEqual(both(), ["shayan 2", "shayan 2"], "one choice, shown in both places");
+  for (const [why, says] of [["picked", ", your pick"], ["kept", ", the session you were using"]]) {
+    ui.fromPlugin({ type: "desk", count: 1, names: ["Undo test C"], owner: "sa", to: "sa", why, asks: [] });
+    assert.deepEqual(both(), ["claude-design-engineer", "claude-design-engineer"]);
+    assert.ok(ui.els.selHint.innerHTML.includes(`</b>${says}.`), `${why}: ${ui.els.selHint.innerHTML}`);
+  }
+  ui.fromPlugin({ type: "desk", count: 1, names: ["Undo test C"], owner: null, to: null, why: null, asks: [] });
+  assert.deepEqual(both(), ["Choose a session", undefined], "nobody: both say to choose");
+  // A pick in the menu shows at once in both places, before the plugin answers; sending goes there.
+  ui.els.selChips.onclick({ target: { dataset: { act: "assign", session: "sb" } } });
+  assert.deepEqual(both(), ["shayan 2", "shayan 2"]);
+  assert.match(ui.els.selHint.innerHTML, /, your pick\./);
+  ui.els.askInput.value = "make it red";
+  ui.els.askSend.onclick();
+  assert.equal(ui.posted.filter((m: any) => m.type === "compose-action").at(-1).session, "sb");
+});
+
+test("the question box: Enter sends, Shift+Enter and an input method's Enter don't; it grows with the text up to its limit, then scrolls, and goes back to one line after sending", () => {
+  const ui = withSession();
+  const box = ui.els.askInput;
+  let full = 18;
+  Object.defineProperty(box, "scrollHeight", { get: () => full });
+  const sent = () => ui.posted.filter((m: any) => m.type === "compose-action").length;
+  box.value = "first line";
+  let prevented = 0;
+  const key = (o: object) => box.onkeydown({ key: "Enter", preventDefault: () => { prevented++; }, ...o });
+  key({ shiftKey: true });
+  key({ isComposing: true });
+  key({ keyCode: 229 });
+  assert.equal(sent(), 0, "a new line, or an input method finishing a character, isn't a send");
+  // Option+Enter (Mac) / Alt+Enter (Windows): a new line too. The box doesn't add it by itself, so the window does,
+  // where the caret is.
+  box.value = "first line"; box.selectionStart = box.selectionEnd = 5;
+  key({ altKey: true });
+  assert.equal(box.value, "first\n line", "a line break at the caret");
+  assert.equal(sent(), 0);
+  box.value = "first line"; box.selectionStart = box.selectionEnd = 10; prevented = 0;
+  full = 90; box.oninput();
+  assert.equal(box.style.height, "90px", "taller with the text");
+  assert.equal(box.style.overflowY, "hidden");
+  full = 400; box.oninput();
+  assert.equal(box.style.height, "152px", "up to its limit");
+  assert.equal(box.style.overflowY, "auto", "then it scrolls");
+  full = 18;
+  key({});
+  assert.equal(sent(), 1, "Enter sends");
+  assert.equal(prevented, 1, "without adding a new line");
+  assert.equal(ui.posted.filter((m: any) => m.type === "compose-action").at(-1).text, "first line");
+  assert.equal(box.value, "");
+  assert.equal(box.style.height, "18px", "back to one line");
+  // ⌘+Enter (Mac) / Ctrl+Enter (Windows) send too.
+  box.value = "again"; key({ metaKey: true }); key({ ctrlKey: true, key: "Enter" });
+  assert.equal(sent(), 2, "⌘/Ctrl+Enter sends (the second has nothing left to send)");
 });

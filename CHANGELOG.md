@@ -5,6 +5,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-06
+
+### Fixed
+- The AI cursor showed only for slow work: a quick change (a fill, a text, a rename) ended before the cursor was drawn, so it never appeared. The ending now waits for the cursor (at most 1.5 s, never for a cursor that can't be drawn) and keeps it on screen for at least 0.7 s, still inside the change's own undo step, so nothing of it is left in the file or the undo history. The work itself still starts at once.
+- The plugin window listed every Claude Code session on the computer, because the agent plugin is installed for all of them and each joined Figma when it started. Now only sessions in a project that uses Layerwright (its `.layerwright` folder: `init` makes it, and a session's first real Figma work there does; a status check doesn't) join at once; any other session joins on its first Figma call, with its title. The SessionStart hint (watch for requests from Figma) is given only in those projects too.
+- Requests and the selection went to the session that joined most recently, so a Claude Code session opened in another folder took over, and the window's Send to could name a different session than the one that had the selection. Now one rule decides, in the plugin, and Send to and the line under it both show it with its reason: with one session it's that one; with several, your session: the one you last picked in the window or sent a request to from it (or the one you were using when it was the only one) until you pick another; with none of that, Choose a session (nothing is sent). A session joining or reconnecting, another session's work, a note on the canvas or a moment without the hub never move it. What a session's own work selects (a build, `figma_select`, also of layers already selected) it may use without asking; any other session asks you first. The session's name in that line is bold, in its colour, and the menu no longer marks a "Newest" session.
+- A reconnect (the hub restarting, the window reconnecting) no longer forgets what each session last read, so it no longer causes a false CONFLICT; a session keeps its join time.
+- `figma_status` no longer blocks while it looks for Layerwright 0.x sessions: the process scan runs in the background.
+
+### Added
+- The question box in the plugin window (Home and the compact window) grows with what you write, up to about eight lines, then scrolls. Enter (or ⌘/Ctrl+Enter) sends; Shift+Enter or Option/Alt+Enter starts a new line, on a Mac and on Windows. Text in a right-to-left language reads right to left.
+
 ## [1.1.0] - 2026-10-06
 
 ### Fixed
@@ -201,7 +213,8 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 - The plugin no longer opens a duplicate connection after the port is changed.
 
-[Unreleased]: https://github.com/shayan-m81/layerwright/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/shayan-m81/layerwright/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/shayan-m81/layerwright/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/shayan-m81/layerwright/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/shayan-m81/layerwright/compare/v0.2.2...v1.0.0
 [0.2.2]: https://github.com/shayan-m81/layerwright/compare/v0.2.1...v0.2.2

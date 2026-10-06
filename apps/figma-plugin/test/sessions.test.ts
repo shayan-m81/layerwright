@@ -20,7 +20,11 @@ function setup() {
   const select = (...ids: string[]) => { sel = ids.map((id) => ({ id, name: `Layer ${id}` })); desk.onSelectionChange(); };
   const lastDesk = () => posted.filter((m) => m.type === "desk").at(-1);
   /** Layerwright's own work selects these layers. */
-  const ownSelect = (...ids: string[]) => { sel = ids.map((id) => ({ id, name: id })); own = [...ids].sort(); desk.onSelectionChange(true); };
+  const ownSelect = (...ids: string[]) => {
+    const same = sel.map((n) => n.id).sort().join() === [...ids].sort().join();
+    sel = ids.map((id) => ({ id, name: id })); own = [...ids].sort();
+    if (!same) desk.onSelectionChange(true); // like Figma: no selectionchange when nothing changed
+  };
   return { desk, select, ownSelect, posted, progress, lastDesk, tick: (ms: number) => { clock += ms; }, setSel: (ids: string[]) => { sel = ids.map((id) => ({ id, name: id })); } };
 }
 
@@ -52,35 +56,6 @@ test("with two sessions, a selection that isn't a session's makes it ask; the us
   await assert.rejects(other, (e: any) => e.detail.type === "SELECTION_NOT_CONFIRMED" && /choose "admin" in the Layerwright window/.test(e.detail.message));
 });
 
-test("a new selection goes to the session that connected last, without a question", async () => {
-  const t = setup();
-  const old = { ...A, connectedAt: 5 }, recent = { ...B, connectedAt: 9 };
-  t.desk.setSessions([recent, old]);
-  t.select("7:1");
-  assert.equal(t.lastDesk().owner, "sb");
-  await t.desk.claimSelection(recent);
-  assert.equal(t.lastDesk().asks.length, 0);
-  t.select(); // nothing selected: nobody owns nothing
-  assert.equal(t.desk.owner, null);
-});
-
-test("giving the selection to a session in advance means it never has to ask; a new selection goes back to the newest session", async () => {
-  const t = setup();
-  t.desk.setSessions([A, B]);
-  t.select("2:1");
-  t.desk.assign("sa");
-  await t.desk.claimSelection(A);
-  assert.equal(t.lastDesk().asks.length, 0);
-  t.select("2:9"); // the user selects something else
-  assert.equal(t.lastDesk().owner, "sb");
-  // A chip click also answers a session that is already waiting.
-  const claim = t.desk.claimSelection(A);
-  await Promise.resolve();
-  assert.equal(t.lastDesk().asks.length, 1);
-  t.desk.assign("sa");
-  await claim;
-});
-
 test("what a session's own work selects is that session's; another session can't take it without asking", async () => {
   const t = setup();
   t.desk.setSessions([A, B]);
@@ -92,15 +67,6 @@ test("what a session's own work selects is that session's; another session can't
   assert.equal(status.selectionOwner, "shop");
   assert.match(status.selectionNote!, /isn't this session's/);
   assert.deepEqual(t.desk.pingInfo(A, [{ id: "9:1", name: "Screen", type: "FRAME" }]).selectionOwner, "this session");
-});
-
-test("a selection the user makes while a session's edit runs is the user's, not that session's", async () => {
-  const t = setup();
-  t.desk.setSessions([A, { ...B, connectedAt: 5 }]);
-  await t.desk.run("editNodes", { ops: [{ op: "rename", node: "1:1", name: "x" }] }, A, async () => { t.select("3:3"); return {}; });
-  assert.equal(t.lastDesk().owner, "sb", "it goes to the newest session, as any selection of the user's");
-  await assert.rejects(Promise.race([t.desk.claimSelection(A), new Promise((_r, no) => setTimeout(() => no(new Error("asked")), 20))]), /asked/, "A has to ask for it");
-  t.desk.answer(t.lastDesk().asks[0].id, false);
 });
 
 test("the user's own edits while a session's edit runs aren't credited to that session: no false CONFLICT for another session", async () => {
@@ -172,4 +138,117 @@ test("targets: the existing layers an edit touches, not the ones it creates", ()
   assert.deepEqual(targets("editNodes", { ops: [{ op: "duplicate", node: "1:1" }, { op: "rename", node: "$0", name: "x" }, { op: "group", nodes: ["1:2", "1:3"] }] }), ["1:1", "1:2", "1:3"]);
   assert.deepEqual(targets("applyTransformations", { transformations: [{ nodeId: "4:4" }] }), ["4:4"]);
   assert.deepEqual(targets("executePlan", { plan: {} }), []);
+});
+
+test("one session: every selection is its own, without a question", async () => {
+  const t = setup();
+  t.desk.setSessions([A]);
+  t.select("7:1");
+  assert.deepEqual([t.lastDesk().owner, t.lastDesk().to, t.lastDesk().why], ["sa", "sa", "only"]);
+  await t.desk.claimSelection(A);
+  assert.equal(t.lastDesk().asks.length, 0);
+  t.select(); // nothing selected: nobody owns nothing
+  assert.equal(t.desk.owner, null);
+});
+
+test("several sessions: nobody until the user picks one; then every new selection is that session's until they pick another", async () => {
+  const t = setup();
+  const C: SessionInfo = { id: "sc", name: "home", color: "#14ae5c", connectedAt: 99 }; // joined last
+  t.desk.setSessions([A, B, C]);
+  t.select("2:1");
+  assert.deepEqual([t.lastDesk().owner, t.lastDesk().to, t.lastDesk().why], [null, null, null], "no guess: not the newest, not anybody");
+  t.desk.assign("sa");
+  assert.deepEqual([t.lastDesk().owner, t.lastDesk().to, t.lastDesk().why], ["sa", "sa", "picked"]);
+  await t.desk.claimSelection(A);
+  assert.equal(t.lastDesk().asks.length, 0, "the picked session uses it without asking");
+  // Nothing moves it: other sessions working, joining, reconnecting.
+  t.tick(10);
+  await t.desk.run("editNodes", { ops: [{ op: "rename", node: "9:9", name: "x" }] }, B, async () => ({}));
+  await t.desk.run("ping", {}, C, async () => ({}));
+  t.desk.setSessions([A, B, C, { id: "sd", name: "new", color: "#e8a200", connectedAt: 500 }]);
+  for (const id of ["2:2", "2:3"]) {
+    t.select(id);
+    assert.deepEqual([t.lastDesk().owner, t.lastDesk().to, t.lastDesk().why], ["sa", "sa", "picked"], `still A for ${id}`);
+  }
+  // Another session wants it: it asks; a yes makes it the user's pick from then on.
+  const claim = t.desk.claimSelection(B);
+  await Promise.resolve();
+  assert.equal(t.lastDesk().asks.length, 1);
+  t.desk.answer(t.lastDesk().asks[0].id, true);
+  await claim;
+  t.select("2:4");
+  assert.deepEqual([t.lastDesk().to, t.lastDesk().why], ["sb", "picked"]);
+  // The picked session leaves: nobody again, the user chooses.
+  t.desk.setSessions([A, C]);
+  t.select("2:5");
+  assert.deepEqual([t.lastDesk().owner, t.lastDesk().to], [null, null]);
+});
+
+test("what a session's own work selects is that session's; the user's next selection goes back to their pick", async () => {
+  const t = setup();
+  t.desk.setSessions([A, B]);
+  t.desk.assign("sa");
+  await t.desk.run("executePlan", {}, B, async () => { t.ownSelect("9:1"); return {}; });
+  assert.deepEqual([t.lastDesk().owner, t.lastDesk().to, t.lastDesk().why], ["sb", "sa", "picked"], "B may use what it built, but Send to stays the user's session");
+  t.select("2:1");
+  assert.deepEqual([t.lastDesk().owner, t.lastDesk().why], ["sa", "picked"], "not B's just because it was working");
+  // A selection the user makes while B's edit runs is the user's: it goes to their pick, not to B.
+  await t.desk.run("editNodes", { ops: [{ op: "rename", node: "1:1", name: "x" }] }, B, async () => { t.select("3:3"); return {}; });
+  assert.equal(t.lastDesk().owner, "sa");
+});
+
+test("with nothing selected, Send to still names the user's pick (the chat box)", () => {
+  const t = setup();
+  t.desk.setSessions([A, B]);
+  t.desk.publish();
+  assert.equal(t.lastDesk().to, null);
+  t.desk.assign("sb");
+  t.select();
+  assert.deepEqual([t.lastDesk().owner, t.lastDesk().to, t.lastDesk().why], [null, "sb", "picked"]);
+});
+
+test("a session that selects layers on purpose (select) gets them, even when they were already selected; another request doesn't claim the selection", async () => {
+  const t = setup();
+  t.desk.setSessions([A, B]);
+  t.select("4:4"); // the user selected it: nobody's yet (no pick)
+  assert.equal(t.lastDesk().owner, null);
+  await t.desk.run("editNodes", { ops: [{ op: "rename", node: "1:1", name: "x" }] }, B, async () => ({}));
+  assert.equal(t.lastDesk().owner, null, "an edit that selects nothing doesn't claim what happens to be selected");
+  await t.desk.run("select", { nodeIds: ["4:4"] }, A, async () => { t.ownSelect("4:4"); return {}; });
+  assert.deepEqual([t.lastDesk().owner, t.lastDesk().to], ["sa", null], "A selected it on purpose (no change for Figma to report): A's to use; Send to still waits for the user's pick");
+});
+
+test("the user's session survives a reconnect or the hub restarting (the list empties for a moment), and what a session read is kept, so no false CONFLICT", async () => {
+  const t = setup();
+  t.desk.setSessions([A, B]);
+  t.desk.assign("sa");
+  t.tick(10);
+  // B changes 7:7; A reads it afterwards.
+  await t.desk.run("editNodes", { ops: [{ op: "rename", node: "7:7", name: "x" }] }, B, async () => { t.desk.onDocumentChange([{ id: "7:7", origin: "LOCAL", type: "PROPERTY_CHANGE" }]); return {}; });
+  t.tick(10);
+  await t.desk.run("inspect", { target: "7:7" }, A, async () => ({ nodes: [{ id: "7:7" }] }));
+  // The window reconnects: no sessions for a moment, then both again.
+  t.desk.setSessions([]);
+  t.tick(300);
+  t.desk.setSessions([A, B]);
+  t.select("2:1");
+  assert.deepEqual([t.lastDesk().owner, t.lastDesk().to, t.lastDesk().why], ["sa", "sa", "picked"], "still the user's pick");
+  await t.desk.run("editNodes", { ops: [{ op: "rename", node: "7:7", name: "y" }] }, A, async () => ({})); // no CONFLICT: A read it after B's change
+});
+
+test("when a second session joins, the one the user was using stays their session (and the line says so) until they pick another", () => {
+  const t = setup();
+  t.desk.setSessions([A]);
+  t.select("2:1");
+  assert.deepEqual([t.lastDesk().to, t.lastDesk().why], ["sa", "only"]);
+  t.desk.setSessions([A, B]);
+  t.select("2:2");
+  assert.deepEqual([t.lastDesk().owner, t.lastDesk().to, t.lastDesk().why], ["sa", "sa", "kept"]);
+  t.desk.assign("sb");
+  t.select("2:3");
+  assert.deepEqual([t.lastDesk().to, t.lastDesk().why], ["sb", "picked"]);
+  // Back to one and up again: the user's pick stays theirs.
+  t.desk.setSessions([B]);
+  t.desk.setSessions([B, A]);
+  assert.deepEqual([t.lastDesk().to, t.lastDesk().why], ["sb", "picked"]);
 });
