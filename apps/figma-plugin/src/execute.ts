@@ -138,8 +138,15 @@ export function closestStyle(styles: string[], want: string, italic = false): st
 }
 
 /** An image already in this file, by its hash: nothing is uploaded. A hash the file doesn't have (an image from another
- *  file) is left out with a warning; the node keeps its other fills. */
+ *  file) is left out with a warning; the node keeps its other fills. New bytes (src, a data URL) are added to the file. */
 function imagePaint(img: ResolvedImageFill, path: string, ctx: Ctx): ImagePaint | undefined {
+  if (!img.hash) {
+    try {
+      const m = img.src?.match(/^data:image\/[\w.+-]+;base64,(.+)$/);
+      if (!m) throw new Error("only data:image/…;base64 URLs reach the plugin (https is inlined by the server)");
+      return { type: "IMAGE", imageHash: figma.createImage(figma.base64Decode(m[1])).hash, scaleMode: img.scaleMode };
+    } catch (e) { ctx.warnings.push(`${path}: image could not be loaded (${(e as Error).message}); left out.`); return undefined; }
+  }
   const found = figma.getImageByHash(img.hash);
   if (!found) { ctx.warnings.push(`${path}: this file has no image with hash ${img.hash} (an image is reachable by hash only in the file it was exported from); left out.`); return undefined; }
   return { type: "IMAGE", imageHash: found.hash, scaleMode: img.scaleMode };

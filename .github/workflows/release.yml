@@ -15,7 +15,7 @@ jobs:
       - uses: actions/setup-node@v7
         with: { node-version: 20, cache: npm, registry-url: "https://registry.npmjs.org" }
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright-core install --with-deps chromium
       - run: npm run typecheck
       - run: npm run build
       - run: npm test

@@ -29,6 +29,11 @@ export async function inlineImages(plan: ResolvedPlan, fetcher: typeof fetch = f
       const data = await load(n.src);
       return data ? { ...n, src: data } : { ...n, src: undefined };
     }
+    // A frame's or shape's image (a CSS background).
+    if ((n.kind === "frame" || n.kind === "shape") && n.image?.src?.startsWith("https://")) {
+      const data = await load(n.image.src);
+      n = { ...n, image: data ? { ...n.image, src: data } : undefined };
+    }
     if (n.kind === "frame") return { ...n, children: await Promise.all(n.children.map(walk)) };
     return n;
   };

@@ -42,12 +42,13 @@ Layerwright closes that gap locally:
   - Flexbox becomes Auto Layout: direction, gap, padding, alignment and wrap. Fixed CSS sizes stay fixed.
   - Colours, borders, radii, shadows, gradients, fonts, line height and letter spacing come across.
   - Text with inline `<b>`, `<span>` and `<a>` is one text layer with styled ranges.
-  - Images and inline SVG icons are imported as real images and vectors.
+  - Pictures come along: images (PNG, JPEG, GIF, WebP, AVIF), SVG files and inline SVG as vectors, sprite icons, CSS background images, CSS-mask icons in their colour, icon fonts and `<canvas>`, in both modes.
   - Desktop (1440) and mobile (390) screens are rendered side by side.
   - RTL is supported (Persian, Arabic, Hebrew). Rows keep their visual order and text stays right-aligned.
 - **Pixel-faithful mode** (`figma_import_html`) for review boards and art-heavy pages: exact layers, variant sets built from states, and instance swaps.
 - **AI design to Figma from a prompt.** Claude writes a typed Design Plan (a JSON DSL). The plan is validated and resolved against your components, variables and text styles, then built deterministically. Claude never writes Figma plugin code.
 - **Prototypes.** Click, hover and timed interactions, navigate / overlay / swap / back, smart animate and push transitions, scrolling frames and flow starting points, in plans or on existing frames.
+- **Icons and pictures in one step** (`figma_import_assets`): a folder of SVGs becomes editable vectors (or components, named by their path), pictures become image layers, in a grid on the page.
 - **No AI needed for a plain import.** `npx layerwright import ./design.html --to-figma` builds it in the open Figma file.
 - **Fonts from exports:** `npx layerwright fonts ./export --install` installs the TTF/OTF fonts a design ships.
 
@@ -70,13 +71,13 @@ Layerwright closes that gap locally:
 
 ### Work together with your agents
 
-- **Several sessions, several files.** Claude Code, Codex and Cursor sessions on your computer share one connection to the plugin, with no port to configure. Open Layerwright in several Figma files at once: each stays connected, and each session works in one file (the one you send it a request from, or the one it's told to use). A change never lands in another file than the one the session works in. Sessions in a project that uses Layerwright join when they start; any other session joins on its first Figma call, so the plugin window lists only the sessions you use with Figma, and what each is doing (sessions name themselves after their task). Your selection and requests from the window go to the session you pick there, until you pick another, and a session never overwrites a layer another one just changed.
+- **Several sessions, several files.** Claude Code, Codex and Cursor sessions on your computer share one connection to the plugin, with no port to configure. Open Layerwright in several Figma files at once: each stays connected, and each session works in one file (the one you send it a request from, or the one it's told to use). A change never lands in another file than the one the session works in. Sessions in a project that uses Layerwright join when they start; any other session joins on its first Figma call, and a session that hasn't used Layerwright for 30 minutes leaves until its next Figma call, so the plugin window lists only the sessions you use with Figma now, and what each is doing (sessions name themselves after their task). Your selection and requests from the window go to the session you pick there, until you pick another, and a session never overwrites a layer another one just changed.
 - **Ask from Figma.** Select layers in the plugin window, pick a session and send a request: *Build in code*, *Polish design*, *Make component*, *Mobile version*, or your own words. A Claude Code session with the plugin starts on it by itself (the plugin's monitor wakes the session); Codex gets it on its next Figma step or with `/layer:inbox`. Progress and the session's answer come back to the window.
 - **Notes on the canvas.** Type a text layer that starts with `@<session>` (or `@claude` when one session is connected) on the frame it's about, and that session gets it like a request from the window. Only notes you type count: edits by collaborators and text Layerwright writes never start a task.
-- **AI cursor and a working toast.** While a session changes the canvas, a cursor in its colour with its name shows where it works, like a collaborator's. It exists only during that change and is gone before the change's undo step closes, so undo never brings it back. While a session works at all (reading, scanning, taking pictures, building), a toast at the bottom of the canvas says what it's doing; it is never a layer. Waiting and questions show in the plugin window (Settings → AI cursor turns both off).
+- **AI cursor and a working toast.** While a session works in Figma, a cursor in its colour shows it like a collaborator's, from its first step to the end of the task: it reads where the session reads, drag-selects and works on what it changes, thinks between steps, and goes once the session is done or quiet. Its tag is one short line: the session's name and what it's doing. Every undo step is closed with the cursor taken off the canvas, so no step holds one, and it steps aside while you select or edit. A toast at the bottom of the canvas says what a session is doing too; it is never a layer. Questions show in the plugin window and on the cursor (Settings → AI cursor turns both off).
 - **Figma links.** Ask for a link to the selection, a frame, a section or a page (`figma_link`); what a session builds or selects comes back with links. Paste a Figma link to a session and it finds the layer, opens its page and works in its file.
 - **A guide in the window.** The **?** in the plugin window's header explains each tab, the actions and canvas notes. It opens by itself the first time.
-- **`/layer:` commands in Claude Code and Codex.** `init` installs the Layerwright plugin for the agents it finds (it asks; Claude Code by default): `/layer:help`, `/layer:connect`, `/layer:import`, `/layer:design`, `/layer:edit`, `/layer:code`, `/layer:check`, `/layer:components`, `/layer:prototype`, `/layer:shot`, `/layer:inbox`, `/layer:doctor`, `/layer:report`.
+- **`/layer:` commands in Claude Code and Codex.** `init` installs the Layerwright plugin for the agents it finds (it asks; Claude Code by default): `/layer:help`, `/layer:connect`, `/layer:import`, `/layer:design`, `/layer:edit`, `/layer:code`, `/layer:check`, `/layer:components`, `/layer:prototype`, `/layer:shot`, `/layer:skills`, `/layer:inbox`, `/layer:update`, `/layer:doctor`, `/layer:report`.
 
 ### Check, learn and stay safe
 
@@ -89,7 +90,8 @@ Layerwright closes that gap locally:
   - Everything Layerwright creates is tagged, so `figma_cleanup` can list and remove a session's leftovers.
   - Only your paired plugin window and your own sessions can use the local connection: web pages in your browser can't.
 - **Learns per project.** Font substitutions, mappings and component choices are reused next time, your corrections are kept as notes, and recurring problems come with a hint (`.layerwright/memory.json`, shareable). `npx layerwright report` drafts a redacted issue from them for you to send.
-- **Tells you about updates** in the plugin window, in Claude and in `doctor`.
+- **Updates in one step.** When a newer Layerwright is out, Claude Code says so as a session starts (once a day), and so do the plugin window and `doctor`. `/layer:update`, the window's **Update** button (a session does it for you) or `npx -y layerwright@latest update` (any folder) updates the Figma plugin, the `/layer` commands and the server they run; then `/reload-plugins` (or a new session) and reopen the plugin in Figma.
+- **Your own skills.** Next to the skills that ship with it, press **Create a skill with Claude** in the plugin window's Skills tab: say what it should do, and it opens Claude (the app, a terminal or VS Code) with `/layer:skills new …` filled in, or asks a connected session, and Claude drafts it with you. You can also add one from a link, or write it yourself in the Skills tab (edit it there later). They stay on your computer across updates.
 
 ## Quickstart (3 steps)
 
@@ -101,15 +103,15 @@ npx layerwright init
 ```
 `init` asks which agents get the Layerwright plugin (the ones it finds are preselected; `--agents claude,codex` or `--no-agents` skip the question), installs it with their own `claude plugin` / `codex plugin` commands, and pairs the Figma plugin with this computer.
 
-2. In **Figma desktop**, go to **Plugins → Development → Import plugin from manifest…**. The plugin sits in a hidden folder (`~/.layerwright/figma-plugin/manifest.json`), so `init` copies that path to your clipboard and shows the folder: in the file dialog press **⌘⇧G** (Windows: click the File name box), paste, Enter. You do this once; afterwards run **Plugins → Development → Layerwright** and keep its small window open. `npx layerwright plugin` shows these steps again.
+2. In **Figma desktop** (macOS or Windows: Figma has no desktop app for Linux, and the browser can't run development plugins), go to **Plugins → Development → Import plugin from manifest…**. The plugin sits in a hidden folder (`~/.layerwright/figma-plugin/manifest.json`), so `init` copies that path to your clipboard and shows the folder: in the file dialog press **⌘⇧G** (Windows: click the File name box), paste, Enter. You do this once; afterwards run **Plugins → Development → Layerwright** and keep its small window open. `npx layerwright plugin` shows these steps again.
 3. Start a new **Claude Code** or **Codex** session, type `/layer:help`, or ask:
    - *"Import ./design.html into Figma"*: a Claude Design HTML export becomes editable frames.
    - *"Create a sign-up flow in Figma using our Design System"*: new screens built from your components.
    - Select a frame in Figma, then *"Implement the selected Figma frame in code using our components"*: Figma → code with your mapped React components and theme tokens, checked afterwards.
 
-Requests from the Figma window wake a Claude Code session by themselves: the plugin runs a monitor (`layerwright inbox-watch`) whose notifications reach the session. `npx layerwright claude` also turns on Claude Code channels (a research preview; Team and Enterprise organizations must enable them first). In Codex a request waits for the session's next Figma step or `/layer:inbox`.
+Requests from the Figma window wake a Claude Code session by themselves: the plugin runs a monitor (`layerwright inbox-watch`) whose notifications reach the session. `npx layerwright claude` also turns on Claude Code channels (a research preview; Team and Enterprise organizations must enable them first). In Codex a request waits for the session's next Figma step or `/layer:inbox`. On Windows, Claude Code's monitor needs [Git for Windows](https://git-scm.com/downloads/win) (its Git Bash); without it a request waits for the session's next Figma step or `/layer:inbox` too.
 
-Install from GitHub instead: `claude plugin marketplace add shayan-m81/layerwright` then `claude plugin install layer@layerwright`; for Codex, `codex plugin marketplace add shayan-m81/layerwright` then `codex plugin add layer@layerwright`. `npx layerwright agents` refreshes the plugin after an update.
+Install from GitHub instead: `claude plugin marketplace add shayan-m81/layerwright` then `claude plugin install layer@layerwright`; for Codex, `codex plugin marketplace add shayan-m81/layerwright` then `codex plugin add layer@layerwright`. `npx -y layerwright@latest update` updates it (and the Figma plugin) later.
 
 Another MCP client (Claude Desktop, VS Code, Windsurf)? Add the same `layerwright` server to its MCP config and start from its prompts: `figma_design` (the whole guide), `html_to_figma`, `build_in_figma`, `change_figma` or `figma_to_code`. They are built from the same skill, so every client follows the same workflow.
 
@@ -117,7 +119,7 @@ Want these rules always in Claude's context? Paste [this prompt](https://github.
 
 Something not working? Run `npx layerwright doctor`.
 
-For HTML import, Layerwright needs a Chromium. It uses Google Chrome if you have it installed. Otherwise run `npx playwright install chromium`.
+For HTML import, Layerwright needs a Chromium. It uses Google Chrome if you have it installed. Otherwise run `npx layerwright doctor`: it prints the exact command that installs the Chromium it needs (`npx -y playwright-core@<version> install chromium`; add `--with-deps` on a fresh Linux).
 
 Want to try the conversion without Figma? `npx layerwright import ./design.html` prints what would be built.
 Want it in Figma without Claude? Run the plugin, then `npx layerwright import ./design.html --to-figma --page "Designs"`
@@ -159,6 +161,7 @@ Read more in [docs/architecture.md](https://github.com/shayan-m81/layerwright/bl
 | `figma_link` | Links to the selection, layers or the page, and the file's own link. Any layer argument also takes a Figma link |
 | `figma_analyze_design` / `figma_apply_transformations` | Audit a frame against the DS, or `mode: "sync"` after an import; apply the groups you approve |
 | `figma_import_html` / `figma_pages` / `figma_foundations` | Pixel-faithful import, page setup, variables and text styles |
+| `figma_import_assets` | Icons and pictures from files or folders: SVGs as vectors (or components), PNG/JPEG/GIF/WebP/AVIF as images, in a grid |
 | `figma_migrate` | Move every instance of one component set to another, variant by variant, keeping overrides (dry run first) |
 | `figma_cleanup` | List (and with approval remove) what Layerwright made in this session |
 | `layerwright_memory` | What the project remembers (fonts, mappings, component choices, notes, recurring problems); add notes or forget entries |
@@ -212,7 +215,7 @@ Start with `npx layerwright doctor`. It checks Node, `.mcp.json`, the skill, the
 - Prototype overlays open centred (their position can't be set through the Plugin API). Plans can't hide instance layers by override yet.
 - One Layerwright window per Figma file: running the plugin again in the same file hands over to the new window. Sessions from an older Layerwright are asked to update before they can join.
 - Figma lets a development plugin read its file's link key; if it doesn't, paste one link from that file once and Layerwright remembers it.
-- AI cursors are real, locked layers while a change runs (Figma has no API for overlays), so collaborators in the file see them briefly. They are removed before the change's undo step closes.
+- AI cursors are real, locked layers while a session works (Figma has no API for overlays), so collaborators in the file see them too. They are taken off the canvas around every undo step, so no step holds one, but an undo (⌘Z / Ctrl+Z) right after a step may only take the cursor away (Figma counts what a plugin drew since its last step as the newest change).
 
 ## Roadmap
 

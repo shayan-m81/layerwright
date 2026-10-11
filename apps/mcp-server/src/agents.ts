@@ -64,6 +64,25 @@ export function pluginInstalled(agent: Agent): boolean {
 
 export interface ServerEntry { command: string; args: string[]; env?: Record<string, string> }
 
+/** The plugin's launcher (plugins/layer/scripts/run.mjs), as Claude Code fills in its path. */
+export const LAUNCHER = "${CLAUDE_PLUGIN_ROOT}/scripts/run.mjs";
+/** How Claude Code starts this install: npx through the launcher (npx is a .cmd on Windows, which hooks and MCP
+ *  servers can't start, and a .ps1 PowerShell may refuse), or this install's own node and cli.js as they are. */
+export function claudeEntry(server: ServerEntry): ServerEntry {
+  return server.command === "npx" ? { ...server, command: "node", args: [LAUNCHER, ...server.args] } : server;
+}
+/** A command line for the hooks and the monitor, which run through a shell: sh, or on Windows Git Bash or PowerShell.
+ *  The launcher's path goes in double quotes (Claude Code fills it in with forward slashes). On Windows `node` goes by
+ *  name and paths in double quotes with forward slashes, which read the same in Git Bash and PowerShell (a quoted
+ *  program path doesn't run in PowerShell); elsewhere this exact node, in sh quoting. */
+export function shellLine(cmd: string, args: string[], platform = process.platform): string {
+  const win = platform === "win32";
+  const node = cmd === process.execPath || /(^|[\\/])node(\.exe)?$/i.test(cmd);
+  const q = (a: string) => /^[\w@%+=:,./-]+$/.test(a) ? a
+    : a.includes("${CLAUDE_PLUGIN_ROOT}") || win ? `"${a.replace(/\\/g, "/").replace(/"/g, '\\"')}"` : `'${a.replace(/'/g, `'\\''`)}'`;
+  return [win && node ? "node" : cmd, ...args].map(q).join(" ");
+}
+
 /** Write the marketplace: both catalogues and the plugin, its server entry pointing at this install. */
 export function buildMarketplace(server: ServerEntry, dir = agentsHome()): string {
   const dest = join(dir, "plugins", PLUGIN);
@@ -81,14 +100,14 @@ export function buildMarketplace(server: ServerEntry, dir = agentsHome()): strin
   edit(".claude-plugin/plugin.json", (j) => { j.version = version; });
   // Claude Code starts plugin servers in the project folder and fills in ${CLAUDE_PROJECT_DIR}; Codex starts them in
   // the session's folder. Either way the server finds the project.
-  edit(".mcp.json", (j) => { j.mcpServers = { layerwright: { command: server.command, args: server.args, env: { ...server.env, LAYERWRIGHT_WORKDIR: "${CLAUDE_PROJECT_DIR}" } } }; });
+  const claude = claudeEntry(server);
+  edit(".mcp.json", (j) => { j.mcpServers = { layerwright: { command: claude.command, args: claude.args, env: { ...server.env, LAYERWRIGHT_WORKDIR: "${CLAUDE_PROJECT_DIR}" } } }; });
   // The monitor that wakes a Claude Code session when a request arrives from the Figma window (no channel needed).
-  const sh = (a: string) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`);
-  writeFileSync(join(dest, "monitors", "monitors.json"), JSON.stringify([{ name: "figma-requests", command: [server.command, ...server.args, "inbox-watch"].map(sh).join(" "),
+  writeFileSync(join(dest, "monitors", "monitors.json"), JSON.stringify([{ name: "figma-requests", command: shellLine(claude.command, [...claude.args, "inbox-watch"]),
     description: "Requests you send to this session from the Layerwright window in Figma" }], null, 2) + "\n");
   // The SessionStart hook: when a Figma window is connected, the new session starts that watcher by itself. The chat
   // hooks tell the Figma window when the session waits for the user (a question, a permission, its turn ended).
-  writeFileSync(join(dest, "hooks", "hooks.json"), JSON.stringify(pluginHooks([server.command, ...server.args].map(sh).join(" ")), null, 2) + "\n");
+  writeFileSync(join(dest, "hooks", "hooks.json"), JSON.stringify(pluginHooks(shellLine(claude.command, claude.args)), null, 2) + "\n");
   edit(".codex-plugin/plugin.json", (j) => { j.version = version; j.mcpServers = { layerwright: { command: server.command, args: server.args, ...(server.env ? { env: server.env } : {}) } }; });
   const plugin = JSON.parse(readFileSync(join(dest, ".claude-plugin", "plugin.json"), "utf8"));
   mkdirSync(join(dir, ".claude-plugin"), { recursive: true });

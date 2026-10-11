@@ -1,0 +1,12 @@
+# Text files keep LF in every checkout (Windows too): tests, snapshots and the skill parsers read them as written.
+* text=auto eol=lf
+*.png binary
+*.gif binary
+*.jpg binary
+*.webp binary
+*.ico binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.zip binary

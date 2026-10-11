@@ -23,7 +23,7 @@ test("layerwright import without a path prints usage", async () => {
   assert.match(lines.join("\n"), /Usage:/);
 });
 
-test("the built CLI runs when started through a symlink, as npm's .bin does", async () => {
+test("the built CLI runs when started through a symlink, as npm's .bin does", { skip: process.platform === "win32" && "npm makes .cmd shims on Windows, not links" }, async () => {
   const { execFileSync } = await import("node:child_process");
   const { existsSync, mkdtempSync, symlinkSync, readFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");

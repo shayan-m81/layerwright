@@ -122,3 +122,36 @@ test("a project uses Layerwright once init ran there or it used Figma: its .laye
     assert.equal(projectUsesLayerwright(parent), false, "and isn't marked as one");
   } finally { process.env.LAYERWRIGHT_HOME = home; }
 });
+
+test("update: the Figma plugin, the agent plugin (same port) and a project's pinned server entry, to this version, no questions; --check only tells; an older copy says to run the newest", async () => {
+  const { update, installedAgentVersion } = await import("../src/setup.ts");
+  const { PKG_NAME, PKG_VERSION } = await import("../src/meta.ts");
+  const { agentsHome } = await import("../src/agents.ts");
+  const dir = tmp();
+  writeFileSync(join(dir, ".mcp.json"), JSON.stringify({ mcpServers: { [BIN]: { command: "npx", args: ["-y", "--prefer-offline", `${PKG_NAME}@0.9.0`] }, other: { command: "npx", args: [`${PKG_NAME}@0.1.0`] } } }));
+  // The agent plugin as an earlier init left it, on port 7336.
+  mkdirSync(join(agentsHome(), "plugins", "layer"), { recursive: true });
+  writeFileSync(join(agentsHome(), "plugins", "layer", ".mcp.json"), JSON.stringify({ mcpServers: { layerwright: { command: "npx", args: [], env: { LAYERWRIGHT_PORT: "7336" } } } }));
+  const ran: string[] = [];
+  const exec = (cmd: string, args: string[]) => { ran.push([cmd, ...args].join(" ")); return { status: 0, stdout: "", stderr: "" }; };
+  const lines: string[] = [];
+  assert.equal(await update({ dir, agents: ["claude"], exec, pins: true, latest: async () => PKG_VERSION, out: (s) => lines.push(s) }), 0);
+  const text = lines.join("\n");
+  assert.match(text, new RegExp(`✓ Figma plugin ${PKG_VERSION.replace(/\./g, "\\.")} installed`));
+  assert.ok(existsSync(join(pluginHome(), "manifest.json")));
+  assert.ok(ran.includes("claude plugin update layer@layerwright --scope user"), ran.join("\n"));
+  assert.equal(JSON.parse(readFileSync(join(agentsHome(), "plugins", "layer", ".mcp.json"), "utf8")).mcpServers.layerwright.env.LAYERWRIGHT_PORT, "7336", "the same port as before");
+  assert.ok(installedAgentVersion()?.startsWith(PKG_VERSION));
+  const mcp = JSON.parse(readFileSync(join(dir, ".mcp.json"), "utf8"));
+  assert.deepEqual(mcp.mcpServers[BIN].args, ["-y", "--prefer-offline", `${PKG_NAME}@${PKG_VERSION}`]);
+  assert.deepEqual(mcp.mcpServers.other.args, [`${PKG_NAME}@0.1.0`], "another server is never touched");
+  assert.match(text, /Next:[\s\S]*\/reload-plugins[\s\S]*reopen the Layerwright plugin/);
+  // --check only tells.
+  const check: string[] = [];
+  assert.equal(await update({ dir, check: true, latest: async () => "99.0.0", out: (s) => check.push(s) }), 0);
+  assert.match(check.join("\n"), /! 99\.0\.0 is out\. Update: npx -y layerwright@latest update/);
+  // An older copy than the newest on npm would install the older one: it says to run the newest instead.
+  const old: string[] = [];
+  assert.equal(await update({ dir, agents: [], latest: async () => "99.0.0", out: (s) => old.push(s) }), 1);
+  assert.match(old.join("\n"), /✗ This copy is .*, and 99\.0\.0 is out[\s\S]*Run: npx -y layerwright@latest update/);
+});

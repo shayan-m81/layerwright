@@ -1,6 +1,6 @@
 // The plugin's main thread (code.ts) on the strict mock, through its real message and event handlers: one undo step
-// per request with nothing of the AI cursor in it, reads that write nothing, notes on the canvas that only the user's
-// own writing makes (never a collaborator's, never Layerwright's), and whose selection is whose.
+// per request with nothing of the AI cursor in it, reads that write nothing but the cursor, notes on the canvas that
+// only the user's own writing makes (never a collaborator's, never Layerwright's), and whose selection is whose.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { compilePlan, emptyDesignSystem, validatePlan } from "@cde/core";
@@ -30,9 +30,7 @@ await import("../src/code.ts");
 await sleep(0); // the document watch starts once all pages are loaded
 const cursor = await import("../src/cursor.ts");
 const own = await import("../src/own.ts");
-cursor.timing.glide = 20;
-cursor.timing.select = 20;
-cursor.timing.end = 40;
+Object.assign(cursor.timing, { glide: 20, select: 20, end: 40, done: 40, fade: 20 });
 const poll = intervals.find((i) => i.at.includes("code.ts") && i.ms === 700)!.fn;
 
 const S = { id: "s1", name: "Checkout", color: "#0d99ff", connectedAt: 0 };
@@ -56,18 +54,33 @@ function settle() { poll(); skew += 2500; poll(); }
 const sentNotes = () => host.posted.filter((m) => m.type === "send-action" && m.action.via === "note");
 const plan = (p: object) => { const v = validatePlan(p); assert.ok(v.success); return compilePlan(emptyDesignSystem(), v.plan).plan!; };
 
-test("reads draw nothing and write nothing: status, inspect, a picture, a scan, selecting", async () => {
+/** The session's turn ended (Claude Code's hooks, through the window): its cursor goes (also one that stepped aside:
+ *  then it isn't drawn). */
+async function turnEnds() {
+  await F().ui.onmessage({ type: "session-state", session: "s1", waiting: false, kind: "done" });
+  for (let i = 0; i < 100 && (overlays().length || pendingTimers().some((t) => t.includes("cursor.ts"))); i++) await sleep(20);
+}
+
+test("reads write nothing but the session's cursor: a status check brings none; inspect, a picture, a scan and selecting bring it, with no undo step", async () => {
   const before = nodes.size;
-  for (const [m, p] of [["ping", {}], ["inspect", { target: "5:5" }], ["exportImage", { nodeId: "5:5" }], ["scanDesignSystem", {}], ["select", { nodeIds: ["5:5"] }]] as const) {
+  assert.ok((await request("ping")).ok);
+  await sleep(40);
+  assert.equal(nodes.size, before, "a status check draws nothing");
+  for (const [m, p] of [["inspect", { target: "5:5" }], ["exportImage", { nodeId: "5:5" }], ["scanDesignSystem", {}], ["select", { nodeIds: ["5:5"] }]] as const) {
     const r = await request(m, p);
     assert.ok(r.ok, `${m}: ${JSON.stringify(r.error)}`);
   }
   await sleep(60);
-  assert.equal(nodes.size, before, "not a single node was created");
+  const made = [...nodes.values()].slice(before);
+  assert.ok(made.length > 0 && made.every((n) => n.getPluginData("layerwrightCursor") || cursor.isOverlayId(n.id)), "only the cursor was drawn");
+  const tag = overlays()[0]?.findAll((n: any) => n.type === "TEXT").map((n: any) => n.characters);
+  assert.equal(tag?.[0].split("  ·  ")[0], "Checkout", "the session's name on it");
   assert.deepEqual(commits, [], "and no undo step");
+  await turnEnds();
+  assert.equal(overlays().length, 0, "the session's turn ended: its cursor went");
 });
 
-test("links: refs reads the file and each layer's page without drawing anything; a link to a page opens that page", async () => {
+test("links: refs reads the file and each layer's page without drawing anything; a link to a page opens that page; the user's page change sends the cursor away", async () => {
   const other = F().createPage(); other.name = "Checkout flow";
   frame("8:8", "Pay", 0, 0, 100, 100, other);
   const empty = F().createPage(); empty.name = "Empty";
@@ -77,6 +90,7 @@ test("links: refs reads the file and each layer's page without drawing anything;
   assert.deepEqual([r.result.fileKey, r.result.page.name, r.result.missing], ["file1", page.name, 1]);
   assert.deepEqual(r.result.nodes.map((n: any) => [n.id, n.page]), [["5:5", page.name], ["8:8", "Checkout flow"]]);
   assert.deepEqual((await request("refs", { target: "page" })).result.nodes.map((n: any) => [n.type, n.name]), [["PAGE", page.name]]);
+  assert.equal(nodes.size, before, "a link draws nothing");
   // A picture of a page (a link to a page): of what's on it, sized by its layers.
   const shot = await request("exportImage", { nodeId: other.id, maxDimension: 50 });
   assert.ok(shot.ok, JSON.stringify(shot.error));
@@ -95,23 +109,26 @@ test("links: refs reads the file and each layer's page without drawing anything;
   emit("currentpagechange");
   assert.ok(own.userActiveAt() > quiet, "the user's page change counts as them working");
   assert.ok(host.posted.slice(from).some((m) => m.type === "selection" && m.user), "and the window hears it");
-  assert.equal(nodes.size, before, "nothing drawn");
+  assert.equal(overlays().length, 0, "and the cursor the pictures brought steps aside");
   assert.deepEqual(commits, [], "no undo step");
   other.remove(); empty.remove();
 });
 
-test("a change is one undo step: the cursor is drawn while it runs and erased before the commit; nothing is left, nothing keeps running", async () => {
+test("a change is one undo step: the cursors come off for the commit and back right after; once the turn ends nothing is left, nothing keeps running", async () => {
+  await turnEnds();
   const baseline = pendingTimers();
   commits.length = 0;
+  skew += 5000; // well after the user's page change
   const get = F().getNodeByIdAsync;
   F().getNodeByIdAsync = async (id: string) => { await sleep(15); return get(id); }; // a request that takes a moment
   const r = await request("editNodes", { ops: [{ op: "rename", node: "5:5", name: "Top bar" }, { op: "rename", node: "6:6", name: "Bottom" }] });
   F().getNodeByIdAsync = get;
   assert.ok(r.ok, JSON.stringify(r.error));
+  assert.deepEqual(commits, ["commit with 0 overlays"], "one commit, with the cursor off the canvas");
+  assert.deepEqual(overlays().filter((n: any) => !n.name.startsWith("Click")).map((n: any) => n.name), ["✦ Checkout (Layerwright cursor)"], "the session's cursor is back, thinking (its helper and the outlines went with the change)");
+  await turnEnds();
   const drawn = [...nodes.values()].filter((n) => n.getPluginData("layerwrightCursor"));
-  assert.ok(drawn.length > 0, "the cursor was there while it ran");
-  assert.ok(drawn.every((n) => n.removed), "and every part of it is gone");
-  assert.deepEqual(commits, ["commit with 0 overlays"], "one commit, after the cursor was erased");
+  assert.ok(drawn.length > 0 && drawn.every((n) => n.removed), "every part of it is gone");
   await sleep(80);
   assert.deepEqual(pendingTimers(), baseline, "no timer of the request's is left running");
 });
@@ -272,5 +289,40 @@ test("a note on the canvas goes to its session without changing the user's sessi
   assert.deepEqual([desk().owner, desk().to, desk().why], ["s2", "s2", "picked"], "Admin is still the user's session, and still has the selection");
   F().currentPage.selection = [];
   emit("selectionchange", {});
+  await F().ui.onmessage({ type: "sessions", sessions: [S] });
+});
+
+test("Create a skill with Claude: the plugin remembers where it opens; a skill request carries no layers", async () => {
+  await F().ui.onmessage({ type: "set-skill-via", via: "terminal" });
+  assert.equal(host.storage.get("skillVia"), "terminal");
+  await F().ui.onmessage({ type: "set-skill-via", via: "evil" });
+  assert.equal(host.storage.get("skillVia"), "terminal");
+  F().currentPage.selection = [nodes.get("5:5")];
+  emit("selectionchange", {});
+  const from = host.posted.length;
+  await F().ui.onmessage({ type: "compose-action", session: "s1", kind: "skill", text: "Our tone of voice" });
+  const sent = host.posted.slice(from).find((m) => m.type === "send-action");
+  assert.deepEqual([sent.action.kind, sent.action.text, sent.action.nodes], ["skill", "Our tone of voice", []]);
+  F().currentPage.selection = [];
+  emit("selectionchange", {});
+});
+
+test("Update from the window's notice: a request about this computer, sent with no layers; the selection stays where it is", async () => {
+  const S2 = { id: "s2", name: "Admin", color: "#14ae5c", connectedAt: 5 };
+  await F().ui.onmessage({ type: "sessions", sessions: [S, S2] });
+  const desk = () => host.posted.filter((m) => m.type === "desk").at(-1);
+  F().currentPage.selection = [nodes.get("5:5")];
+  emit("selectionchange", {});
+  await F().ui.onmessage({ type: "assign-selection", session: "s2" });
+  const from = host.posted.length;
+  await F().ui.onmessage({ type: "compose-action", session: "s1", kind: "update", text: "" });
+  const sent = host.posted.slice(from).find((m) => m.type === "send-action");
+  assert.deepEqual([sent.session, sent.action.kind, sent.action.nodes], ["s1", "update", []]);
+  assert.equal(desk().owner, "s2", "the selection is still Admin's");
+  F().currentPage.selection = [];
+  emit("selectionchange", {});
+  const none = host.posted.length;
+  await F().ui.onmessage({ type: "compose-action", session: "s1", kind: "update", text: "" });
+  assert.ok(host.posted.slice(none).some((m) => m.type === "send-action"), "nothing selected is fine too");
   await F().ui.onmessage({ type: "sessions", sessions: [S] });
 });

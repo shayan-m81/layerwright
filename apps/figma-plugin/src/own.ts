@@ -20,9 +20,9 @@ let runs = 0;
 let endedAt = 0;
 export function runStarted() { runs++; }
 export function runEnded() { runs = Math.max(0, runs - 1); endedAt = Date.now(); }
-/** A request is changing the document now, or just did. Requests that wait their turn, or only read, don't count. */
 /** When the last request that changed the document ended (0: none yet). */
 export function lastRunEnd() { return endedAt; }
+/** A request is changing the document now, or just did. Requests that wait their turn, or only read, don't count. */
 export function inRun() { return runs > 0 || Date.now() - endedAt < LATE_MS; }
 
 // ---------- the selection and the page ----------

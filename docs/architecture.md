@@ -13,7 +13,7 @@ HTML file/folder ──Chromium────────────────�
 1. **The model plans; code executes.** Claude writes a Design Plan (JSON). The executor is a fixed set of Plugin API calls. There is no `eval` and no model-written plugin code.
 2. **Nothing unresolved reaches Figma.** Components, variants, properties, variables and text styles are resolved against a cached scan of the open file. Failures come back as structured errors with suggestions.
 3. **Non-destructive.** A new plan creates new frames. Writing into existing nodes, or applying Mode B fixes, requires `approved: true`. Replaced originals are hidden and renamed, never deleted.
-4. **One undo step, full rollback.** Each run ends with `figma.commitUndo()`. If a run fails partway, it removes only the nodes it created.
+4. **One undo step, full rollback.** Each run ends with one commit (`undo.ts`, which takes the AI cursors off the canvas around it, so no step holds one). If a run fails partway, it removes only the nodes it created.
 5. **Local only.** There are no API keys and no backend. The plugin's only network access is `ws://localhost`. Remote images are fetched by the Node server and passed on as bytes.
 
 ## Packages
@@ -59,12 +59,21 @@ plugin window connects to it, and it exits by itself a minute after the last ses
 it starts only in a project that uses Layerwright (its `.layerwright` folder: `init` makes it, and a session's
 first real Figma work there does); any other session joins on its first Figma call (`RelayBridge.start`, from
 `request`, the inbox or `figma_status`). The agent plugin runs the server in every Claude Code session on the
-computer, and the window shouldn't list sessions that never use Figma. Sessions don't
+computer, and the window shouldn't list sessions that never use Figma. A session that leaves Layerwright alone for
+`IDLE_MS` (30 minutes: no Figma call, no request from a window, none of its requests from a window still open)
+leaves the hub (`RelayBridge.leave`, decided in `server.ts`), so the window lists only the sessions in use; its next
+Figma call joins again with the same id, name and colour. Its watcher stops at the same moment: the server keeps the
+time of the session's last Layerwright work in `~/.layerwright/inbox/<session>.active`, `inbox-watch` stops once
+that is `IDLE_MS` old and tells the agent not to restart it, and the next Figma call hands it back (`doFirst`, while
+no watcher holds the session's lock). Sessions don't
 affect each other: closing one leaves the rest connected, and if the hub goes away a session starts a new one
 and the plugin reconnects. `LAYERWRIGHT_DIRECT=1` keeps the old one-session bridge (`bridge.ts`).
 
 - **Routing.** A session's request goes to the plugin as `<session id>~<request id>` with the session's name and
-  colour; the answer goes back to that session only. Sessions keep their id across a reconnect.
+  colour; the answer goes back to that session only. Sessions keep their id across a reconnect. Servers that belong
+  to one agent session (the hello's `agent`: Claude Code's session id) are one session to the windows: the hub lists
+  one of them (its face, the one that works), sends every server's requests with the face's identity, and lets them
+  take each other's requests from the window at once.
 - **Who may connect.** The hub listens on `127.0.0.1`. Connections from a browser (any upgrade with an
   `Origin` header other than the plugin iframe's `null`) are refused, sessions present the per-computer key
   (`~/.layerwright/key`, mode 0600), and a plugin window must be paired with the same key: `init` and
@@ -95,10 +104,19 @@ and the plugin reconnects. `LAYERWRIGHT_DIRECT=1` keeps the old one-session brid
   session asks the user in the window first.
 - **Requests from Figma.** The window and canvas notes send requests to a session through the hub; the session
   gets them in its next tool result, with `figma_inbox`, or woken by the Claude Code plugin's monitor
-  (`layerwright inbox-watch`). Only notes the local user types count.
+  (`layerwright inbox-watch`). Only notes the local user types count. The session's chat hooks
+  (`layerwright hook-event`) tell the window when it waits for the user, and when its turn ends (`session-state`
+  `kind: "done"`): the toast then says "done ✓" instead of "thinking…".
 - **Versions.** `HUB_PROTOCOL` is bumped on incompatible hub ⇄ session changes. A session with an older protocol
-  is refused with a message to update; a newer one asks the old hub to retire once it is idle. Messages added
-  after 0.2.2 are sent only to plugin windows that announce a protocol that knows them.
+  is refused with a message to update; a newer one asks the old hub to retire once it is idle. A session of a newer
+  version with the same protocol does the same (an update reaches the hub; the old hub's sessions wait for the new
+  one and rejoin it), while the same or an older version just joins. Messages added after 0.2.2 are sent only to
+  plugin windows that announce a protocol that knows them.
+- **Updates.** `layerwright update` (`npx -y layerwright@latest update`) reinstalls the Figma plugin with the key,
+  rebuilds the agent marketplace pinned to its own version and runs `claude plugin update` / `codex plugin add`
+  for the agents that have it, and moves a project's pinned `.mcp.json` entries; `layerwright_update` (and
+  `/layer:update`) checks npm on demand, the SessionStart hook shows a once-a-day `systemMessage`, and the window's
+  update notice sends an `update` request to a session.
 
 ## Verification
 

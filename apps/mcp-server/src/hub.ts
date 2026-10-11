@@ -14,6 +14,7 @@
 //
 // It isn't tied to any session: closing one doesn't touch the others, and it exits by itself once no session has
 // been connected for a while.
+import { execFile, execFileSync } from "node:child_process";
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { basename } from "node:path";
@@ -21,7 +22,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import { parseFigmaLink, type BridgeHello, type FigmaAction, type SessionInfo, type StructuredError } from "@cde/core";
 import { originAllowed } from "./bridge.ts";
 import { pluginKey } from "./meta.ts";
-import { SkillStore } from "./skills.ts";
+import { SkillStore, newSkillLink } from "./skills.ts";
+import { newer } from "./update.ts";
 
 /** Bumped when the hub ⇄ client messages change incompatibly. 2: sessions present the pairing key. */
 export const HUB_PROTOCOL = 2;
@@ -35,6 +37,11 @@ function sameKey(got: unknown, want: string): boolean {
   return timingSafeEqual(Buffer.from(got), Buffer.from(want));
 }
 const str = (v: unknown, max: number) => (typeof v === "string" ? v.slice(0, max) : undefined);
+/** A link opened by the system, as a click in another app would (no shell: the link is one argument). */
+const openUrl = (url: string) => new Promise<void>((done, fail) => {
+  const [cmd, args] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", url]] : ["xdg-open", [url]];
+  execFile(cmd, args as string[], { timeout: 10_000 }, (e, _out, err) => (e ? fail(new Error(String(err || e.message).trim() || "no app opens it")) : done()));
+});
 /** Distinct, readable on light and dark Figma themes. */
 export const SESSION_COLORS = ["#7c3aed", "#0d99ff", "#14ae5c", "#f24822", "#e8a200", "#e83e8c", "#00a3a3", "#8b5e3c"];
 
@@ -50,6 +57,9 @@ interface Client {
   wantFile?: string; wantSince: number;
   /** The name of the file it worked in last, for "now working in X (was Y)". */
   fileName?: string;
+  /** The agent session it belongs to (Claude Code's session id). Two Layerwright servers in one agent session (the
+   *  plugin's and a project's or user's own) are one session to the user: the windows list one of them, its face. */
+  agent?: string;
 }
 
 export interface HubOptions {
@@ -65,7 +75,20 @@ export interface HubOptions {
   onPluginSeen?: () => void;
   /** The skills the window's Skills tab shows and changes (default: the library and ~/.layerwright/skills). */
   skills?: SkillStore;
+  /** Opens a link with this computer's own handler (default: open / xdg-open / rundll32): "Create a skill with Claude". */
+  openUrl?: (url: string) => Promise<void>;
+  /** A process's parent and command (default: `ps`), to find the agent a session's server runs under. */
+  processOf?: (pid: number) => { ppid: number; comm: string } | undefined;
 }
+
+/** Processes between an agent and its MCP server: launchers, shells and runtimes, never the agent itself. */
+const LAUNCHER = /^(npm exec|npm|npx|node|tsx|sh|bash|zsh|fish|dash|disclaimer|uv|uvx|python3?)(\s|$)/i;
+const ps = (pid: number) => {
+  try {
+    const m = /^\s*(\d+)\s+(.*)$/.exec(execFileSync("ps", ["-o", "ppid=,comm=", "-p", String(pid)], { encoding: "utf8", timeout: 1000 }).trim());
+    return m ? { ppid: Number(m[1]), comm: m[2].replace(/^.*\//, "") } : undefined;
+  } catch { return undefined; }
+};
 
 const SEP = "~"; // request ids on the plugin side: <session id>~<the session's own id>
 /** Methods that change nothing in the file. Any other (a new one too) is a change: it never goes to another file than
@@ -79,11 +102,12 @@ export class Hub {
   private clients = new Map<string, Client>();
   /** Sessions the user removed in the window, shown there (faded) until they join again or an hour passes. */
   private removed = new Map<string, { info: SessionInfo; at: number; pid?: number }>();
-  /** Requests from the Figma window, whichever session has them, so any session can pick them up (/layer:inbox). */
-  /** Requests from the windows, with the window and file each came from (by id and key: a window that reconnects or
-   *  is reopened is a new socket). */
+  /** Requests from the windows, whichever session has them, so any session can pick them up (/layer:inbox), with the
+   *  window and file each came from (by id and key: a window that reconnects or is reopened is a new socket). */
   private requests = new Map<string, { action: FigmaAction; session: string; status: string; at: number; touched: number; window: string; fileKey?: string }>();
   private seq = 0;
+  /** Each agent session's face: the one of its servers the windows show (see Client.agent). */
+  private faces = new Map<string, string>();
   private idle?: NodeJS.Timeout;
   private stopping = false;
   private retiring = false;
@@ -101,7 +125,10 @@ export class Hub {
       const verifyClient = ({ req }: { req: IncomingMessage }) => originAllowed(req.url, req.headers.origin);
       const wss = (this.wss = new WebSocketServer({ host: "127.0.0.1", port: this.port, verifyClient }));
       wss.on("listening", () => { this.log(`listening on ws://localhost:${this.port}`); this.armIdle(); resolve(undefined); });
-      wss.on("error", (e: any) => resolve(e.code === "EADDRINUSE" ? `Port ${this.port} is already in use.` : String(e.message ?? e)));
+      wss.on("error", (e: any) => resolve(e.code === "EADDRINUSE" ? `Port ${this.port} is already in use.`
+        // Windows keeps port ranges for Hyper-V, WSL and Docker (netsh int ipv4 show excludedportrange protocol=tcp).
+        : e.code === "EACCES" ? `Port ${this.port} can't be used on this computer (EACCES${process.platform === "win32" ? ": Windows reserves it, see netsh int ipv4 show excludedportrange protocol=tcp" : ""}). Set LAYERWRIGHT_PORT to another port from 7331–7340, and the same port in the plugin window.`
+        : String(e.message ?? e)));
       wss.on("connection", (ws, req) => {
         const url = req.url ?? "/";
         if (url.startsWith("/doctor")) { ws.send(JSON.stringify(this.status())); ws.close(); return; }
@@ -123,11 +150,40 @@ export class Hub {
     const w = this.active();
     return { type: "doctor", hub: true, protocol: HUB_PROTOCOL, version: this.version, port: this.port, pluginConnected: !!w, pluginPaired: this.open().some((x) => x.paired), hello: w?.hello,
       windows: this.open().map((x) => ({ file: x.hello?.fileName, fileKey: x.hello?.fileKey, page: x.hello?.page, activeAt: x.activeAt })),
-      sessions: [...this.clients.values()].map((c) => ({ name: c.info.name, client: c.info.client, workdir: c.info.workdir, version: c.info.version })),
+      sessions: [...this.clients.values()].filter((c) => this.face(c) === c).map((c) => ({ name: c.info.name, client: c.info.client, workdir: c.info.workdir, version: c.info.version, ...(this.siblings(c).length ? { servers: this.siblings(c).length + 1 } : {}) })),
       removed: this.removedList().map((r) => ({ name: r.name, workdir: r.workdir, at: r.at })) };
   }
 
   sessions(): SessionInfo[] { return [...this.clients.values()].map((c) => c.info); }
+
+  /** The server the windows show for c's agent session: c itself, unless another server of the same agent session is
+   *  its face. The windows see one session, with one name, colour and cursor, whichever server works. */
+  private face(c: Client): Client {
+    const id = c.agent ? this.faces.get(c.agent) : undefined;
+    const f = id ? this.clients.get(id) : undefined;
+    return f && f.agent === c.agent ? f : c;
+  }
+  private siblings(c: Client) { return [...this.clients.values()].filter((x) => x !== c && !!c.agent && x.agent === c.agent); }
+
+  /** The agent session a server belongs to: the agent process it runs under (the Claude Code, Codex or Cursor process
+   *  that started it, past npm/npx and shells), which every server of that session shares, whatever its version; else
+   *  the session id it sends (Claude Code's, where ps isn't there). */
+  private agentOf(msg: any): string | undefined {
+    const pid = Number.isInteger(msg.pid) && msg.pid > 1 ? (msg.pid as number) : undefined;
+    // (A server in the hub's own process is a test's: the hub always runs on its own.)
+    // (No `ps` on Windows: there it's the session id alone, unless a process reader is given.)
+    if (pid && (this.o.processOf || (pid !== process.pid && process.platform !== "win32"))) {
+      const look = this.o.processOf ?? ps;
+      let p = look(pid)?.ppid;
+      for (let i = 0; p && p > 1 && i < 8; i++) {
+        const info = look(p);
+        if (!info) break;
+        if (!LAUNCHER.test(info.comm)) return `proc:${p}`;
+        p = info.ppid;
+      }
+    }
+    return typeof msg.agent === "string" && /^[\w-]{6,80}$/.test(msg.agent) ? msg.agent : undefined;
+  }
 
   /** While removed sessions are listed, notice the ones that closed (or timed out) and update the window. */
   private removedTimer?: NodeJS.Timeout;
@@ -272,7 +328,7 @@ export class Hub {
         this.log(`session ${c.info.name} removed from the Figma window`);
         this.removed.set(c.info.id, { info: c.info, at: Date.now(), pid: c.pid });
         this.watchRemoved();
-        c.ws.close(CLOSE_KICKED, "removed in the Figma window");
+        for (const x of [c, ...this.siblings(c)]) x.ws.close(CLOSE_KICKED, "removed in the Figma window"); // all its servers
       }
       return;
     }
@@ -364,8 +420,8 @@ export class Hub {
   static STAY_MS = 5 * 60_000;
 
   /** The Skills tab: the list, and (from the paired window only, since a web page can reach localhost too) turning a
-   *  skill on or off, adding one from a link or pasted text, removing one of the user's own. Every session reads the
-   *  same files, so a change reaches them all with their next figma_status. */
+   *  skill on or off, adding one from a link or pasted text, saving one the user writes or edits there, removing one of
+   *  the user's own. Every session reads the same files, so a change reaches them all with their next figma_status. */
   private async skillsFromPlugin(w: Win, msg: any) {
     const store = this.o.skills ?? (this.skillStore ??= new SkillStore());
     const send = (extra: Record<string, unknown> = {}) => {
@@ -388,6 +444,21 @@ export class Hub {
     try {
       if (msg.type === "skills-set" && typeof msg.id === "string") { store.setEnabled(msg.id, !!msg.on); return send(); }
       if (msg.type === "skills-remove" && typeof msg.id === "string") { store.remove(msg.id); return send({ removed: msg.id }); }
+      if (msg.type === "skills-write") {
+        const s = store.write({ id: str(msg.id, 80) || undefined, name: str(msg.name, 200) ?? "", description: str(msg.description, 1000) ?? "", body: str(msg.body, 60_000) ?? "", category: str(msg.category, 40) || undefined });
+        this.log(`skill "${s.id}" ${msg.id ? "edited" : "written"} in the Figma window`);
+        return send({ written: { id: s.id, name: s.name, edited: !!msg.id } });
+      }
+      // Create a skill with Claude: Figma opens only https links, so the hub opens the Claude Code link on this computer.
+      if (msg.type === "skills-open") {
+        const via = str(msg.via, 20) ?? "";
+        const url = newSkillLink(via, str(msg.idea, 1000) ?? "", str(msg.cwd, 1000));
+        if (!url) return this.toWindow(w, { type: "skills-opened", via, ok: false, error: "unknown place to open" });
+        try { await (this.o.openUrl ?? openUrl)(url); }
+        catch (e) { return this.toWindow(w, { type: "skills-opened", via, ok: false, error: (e as Error).message.split("\n")[0].slice(0, 200) }); }
+        this.log(`opened ${via} with /layer:skills new for the Figma window`);
+        return this.toWindow(w, { type: "skills-opened", via, ok: true });
+      }
       if (msg.type === "skills-add" && typeof msg.source === "string") {
         this.toWindow(w, { type: "skills-busy", source: msg.source.slice(0, 200) });
         const s = await store.add(msg.source.slice(0, 200_000));
@@ -430,9 +501,14 @@ export class Hub {
     return [...this.requests.values()].filter((r) => r.status !== "done" && r.status !== "failed" && r.status !== "stopped");
   }
 
-  /** Every window lists every session, with the file each works in. Only windows that understand them (protocol 2+). */
+  /** Every window lists every session, with the file each works in and when it last used Figma (the window puts the
+   *  ones in use first). Only windows that understand them (protocol 2+). */
   private sendSessions() {
-    const list = [...this.clients.values()].map((c) => ({ ...c.info, file: c.window && this.windows.get(c.window.id) === c.window ? c.window.hello?.fileName : undefined }));
+    const fileOf = (c: Client) => c.window && this.windows.get(c.window.id) === c.window ? c.window.hello?.fileName : undefined;
+    const list = [...this.clients.values()].filter((c) => this.face(c) === c).map((c) => {
+      const all = [c, ...this.siblings(c)];
+      return { ...c.info, file: fileOf(c) ?? all.map(fileOf).find(Boolean), activeAt: Math.max(...all.map((x) => x.usedAt)) || c.info.connectedAt };
+    });
     this.toWindows({ type: "sessions", sessions: list, removed: this.removedList() });
   }
 
@@ -466,19 +542,29 @@ export class Hub {
           ws.close();
           return;
         }
-        c = { ws, pending: new Map(), info: this.register(msg), pid: Number.isInteger(msg.pid) && msg.pid > 0 ? msg.pid : undefined, usedAt: 0,
+        // A newer Layerwright that speaks the same protocol (an update): it takes the port once nobody waits on this
+        // hub, so the update reaches the hub too; this hub's sessions wait for the newer one and come back to it.
+        if (typeof msg.version === "string" && newer(msg.version, this.version)) {
+          ws.send(JSON.stringify({ type: "restarting", message: `The hub (${this.version}) is giving the port to Layerwright ${msg.version.slice(0, 40)}.` }));
+          ws.close();
+          this.retireWhenQuiet();
+          return;
+        }
+        const agent = this.agentOf(msg);
+        c = { ws, pending: new Map(), info: this.register(msg, agent), pid: Number.isInteger(msg.pid) && msg.pid > 0 ? msg.pid : undefined, usedAt: 0,
           wantFile: typeof msg.file === "string" && msg.file ? msg.file.slice(0, 200) : undefined, wantSince: Date.now(),
-          fileName: typeof msg.fileName === "string" ? msg.fileName.slice(0, 200) : undefined };
+          fileName: typeof msg.fileName === "string" ? msg.fileName.slice(0, 200) : undefined, agent };
         // A session that reconnects (the hub restarted) comes back to the file it worked in, when that window is open
         // (or once it reconnects: windowFor waits for it a moment).
         const back = c.wantFile ? this.open().find((x) => this.matches(x, c!.wantFile!)) : undefined;
         if (back) { c.window = back; c.wantFile = undefined; c.usedAt = Date.now(); }
         this.clients.set(c.info.id, c);
+        if (agent && this.face(c) === c && !this.faces.has(agent)) this.faces.set(agent, c.info.id); // the first of its agent session's servers is its face
         if (this.removed.delete(c.info.id)) this.log(`session ${c.info.name} joined again after it was removed`);
         clearTimeout(this.idle);
         this.log(`session ${c.info.name} connected (${this.clients.size} now)`);
         const shows = c.window ?? this.fallback();
-        this.toClient(c, { type: "welcome", session: c.info, protocol: HUB_PROTOCOL, version: this.version, plugin: { connected: !!shows, hello: shows?.hello }, sessions: this.clients.size, multiFile: true });
+        this.toClient(c, { type: "welcome", session: c.info, protocol: HUB_PROTOCOL, version: this.version, plugin: { connected: !!shows, hello: shows?.hello }, sessions: this.count(), multiFile: true });
         this.sendSessions();
         this.broadcastCount();
         return;
@@ -488,6 +574,8 @@ export class Hub {
     ws.on("close", () => {
       if (!c || this.clients.get(c.info.id) !== c) return;
       this.clients.delete(c.info.id);
+      // Its agent session's other server, if one is still here, is its face now.
+      if (c.agent && this.faces.get(c.agent) === c.info.id) { const next = this.siblings(c)[0]; if (next) this.faces.set(c.agent, next.info.id); else this.faces.delete(c.agent); }
       this.log(`session ${c.info.name} left (${this.clients.size} now)`);
       this.sendSessions();
       this.broadcastCount();
@@ -495,15 +583,15 @@ export class Hub {
     });
   }
 
-  /** A name no other session has ("shop", "shop 2"…). */
-  private uniqueName(base: string, except?: string): string {
-    const taken = new Set([...this.clients.values()].filter((c) => c.info.id !== except).map((c) => c.info.name));
+  /** A name no other session has ("shop", "shop 2"…). The servers of one agent session share theirs. */
+  private uniqueName(base: string, except?: string, agent?: string): string {
+    const taken = new Set([...this.clients.values()].filter((c) => c.info.id !== except && !(agent && c.agent === agent)).map((c) => c.info.name));
     let name = base;
     for (let n = 2; taken.has(name); n++) name = `${base} ${n}`;
     return name;
   }
 
-  private register(msg: any): SessionInfo {
+  private register(msg: any, agent?: string): SessionInfo {
     // A session that reconnects asks for its id back, so its requests and the selection it was given stay its own
     // (another session's automatic pick-up would otherwise take them at once). Unless a live session holds that id.
     const want = typeof msg.resume === "string" && /^s[0-9a-z]{1,24}$/.test(msg.resume) ? msg.resume : undefined;
@@ -513,9 +601,12 @@ export class Hub {
     while (!id || this.clients.has(id)) id = `s${(++this.seq).toString(36)}${Date.now().toString(36).slice(-4)}`;
     // The agent's title for its task when it already has one (a reconnect); else the name it had, or the folder name.
     const title = cleanTitle(msg.title);
-    const name = this.uniqueName(title ?? (String(msg.name || (msg.workdir ? basename(String(msg.workdir)) : "") || "Session").slice(0, 40)));
-    const used = new Set([...this.clients.values()].map((c) => c.info.color));
-    const color = SESSION_COLORS.includes(msg.color) && !used.has(msg.color) ? msg.color : SESSION_COLORS.find((x) => !used.has(x)) ?? SESSION_COLORS[this.seq % SESSION_COLORS.length];
+    // A second server of an agent session already here: the same name and colour as its face (the windows show one).
+    const sib = agent ? [...this.clients.values()].find((c) => c.agent === agent) : undefined;
+    if (sib && !title) return { id, name: sib.info.name, color: sib.info.color, workdir: msg.workdir ? String(msg.workdir) : sib.info.workdir, client: msg.client ? String(msg.client) : undefined, version: msg.version ? String(msg.version) : undefined, connectedAt: Date.now(), titled: sib.info.titled };
+    const name = this.uniqueName(title ?? (String(msg.name || (msg.workdir ? basename(String(msg.workdir)) : "") || "Session").slice(0, 40)), undefined, agent);
+    const used = new Set([...this.clients.values()].filter((c) => !(agent && c.agent === agent)).map((c) => c.info.color));
+    const color = sib ? sib.info.color : SESSION_COLORS.includes(msg.color) && !used.has(msg.color) ? msg.color : SESSION_COLORS.find((x) => !used.has(x)) ?? SESSION_COLORS[this.seq % SESSION_COLORS.length];
     // A reconnect keeps when it first joined: it isn't a new session, and mustn't become the window's default.
     const since = id === want && Number.isFinite(msg.since) && msg.since > 0 && msg.since <= Date.now() ? Number(msg.since) : Date.now();
     return { id, name, color, workdir: msg.workdir ? String(msg.workdir) : undefined, client: msg.client ? String(msg.client) : undefined, version: msg.version ? String(msg.version) : undefined, connectedAt: since, titled: title ? true : undefined };
@@ -532,9 +623,16 @@ export class Hub {
         return this.toClient(c, { type: "response", res: { id: own, ok: false, error } });
       }
       c.pending.set(own, w);
+      // A session back at work after a quiet minute: the windows hear it, so it moves up their lists.
+      const woke = Date.now() - c.usedAt > 60_000;
       c.usedAt = Date.now();
-      // The task (a request from the window this is for) gives that work its own cursor in the plugin.
-      this.toWindow(w, { id: `${c.info.id}${SEP}${own}`, method: msg.method, params: msg.params, session: c.info, task });
+      // Of an agent session's servers, the one that works is its face (unless the face works too).
+      const f = this.face(c);
+      if (f !== c && !f.usedAt && c.agent) { this.faces.set(c.agent, c.info.id); this.sendSessions(); }
+      else if (woke) this.sendSessions();
+      // The task (a request from the window this is for) gives that work its own cursor in the plugin. The session is
+      // its face: one name, one cursor and one selection owner for the agent session, whichever server asks.
+      this.toWindow(w, { id: `${c.info.id}${SEP}${own}`, method: msg.method, params: msg.params, session: this.face(c).info, task });
       return;
     }
     if (msg?.type === "windows") {
@@ -566,9 +664,9 @@ export class Hub {
       // The agent named its task: the plugin window shows that instead of the folder name.
       const title = cleanTitle(msg.title);
       if (!title) return;
-      c.info = { ...c.info, name: this.uniqueName(title, c.info.id), titled: true };
+      const name = this.uniqueName(title, c.info.id, c.agent);
+      for (const x of [c, ...this.siblings(c)]) { x.info = { ...x.info, name, titled: true }; this.toClient(x, { type: "session", session: x.info }); } // its agent session's servers too
       this.log(`session ${c.info.id} is now "${c.info.name}"`);
-      this.toClient(c, { type: "session", session: c.info });
       this.sendSessions();
       return;
     }
@@ -583,12 +681,14 @@ export class Hub {
       const r = this.requests.get(msg.id);
       if (!r || r.status === "done" || r.status === "failed") return this.toClient(c, { type: "inbox-claim", rid: msg.rid, ok: false });
       const prev = this.clients.get(r.session);
-      if (prev && prev !== c && !this.takeable(r, !!msg.force)) return this.toClient(c, { type: "inbox-claim", rid: msg.rid, ok: false, heldBy: prev.info.name, status: r.status });
+      // Another server of the same agent session takes it at once: it's the same session to the user.
+      const sibling = !!prev && !!c.agent && prev.agent === c.agent;
+      if (prev && prev !== c && !sibling && !this.takeable(r, !!msg.force)) return this.toClient(c, { type: "inbox-claim", rid: msg.rid, ok: false, heldBy: prev.info.name, status: r.status });
       if (prev && prev !== c) this.toClient(prev, { type: "action-drop", id: msg.id, by: c.info.name });
       r.session = c.info.id;
       r.status = "seen";
       r.touched = Date.now();
-      this.toRequestWindow(msg.id, { type: "action-update", id: msg.id, status: "seen", session: c.info.id, message: `Picked up by ${c.info.name}` });
+      this.toRequestWindow(msg.id, { type: "action-update", id: msg.id, status: "seen", session: this.face(c).info.id, message: sibling ? undefined : `Picked up by ${c.info.name}` });
       this.toClient(c, { type: "inbox-claim", rid: msg.rid, ok: true, action: r.action, hello: this.requestWindow(r)?.hello });
       return;
     }
@@ -598,19 +698,20 @@ export class Hub {
       if (r) { r.status = String(msg.status); r.session = c.info.id; r.touched = Date.now(); }
       // To the window the request came from; a note (figma_reply without a request) to the session's own window. A
       // request this hub doesn't know (it restarted since) goes to every window: only the one that sent it knows it.
-      const upd = { type: "action-update", id: msg.id, status: msg.status, message: str(msg.message, 400), session: c.info.id };
+      const upd = { type: "action-update", id: msg.id, status: msg.status, message: str(msg.message, 400), session: this.face(c).info.id };
       if (r || !msg.id.startsWith("note-")) this.toRequestWindow(msg.id, upd); else this.toWindow(c.window ?? this.fallback(), upd, true);
       return;
     }
     if (msg?.type === "notify" && msg.msg && typeof msg.msg === "object") {
-      // Only what sessions send the window (server.ts): their version and update notice, and whether they wait for
-      // the user in the chat. Nothing else is passed through.
+      // Only what sessions send the window (server.ts): their version and update notice, whether they wait for the
+      // user in the chat, and that the skills changed. Nothing else is passed through.
       const m = msg.msg;
-      if (m.type === "server-info") this.toWindows({ type: "server-info", version: str(m.version, 40), update: m.update && typeof m.update === "object" ? m.update : undefined, session: c.info.id }, false);
+      if (m.type === "server-info") this.toWindows({ type: "server-info", version: str(m.version, 40), update: m.update && typeof m.update === "object" ? m.update : undefined, session: this.face(c).info.id }, false);
+      else if (m.type === "skills-changed") this.toWindows({ type: "skills-changed" }); // a session added, wrote or removed one: the Skills tab asks again
       else if (m.type === "session-state") {
         // Every window lists every session: each says it waits for the user (whichever file the user looks at), and
         // each stops saying so (it may have moved since it asked).
-        this.toWindows({ type: "session-state", waiting: !!m.waiting, kind: str(m.kind, 20), text: str(m.text, 400), session: c.info.id });
+        this.toWindows({ type: "session-state", waiting: !!m.waiting, kind: str(m.kind, 20), text: str(m.text, 400), session: this.face(c).info.id });
       }
       return;
     }
@@ -632,8 +733,10 @@ export class Hub {
     if (w) this.toWindow(w, msg, true); else this.toWindows(msg);
   }
 
+  /** How many sessions share Figma: agent sessions, not servers (two servers of one Claude Code session are one). */
+  private count() { return [...this.clients.values()].filter((c) => this.face(c) === c).length; }
   private broadcastCount() {
-    for (const c of this.clients.values()) this.toClient(c, { type: "sessions", count: this.clients.size });
+    for (const c of this.clients.values()) this.toClient(c, { type: "sessions", count: this.count() });
   }
 
   private armIdle() {

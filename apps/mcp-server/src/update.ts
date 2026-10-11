@@ -27,6 +27,9 @@ export function newer(a: string, b: string): boolean {
   return (x.pre ?? "") > (y.pre ?? "");
 }
 
+/** What updates this computer (any folder): the Figma plugin, the agent plugin and the MCP server it runs. */
+export const UPDATE_COMMAND = `npx -y ${PKG_NAME}@latest update`;
+
 export function updateCacheFile(): string {
   return join(process.env.LAYERWRIGHT_HOME ?? join(homedir(), `.${BIN}`), "update-check.json");
 }
@@ -36,8 +39,8 @@ export function info(latest: string | undefined, checkedAt?: string): UpdateInfo
   return {
     current: PKG_VERSION, latest, updateAvailable, checkedAt,
     ...(updateAvailable ? {
-      command: `npx ${PKG_NAME}@latest init`,
-      steps: [`Run: npx ${PKG_NAME}@latest init (in your project folder)`, "Restart Claude Code", "Close and reopen the Layerwright plugin in Figma"],
+      command: UPDATE_COMMAND,
+      steps: [`Run: ${UPDATE_COMMAND} (in any folder), or /layer:update in Claude Code or Codex`, "Claude Code: type /reload-plugins in each open session, or start a new one", "Close and reopen the Layerwright plugin in Figma"],
     } : {}),
   };
 }
@@ -47,11 +50,22 @@ export function cachedUpdate(file = updateCacheFile()): UpdateInfo | undefined {
   try { const c = JSON.parse(readFileSync(file, "utf8")); return info(c.latest, c.checkedAt); } catch { return undefined; }
 }
 
-export async function checkForUpdate(opts: { file?: string; fetchLatest?: () => Promise<string | undefined>; now?: number; force?: boolean } = {}): Promise<UpdateInfo> {
+/** The line that tells the user, as a session starts, that a newer Layerwright is out: once a day at most (the
+ *  answer cached by the servers' daily check, no network here). */
+export function updateNotice(u = cachedUpdate(), now = Date.now(), file = join(dirname(updateCacheFile()), "update-notice.json")): string | undefined {
+  if (!u?.updateAvailable || !u.latest) return undefined;
+  try { const n = JSON.parse(readFileSync(file, "utf8")); if (n.version === u.latest && now - n.at < DAY) return undefined; } catch { /* not told yet */ }
+  try { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify({ version: u.latest, at: now })); } catch { /* read-only home: told again */ }
+  return `Layerwright ${u.latest} is available (you have ${u.current}). Type /layer:update to update, or run: ${UPDATE_COMMAND}`;
+}
+
+/** `force`: check even where checks are off (LAYERWRIGHT_NO_UPDATE_CHECK, CI). `fresh`: ask npm now, not the day's
+ *  cached answer (the user asked: layerwright_update, `update`). */
+export async function checkForUpdate(opts: { file?: string; fetchLatest?: () => Promise<string | undefined>; now?: number; force?: boolean; fresh?: boolean } = {}): Promise<UpdateInfo> {
   const file = opts.file ?? updateCacheFile();
   const now = opts.now ?? Date.now();
   if (!opts.force && (process.env.LAYERWRIGHT_NO_UPDATE_CHECK || process.env.CI)) return info(undefined);
-  try {
+  if (!opts.fresh) try {
     const c = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : undefined;
     if (c?.checkedAt && now - Date.parse(c.checkedAt) < DAY) return info(c.latest, c.checkedAt);
   } catch { /* re-check */ }

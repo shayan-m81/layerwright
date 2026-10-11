@@ -28,8 +28,13 @@ export interface FigmaTransport {
   inboxClaim?(id: string, force?: boolean): Promise<FigmaAction | undefined>;
   inboxTake?(id: string, force?: boolean): Promise<{ action?: FigmaAction; heldBy?: string; status?: string }>;
   /** Shared bridge only: join the Figma connection now if this session hasn't yet (outside a Layerwright project it
-   *  joins on its first Figma call). */
+   *  joins on its first Figma call, and after leaving it for being idle on its next one). */
   join?(): Promise<void>;
+  /** Shared bridge only: joined (or joining) the Figma connection. */
+  readonly started?: boolean;
+  /** Shared bridge only: leave the Figma connection (no Layerwright for a while): the plugin window stops listing this
+   *  session until join() (any Figma call) brings it back. Not while a request is in flight. */
+  leave?(): void;
   /** Shared bridge only: the Figma files open in Layerwright (one window each), and which one this session works in. */
   windows?(): Promise<{ file?: string; fileKey?: string; page?: string; current: boolean }[]>;
   /** Shared bridge only: the hub moved this session to another file without it asking (once, then forgotten). */

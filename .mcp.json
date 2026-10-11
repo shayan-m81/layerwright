@@ -1,8 +1,9 @@
 {
   "mcpServers": {
     "layerwright": {
-      "command": "npx",
+      "command": "node",
       "args": [
+        "--import",
         "tsx",
         "apps/mcp-server/src/cli.ts"
       ],

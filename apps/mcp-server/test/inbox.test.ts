@@ -19,7 +19,7 @@ delete process.env.CLAUDE_CODE_SESSION_ID;
 
 const action: FigmaAction = { id: "q1", kind: "code", text: "use our Card", nodes: [{ id: "1:2", name: "Card", type: "FRAME" }], page: "Checkout", file: "Shop", at: 1 };
 
-async function connect(clientName: string) {
+async function connect(clientName: string, o: { bridge?: Partial<FigmaTransport>; idleMs?: number; fetchLatest?: () => Promise<string | undefined>; monitorAvailable?: () => boolean } = {}) {
   const updates: { id: string; status: string; message?: string }[] = [];
   const bridge: FigmaTransport = {
     connected: () => false,
@@ -27,7 +27,8 @@ async function connect(clientName: string) {
     request: async () => { throw new Error("not connected"); },
     actionUpdate: (id, status, message) => { updates.push({ id, status, message }); },
   };
-  const server = createServer(bridge, { workdir: mkdtempSync(join(tmpdir(), "lw-inbox-")), noUpdateCheck: true });
+  Object.defineProperties(bridge, Object.getOwnPropertyDescriptors(o.bridge ?? {})); // getters stay getters
+  const server = createServer(bridge, { workdir: mkdtempSync(join(tmpdir(), "lw-inbox-")), noUpdateCheck: true, idleMs: o.idleMs, fetchLatest: o.fetchLatest, monitorAvailable: o.monitorAvailable ?? (() => true) });
   const [a, b] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: clientName, version: "1" });
   const pushed: any[] = [];
@@ -188,6 +189,105 @@ test("figma_status tells Claude Code, once, how to start watching for requests f
   assert.equal(second.doFirst, undefined);
   const connect2 = JSON.parse((await t.call("figma_status", { listen: true })).content[0].text);
   assert.equal(connect2.doFirst.tool, "Monitor", "/layer:connect asks for it again");
+  // Claude Code without a Monitor tool (Windows without Git Bash): no Monitor to start, and the session says how requests come.
+  const noMonitor = await connect("claude-code", { monitorAvailable: () => false });
+  const st = JSON.parse((await noMonitor.call("figma_status")).content[0].text);
+  assert.equal(st.doFirst, undefined);
+  assert.match(st.requestsFromFigma, /next Figma call, or when they type \/layer:inbox[\s\S]*Git for Windows/);
+  delete process.env.CLAUDE_CODE_SESSION_ID;
+});
+
+test("the watcher stops by itself once the session leaves Layerwright alone, and says not to start it again; activity keeps it going", async () => {
+  const { mkdtempSync: mk, writeFileSync, utimesSync } = await import("node:fs");
+  process.env.LAYERWRIGHT_HOME = mk(join(tmpdir(), "lw-home-"));
+  process.env.CLAUDE_CODE_SESSION_ID = "sess-idle-1";
+  const { inboxWatch } = await import("../src/cli.ts");
+  const { activeFile, inboxFile } = await import("../src/meta.ts");
+  const lines: string[] = [];
+  const t0 = Date.now();
+  const watching = inboxWatch({ out: (s) => lines.push(s), pollMs: 20, idleMs: 300 });
+  // The session works in Figma meanwhile (the server notes the time): the watcher keeps going.
+  for (let i = 0; i < 4; i++) { await new Promise((r) => setTimeout(r, 120)); writeFileSync(activeFile()!, String(Date.now())); }
+  assert.deepEqual(lines, [], "still watching while the session uses Layerwright");
+  assert.equal(await watching, 0);
+  assert.ok(Date.now() - t0 >= 700, "it stopped only once the session was quiet");
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^Stopped watching the Layerwright window in Figma: this session hasn't used Layerwright for \d+ minutes, so it left Figma\. Don't start this watcher again/);
+  // Started again after a long quiet time (the agent re-armed it as it expired): it stops at once.
+  const old = (Date.now() - 10_000) / 1000;
+  utimesSync(activeFile()!, old, old);
+  utimesSync(inboxFile()!, old, old);
+  const again: string[] = [];
+  const t1 = Date.now();
+  assert.equal(await inboxWatch({ out: (s) => again.push(s), pollMs: 20, idleMs: 300 }), 0);
+  assert.ok(Date.now() - t1 < 900, "its own start counts as activity, nothing older");
+  delete process.env.CLAUDE_CODE_SESSION_ID;
+});
+
+test("a session that leaves Figma alone leaves it (not while a request from the window is open); its next Figma call joins again and hands the watcher back", async () => {
+  process.env.CLAUDE_CODE_SESSION_ID = "sess-idle-2";
+  let started = true, left = 0, joined = 0;
+  const t = await connect("claude-code", { idleMs: 200, bridge: {
+    get started() { return started; },
+    leave: () => { left++; started = false; },
+    join: async () => { joined++; started = true; },
+  } as Partial<FigmaTransport> });
+  const first = JSON.parse((await t.call("figma_status")).content[0].text);
+  assert.equal(first.doFirst?.tool, "Monitor", "the watcher, the first time");
+  t.bridge.onAction!(action); // a request from the window, still open
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(left, 0, "an open request keeps it in Figma");
+  await t.call("figma_inbox");
+  await t.call("figma_reply", { id: "q1", status: "done", message: "done" });
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(left, 1, "left alone: it leaves Figma");
+  const before = joined;
+  const back = await t.call("figma_reply", { message: "back" });
+  assert.equal(joined, before + 1, "a Figma call joins it again");
+  const hint = back.content.map((c: any) => c.text).find((x: string) => x.includes("doFirst"));
+  assert.ok(hint, "and hands the watcher back");
+  assert.match(JSON.parse(hint).requestsFromFigma, /When it stops by itself because this session hasn't used Layerwright for 0 minutes, leave it stopped/);
+  const next = await t.call("figma_reply", { message: "again" });
+  assert.ok(!next.content.some((c: any) => c.text?.includes("doFirst")), "once");
+  delete process.env.CLAUDE_CODE_SESSION_ID;
+});
+
+test("/layer:update: layerwright_update asks npm now and gives the command and what's left; the Update button in the window reaches the session as a request about this computer", async () => {
+  const { PKG_VERSION } = await import("../src/meta.ts");
+  const told: any[] = [];
+  const t = await connect("claude-code", { fetchLatest: async () => "99.0.0", bridge: { notify: (m) => { told.push(m); } } });
+  const u = JSON.parse((await t.call("layerwright_update")).content[0].text);
+  assert.deepEqual([u.current, u.latest, u.updateAvailable, u.command], [PKG_VERSION, "99.0.0", true, "npx -y layerwright@latest update"]);
+  assert.match(u.next, /^Ask the user, then run in the terminal: npx -y layerwright@latest update[\s\S]*\/reload-plugins/);
+  assert.equal(told.at(-1).update.latest, "99.0.0", "the Figma window's notice follows");
+  const same = await connect("claude-code", { fetchLatest: async () => PKG_VERSION });
+  assert.equal(JSON.parse((await same.call("layerwright_update")).content[0].text).note, "Layerwright is up to date.");
+  // The Update button: a request with no layers, which reads as the user's OK to run the update.
+  const prompt = actionPrompt({ id: "q9", kind: "update", nodes: [], at: 1 });
+  assert.match(prompt, /^The user pressed Update in the Layerwright window in Figma \(request q9\): update Layerwright on this computer\. Pressing it is their OK/);
+  assert.match(prompt, /Follow \/layer:update: layerwright_update\(\)/);
+  assert.doesNotMatch(prompt, /Selected:|layers/);
+  // Create a skill with Claude, sent to a session: written with the user in its chat, saved with layerwright_skills.
+  const skill = actionPrompt({ id: "q8", kind: "skill", text: "Our tone of voice", nodes: [], at: 1 });
+  assert.match(skill, /^The user asked this session, from the Skills tab of the Layerwright window in Figma, to write a new Layerwright skill with them \(request q8\)/);
+  assert.match(skill, /What it should do, in their words: "Our tone of voice"/);
+  assert.match(skill, /layerwright_skills\(\{ action: "write", name, description, instructions \}\)/);
+  assert.doesNotMatch(skill, /Selected:|requestId/);
+  assert.match(actionPrompt({ id: "q8", kind: "skill", nodes: [], at: 1 }), /They didn't say what it should do yet: ask them/);
+  const { mkdtempSync: mk } = await import("node:fs");
+  process.env.LAYERWRIGHT_HOME = mk(join(tmpdir(), "lw-home-"));
+  process.env.CLAUDE_CODE_SESSION_ID = "sess-update-1";
+  const { inboxWatch } = await import("../src/cli.ts");
+  const lines: string[] = [];
+  const stop = new AbortController();
+  const watching = inboxWatch({ out: (s) => lines.push(s), pollMs: 20, signal: stop.signal });
+  await new Promise((r) => setTimeout(r, 60));
+  const w = await connect("claude-code");
+  w.bridge.onAction!({ id: "q9", kind: "update", nodes: [], at: 1 });
+  for (let i = 0; i < 50 && !lines.length; i++) await new Promise((r) => setTimeout(r, 20));
+  stop.abort();
+  await watching;
+  assert.equal(lines[0], "Request q9 from the Layerwright window in Figma: Update Layerwright. Call figma_inbox now and do it (if you're in the middle of another request, in a background subagent), then figma_reply with the result.");
   delete process.env.CLAUDE_CODE_SESSION_ID;
 });
 
@@ -248,6 +348,12 @@ test("the chat hooks note what the session does (hook-event); its server tells t
   await hookEvent({ input: JSON.stringify({ session_id: "sess-chat-2", hook_event_name: "Stop", last_assistant_message: "Added it. Which colour for the hover?" }) });
   await new Promise((r) => setTimeout(r, 1000));
   assert.deepEqual(told.at(-1), { type: "session-state", waiting: true, kind: "question", text: "Which colour for the hover?" }, "a new question shows the new one");
+  // A turn that ends without asking anything: the window hears it's done (its cursor in Figma goes).
+  await hookEvent({ input: JSON.stringify({ session_id: "sess-chat-2", hook_event_name: "UserPromptSubmit", prompt: "blue" }) });
+  await new Promise((r) => setTimeout(r, 1000));
+  await hookEvent({ input: JSON.stringify({ session_id: "sess-chat-2", hook_event_name: "Stop", last_assistant_message: "Made the hover blue." }) });
+  await new Promise((r) => setTimeout(r, 1000));
+  assert.deepEqual(told.at(-1), { type: "session-state", waiting: false, kind: "done" });
   delete process.env.CLAUDE_CODE_SESSION_ID;
 });
 

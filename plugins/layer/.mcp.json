@@ -1,8 +1,9 @@
 {
   "mcpServers": {
     "layerwright": {
-      "command": "npx",
+      "command": "node",
       "args": [
+        "${CLAUDE_PLUGIN_ROOT}/scripts/run.mjs",
         "-y",
         "--prefer-offline",
         "layerwright@1.3.0"

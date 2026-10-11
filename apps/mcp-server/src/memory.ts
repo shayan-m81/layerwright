@@ -111,7 +111,7 @@ export function hintFor(p: Problem): string | undefined {
 export function redact(s: string): string {
   // A single quote is a quote only outside a word: "can't" and "isn't" are apostrophes, and keep the message readable.
   return s.replace(/"[^"]*"|«[^»]*»|“[^”]*”|(?<![\p{L}\p{N}])'[^']*'(?![\p{L}\p{N}])/gu, '"…"').replace(/\b\d+:\d+(;\d+:\d+)*\b/g, "<id>")
-    .replace(/(?:\/[\w.-]+){2,}/g, "<path>").replace(/https?:\/\/\S+/g, "<url>").replace(/[؀-ۿ]+(?:\s+[؀-ۿ]+)*/g, "…");
+    .replace(/(?:[A-Za-z]:)?(?:\\[\w .-]+){2,}/g, "<path>").replace(/(?:\/[\w.-]+){2,}/g, "<path>").replace(/https?:\/\/\S+/g, "<url>").replace(/[؀-ۿ]+(?:\s+[؀-ۿ]+)*/g, "…");
 }
 
 /** An issue draft for the Layerwright maintainers, built from this project's problems. Nothing is sent. */

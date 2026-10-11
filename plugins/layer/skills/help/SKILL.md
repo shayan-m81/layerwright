@@ -9,7 +9,7 @@ description: What Layerwright can do with Figma from here, the /layer commands, 
 1. Call `figma_status` with a `title` for this session (the task, in 2–4 words; "Layerwright tour" if there is none yet).
 2. The language. If figma_status returns `language`, explain everything below in it. If it doesn't, ask the user which language they want Layerwright to explain things in (AskUserQuestion when you have it: the language they wrote in first, then English, Persian, and Other), save the answer with `layerwright_memory({ action: "language", language })`, and say in one line that every session will use it from now on (they can change it by asking). Keep commands, file names and layer names as they are.
 3. Say in one line: connected or not, which file and page, what is selected, how many sessions share Figma.
-   - Not connected: Figma desktop → Plugins → Development → Layerwright. Never imported? Run `npx layerwright init` once, then in Figma: Plugins → Development → Import plugin from manifest → `~/.layerwright/figma-plugin/manifest.json`.
+   - Not connected: Figma desktop → Plugins → Development → Layerwright. Never imported? Run `npx layerwright init` once (or `npx layerwright plugin`): it prints the manifest's full path and how to import it in Figma on this computer.
 4. Show the commands as a short table, descriptions in that language:
 
 | Command | What it does |
@@ -23,8 +23,9 @@ description: What Layerwright can do with Figma from here, the /layer commands, 
 | `/layer:components` | Turn the selection into a component, or a set with variants |
 | `/layer:prototype` | Wire screens into a clickable prototype with transitions |
 | `/layer:shot` | A picture of the selection, saved and shown to you |
-| `/layer:skills` | The design, UX, UI and design-to-code skills sessions read before a job; add your own from a link |
+| `/layer:skills` | The design, UX, UI and design-to-code skills sessions read before a job; add your own from a link, or write one (`/layer:skills new …`) |
 | `/layer:inbox` | Do the requests sent from the Figma window (only needed when they don't start by themselves) |
+| `/layer:update` | Update Layerwright when a newer version is out (the Figma plugin, these commands, the server) |
 | `/layer:doctor` | Find out why Figma isn't connecting |
 | `/layer:report` | Draft a GitHub issue about a Layerwright problem |
 

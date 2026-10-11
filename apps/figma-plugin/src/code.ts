@@ -6,11 +6,11 @@ import { editNodes, cleanup } from "./edit.ts";
 import { importTree, ensurePages, foundations } from "./import.ts";
 import { progress } from "./progress.ts";
 import { DeskError, MUTATING, SessionDesk, targets } from "./sessions.ts";
-import { cursorBegin, cursorEnabled, cursorEnd, cursorGone, cursorsClear, isOverlayId, removeLeftovers, setCursorEnabled, shade } from "./cursor.ts";
+import { cursorAsk, cursorBegin, cursorBusy, cursorEnabled, cursorEnd, cursorGone, cursorWorkEnd, cursorsClear, cursorsYield, isOverlayId, removeLeftovers, setCursorEnabled, shade, type Who } from "./cursor.ts";
 import { resultIds, setZoomEnabled, showResult, zoomAfter, zoomEnabled, zoomRequest, type Shown } from "./zoom.ts";
 import { NoteWatch, isNote, type NoteItem } from "./notes.ts";
 import { commitUndo, holdUndo, ownStep, releaseUndo } from "./undo.ts";
-import { working, workingClear } from "./working.ts";
+import { working, workingClear, workingTurn } from "./working.ts";
 import { byLayerwright, inRun, lastRunEnd, lookAtView, openPage, ownSelection, pageIsOwn, runEnded, runStarted, select, selectionIsOwn, show, userActed, userWrote, wroteByRequest, wroteNodes } from "./own.ts";
 
 declare const __BUILD__: string;
@@ -31,19 +31,21 @@ const desk = new SessionDesk({
 // session's own cursor; each other one gets its own cursor ("Checkout · Mobile", in a nearby shade), and the session's
 // Figma calls that name that request as their task are drawn with it. So the user sees who works on what.
 const SHORT: Record<string, string> = { code: "Code", polish: "Polish", component: "Component", mobile: "Mobile", ask: "Question" };
-const tasks = new Map<string, { session: string; kind: string; own: boolean; turn: number }>();
-function noteTask(id: string, session: string, kind: string) {
+const tasks = new Map<string, { session: string; kind: string; own: boolean; turn: number; nodes: string[] }>();
+function noteTask(id: string, session: string, kind: string, nodes?: string[]) {
   const t = tasks.get(id);
-  if (t) { t.session = session; return; }
+  if (t) { t.session = session; if (nodes?.length) t.nodes = nodes; return; }
   const mine = [...tasks.values()].filter((x) => x.session === session);
-  tasks.set(id, { session, kind, own: !mine.some((x) => x.own), turn: mine.length });
+  tasks.set(id, { session, kind, own: !mine.some((x) => x.own), turn: mine.length, nodes: nodes ?? [] });
 }
-/** Who draws the work for a request (or for a session's work that names no request). */
-function whoFor(session: SessionInfo | { id: string; name?: string; color?: string } | undefined, task?: string) {
+/** Who draws the work for a request (or for a session's work that names no request): the session, as the window
+ *  knows it now (its title and colour). */
+function whoFor(session: Partial<SessionInfo> & { id: string } | undefined, task?: string): Who | undefined {
+  if (!session) return undefined;
+  const s = { ...session, ...desk.sessions.find((x) => x.id === session.id) };
   const t = task ? tasks.get(task) : undefined;
-  if (!session || !t || t.own) return session;
-  const s = desk.sessions.find((x) => x.id === session.id) ?? session;
-  return { id: `${session.id}~${task}`, name: `${s.name ?? "Claude"} · ${SHORT[t.kind] ?? "Task"}`, color: shade(s.color ?? "#7c3aed", (t.turn % 2 ? -1 : 1) * (38 + 14 * Math.floor(t.turn / 2))) };
+  if (!t || t.own) return { id: s.id, name: s.name, color: s.color };
+  return { id: `${s.id}~${task}`, name: `${s.name ?? "Claude"} · ${SHORT[t.kind] ?? "Task"}`, color: shade(s.color ?? "#7c3aed", (t.turn % 2 ? -1 : 1) * (38 + 14 * Math.floor(t.turn / 2))) };
 }
 
 // The user comes first: what Layerwright did itself (the selection it set, the page it opened, the changes a request
@@ -138,7 +140,6 @@ async function handle(req: BridgeRequest): Promise<unknown> {
   }
 }
 
-// protocol 2: this plugin understands sessions (the hub sends them only to plugins that do).
 /** The size of what's on a page (its visible layers together), or undefined when nothing is. */
 function pageSize(page: PageNode): { width: number; height: number } | undefined {
   const boxes = page.children.filter((c) => c.visible).map((c) => c.absoluteBoundingBox ?? { x: c.x, y: c.y, width: c.width, height: c.height });
@@ -147,6 +148,7 @@ function pageSize(page: PageNode): { width: number; height: number } | undefined
   return { width: Math.max(...boxes.map((b) => b.x + b.width)) - x0, height: Math.max(...boxes.map((b) => b.y + b.height)) - y0 };
 }
 
+// protocol 2: this plugin understands sessions (the hub sends them only to plugins that do).
 const hello = () => ({ type: "hello", fileName: figma.root.name, fileKey: figma.fileKey, page: figma.currentPage.name, user: figma.currentUser?.name, pluginBuild: BUILD, selection: figma.currentPage.selection.length, protocol: 2 });
 
 figma.ui.onmessage = async (msg: any) => {
@@ -161,13 +163,16 @@ figma.ui.onmessage = async (msg: any) => {
     const zoom = await figma.clientStorage.getAsync("zoomResult").catch(() => undefined);
     if (typeof zoom === "boolean") setZoomEnabled(zoom);
     const guideSeen = (await figma.clientStorage.getAsync("guideSeen").catch(() => undefined)) === true;
-    figma.ui.postMessage({ type: "settings", cursor: cursorEnabled(), zoom: zoomEnabled(), mini, guideSeen });
+    const skillVia = await figma.clientStorage.getAsync("skillVia").catch(() => undefined);
+    figma.ui.postMessage({ type: "settings", cursor: cursorEnabled(), zoom: zoomEnabled(), mini, guideSeen, ...(typeof skillVia === "string" ? { skillVia } : {}) });
     void sendThumb();
     return;
   }
   if (msg?.type === "open-repo") { figma.openExternal(REPO_URL); return; }
   // A link in a skill's page (its source, a reference): only https, opened in the browser.
   if (msg?.type === "open-url" && typeof msg.url === "string" && /^https:\/\/[^\s]+$/.test(msg.url) && msg.url.length < 2000) { figma.openExternal(msg.url); return; }
+  // Where "Create a skill with Claude" writes it (the hub opens the link: Figma opens https only), remembered.
+  if (msg?.type === "set-skill-via" && typeof msg.via === "string" && /^(app|terminal|vscode|session|copy)$/.test(msg.via)) { await figma.clientStorage.setAsync("skillVia", msg.via); return; }
   if (msg?.type === "set-cursor") { setCursorEnabled(!!msg.on); if (!msg.on) workingClear(); await figma.clientStorage.setAsync("aiCursor", !!msg.on); return; }
   if (msg?.type === "guide-seen") { await figma.clientStorage.setAsync("guideSeen", true); return; }
   if (msg?.type === "set-zoom") { setZoomEnabled(!!msg.on); await figma.clientStorage.setAsync("zoomResult", !!msg.on); return; }
@@ -177,6 +182,9 @@ figma.ui.onmessage = async (msg: any) => {
     const sel = figma.currentPage.selection;
     const kind = typeof msg.kind === "string" ? msg.kind.slice(0, 24) : "ask";
     const text = typeof msg.text === "string" ? msg.text.trim().slice(0, 2000) : "";
+    // Update (the window's update notice) and a new skill (the Skills tab): about this computer and the user's skills,
+    // not the selection, which stays where it is.
+    if (kind === "update" || kind === "skill") { composeAction(msg.session, kind, kind === "skill" ? text : "", []); return; }
     if (!sel.length && kind !== "ask") { figma.ui.postMessage({ type: "action-error", message: "Select the layers first." }); return; }
     const skills: string[] = Array.isArray(msg.skills) ? [...new Set<string>(msg.skills.filter((s: unknown): s is string => typeof s === "string" && /^[\w-]{1,60}$/.test(s)))].slice(0, 6) : [];
     desk.assign(msg.session); // sent from the window: the selection goes with it, and that's the user's session now
@@ -185,8 +193,12 @@ figma.ui.onmessage = async (msg: any) => {
   }
   if (msg?.type === "show-result" && Array.isArray(msg.ids)) { void showResult(msg.ids.filter((x: unknown) => typeof x === "string")); return; }
   if (msg?.type === "session-state" && typeof msg.session === "string") {
-    // The session asks the user something in its chat: Figma says so (the window shows it too, until it's answered).
+    // The session asks the user something in its chat: Figma says so (the window shows it too, until it's answered),
+    // and so does its cursor. Its turn ended ("done"): its cursor and the toast say so, and the cursor goes.
     const who = desk.sessions.find((x) => x.id === msg.session);
+    const kind = typeof msg.kind === "string" ? msg.kind : undefined;
+    void cursorAsk(whoFor(who ?? { id: msg.session }), !!msg.waiting, kind);
+    workingTurn(msg.session, who?.name, !!msg.waiting, kind);
     if (msg.waiting) {
       const name = who?.name ?? "Claude";
       workingClear(); // this matters more than "working": it takes the toast's place
@@ -225,11 +237,15 @@ figma.ui.onmessage = async (msg: any) => {
   }
   if (msg?.type === "session-activity" && typeof msg.session === "string") {
     // A request from the window reached a session or was finished (the window shows how it goes). Each request has
-    // its own cursor, while its changes run, when the session already works on another one.
+    // its own cursor when the session already works on another one. Once the session has it, its cursor goes to the
+    // request's layers and stays until it's finished.
     const id = typeof msg.id === "string" ? msg.id : undefined;
-    if (id) noteTask(id, msg.session, typeof msg.kind === "string" ? msg.kind : tasks.get(id)?.kind ?? "ask");
+    const nodes = Array.isArray(msg.nodes) ? msg.nodes.filter((x: unknown): x is string => typeof x === "string").slice(0, 20) : undefined;
+    if (id) noteTask(id, msg.session, typeof msg.kind === "string" ? msg.kind : tasks.get(id)?.kind ?? "ask", nodes);
     const busy = ["sending", "sent", "queued", "seen", "working"].includes(msg.status);
     if (typeof msg.status === "string") void zoomRequest(msg.session, msg.status, id).then((r) => offer(r, msg.session)).catch(() => {}); // done: show what it changed
+    if (id && (msg.status === "seen" || msg.status === "working")) void cursorBusy(whoFor({ id: msg.session }, id), true, tasks.get(id)?.nodes, tasks.get(id)?.kind);
+    if (id && !busy) void cursorBusy(whoFor({ id: msg.session }, id), false);
     if (!busy && id) tasks.delete(id);
     if (id && typeof msg.status === "string") void notes.finished(id, msg.status, typeof msg.message === "string" ? msg.message : undefined);
     return;
@@ -249,35 +265,43 @@ figma.ui.onmessage = async (msg: any) => {
   const req = msg.req as BridgeRequest;
   let res: BridgeResponse;
   try {
-    // Reads (and status checks) just answer: nothing is drawn on the canvas, nothing is written to the file.
-    // A request that changes the document is one undo step (undo.ts), and while it runs (own.ts) the text changes
-    // Figma reports wait until it's known which are its own. A change to the canvas brings the session's cursor
-    // (cursor.ts) for as long as it runs: the work starts at once while the cursor comes, and the cursor is erased
-    // before the step closes.
+    // Every step of a session's work brings its cursor (cursor.ts): it skims what a read looks at, works where a change
+    // works, and stays near between steps until the session is done or quiet. The work starts at once while the cursor
+    // comes. Reads write nothing but the cursor.
+    // A request that changes the document is one undo step (undo.ts: the cursors are taken off around every commit,
+    // so no step holds any of them), and while it runs (own.ts) the text changes Figma reports wait until it's known
+    // which are its own.
     // When a change lands, the view glides to it (a build always; anything else when it's off screen) while the
     // cursor clicks there (zoom.ts).
     // Work for a request from the window that the session named as its task is drawn with that request's cursor.
+    const who = whoFor(req.session, req.task);
     const work = async () => {
-      if (!MUTATING.has(req.method)) return handle(req);
+      if (!MUTATING.has(req.method)) {
+        cursorBegin(who, req.method, req.params);
+        let r: unknown;
+        try { r = await handle(req); } catch (e) { void cursorEnd(who, false, req.method); throw e; }
+        void cursorEnd(who, true, req.method, r, req.params);
+        return r;
+      }
       holdUndo();
       runStarted();
       lookAtView();
       try {
-        cursorBegin(whoFor(req.session, req.task), req.method, req.params);
+        cursorBegin(who, req.method, req.params);
         let r: unknown;
-        try { r = await handle(req); } catch (e) { await cursorEnd(false, req.method); throw e; }
+        try { r = await handle(req); } catch (e) { await cursorEnd(who, false, req.method); throw e; }
         void zoomAfter(req.session?.id, req.method, r, req.task).then((z) => offer(z, req.session?.id)).catch(() => {});
-        await cursorEnd(true, req.method, r, req.params);
+        await cursorEnd(who, true, req.method, r, req.params);
         // What it made or changed is Layerwright's: never a note on the canvas, never the user's work.
         wroteNodes([...targets(req.method, req.params), ...resultIds(req.method, r)], createdBy(req.method, r));
         return r;
       } finally {
-        cursorsClear(); // already erased, unless something went wrong on the way
+        cursorWorkEnd(); // the change's outlines and helpers go; its cursor stays, thinking
         releaseUndo(); // the step closes: the change and nothing of the cursor
         runEnded();
       }
     };
-    working(whoFor(req.session, req.task)?.name, req.method, req.params, cursorEnabled()); // the toast: it's working (working.ts)
+    working(who?.name, req.method, req.params, cursorEnabled(), Date.now(), req.session?.id); // the toast: it's working (working.ts)
     res = { id: req.id, ok: true, result: await desk.run(req.method, req.params, req.session, work) };
   } catch (e) {
     const error = e instanceof ExecError || e instanceof DeskError ? e.detail : { type: "FIGMA_API_ERROR" as const, message: (e as Error)?.message ?? String(e) };
@@ -292,14 +316,13 @@ function createdBy(method: string, r: any): string[] {
   if (method === "editNodes") return (r?.applied ?? []).filter((a: any) => MAKES.has(a?.kind) && typeof a?.nodeId === "string").map((a: any) => a.nodeId);
   return [];
 }
-/** A request for one session about these layers, handed to the window to send (the window's actions, annotations). */
 /** A request for a session about these layers. Notes and annotations on the canvas carry their own layers: they
  *  don't hand over the selection or change the user's session (the window's compose-action does, before this). */
 function composeAction(session: string, kind: string, text: string, nodes: readonly SceneNode[], extra: { skills?: string[]; via?: "annotation" | "note"; note?: string } = {}): string {
   const action = { id: `q${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, kind, text: text || undefined, ...extra,
     nodes: nodes.slice(0, 20).map((n) => ({ id: n.id, name: n.name, type: n.type })), more: nodes.length > 20 ? nodes.length - 20 : undefined,
     page: figma.currentPage.name, file: figma.root.name, at: Date.now() };
-  noteTask(action.id, session, kind);
+  noteTask(action.id, session, kind, action.nodes.map((n) => n.id));
   figma.ui.postMessage({ type: "send-action", session, action });
   return action.id;
 }
@@ -414,18 +437,19 @@ setInterval(() => { try { if (!inRun()) takeLater(); notes.check(); } catch { /*
 
 figma.on("currentpagechange", () => {
   figma.ui.postMessage({ type: "hello", hello: hello() });
-  // The user changed page: they work in this file (the window tells the hub). A page Layerwright opened isn't that.
-  if (!pageIsOwn()) { userActed(); figma.ui.postMessage({ type: "selection", count: figma.currentPage.selection.length, user: true }); }
+  // The user changed page: they work in this file (the window tells the hub), and the cursors step aside. A page
+  // Layerwright opened isn't that.
+  if (!pageIsOwn()) { userActed(); cursorsYield(); figma.ui.postMessage({ type: "selection", count: figma.currentPage.selection.length, user: true }); }
 });
 figma.on("close", () => { cursorsClear(); workingClear(); });
 figma.on("selectionchange", () => {
-  // A selection Layerwright didn't make is the user's, also while a request runs: the view stays where they work, and
-  // it isn't credited to a session (sessions.ts).
+  // A selection Layerwright didn't make is the user's, also while a request runs: the view stays where they work, it
+  // isn't credited to a session (sessions.ts), and the cursors step aside.
   const own = selectionIsOwn();
   figma.ui.postMessage({ type: "selection", count: figma.currentPage.selection.length, user: !own }); // user: the window tells the hub this file is in use
   desk.onSelectionChange(own);
   queueThumb();
-  if (!own) userActed();
+  if (!own) { userActed(); cursorsYield(); }
 });
 
 // A small picture of the selection for the window, so the user sees what they are about to give a session.
@@ -463,7 +487,7 @@ figma.loadAllPagesAsync().then(() => {
     // selection (selectionchange) and, for texts that may be notes, when it ends (takeLater).
     const busy = inRun();
     const local = changes.filter((c) => c.origin === "LOCAL");
-    if (!busy && local.length) userActed(); // the user is editing
+    if (!busy && local.length) { userActed(); cursorsYield(); } // the user is editing: the cursors step aside
     desk.onDocumentChange(changes);
     for (const c of local) {
       if (c.type !== "CREATE" && !(c.type === "PROPERTY_CHANGE" && c.properties.includes("characters"))) continue;

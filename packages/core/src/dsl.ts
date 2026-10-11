@@ -60,7 +60,11 @@ export const Gradient = z.object({
  *  uploaded again. A hash that isn't in the file leaves the node without the image, with a warning. */
 export const ImageHash = z.string().min(1).max(100);
 export const ImageFit = z.enum(["fill", "fit", "crop", "tile"]);
-export const ImageFill = z.object({ hash: ImageHash, fit: ImageFit.default("fill") }).strict();
+/** A new image's bytes: a data:image/… URL, or an https URL the MCP server fetches (never the plugin). */
+export const ImageSrc = z.string().min(1).max(15_000_000).regex(/^(data:image\/[\w.+-]+;base64,|https:\/\/)/, "a data:image/…;base64 URL or an https URL");
+/** An image painted on a frame or shape (a CSS background): one already in this file (hash), or new bytes (src). */
+export const ImageFill = z.object({ hash: ImageHash.optional(), src: ImageSrc.optional(), fit: ImageFit.default("fill") }).strict()
+  .refine((i) => !!i.hash !== !!i.src, "give exactly one of hash (an image already in this file) or src (new image bytes)");
 /** Take a child out of the Auto Layout flow and place it at x/y inside its parent. */
 export const Position = z.object({ type: z.literal("absolute"), x: z.number(), y: z.number() }).strict();
 
@@ -185,7 +189,7 @@ export const DesignNodeSchema: z.ZodType<any> = z.lazy(() =>
       z.object({ type: z.literal(t), ...Base, ...ComponentRef }).strict(),
     ) as any,
     /** An icon: a DS component (component/role), or inline SVG markup (svg). */
-    z.object({ type: z.literal("icon"), ...Base, ...ComponentRef, svg: z.string().min(1).max(200_000).optional(), color: ColorRef.optional() }).strict(),
+    z.object({ type: z.literal("icon"), ...Base, ...ComponentRef, svg: z.string().min(1).max(2_000_000).optional(), color: ColorRef.optional() }).strict(),
     z.object({ type: z.literal("divider"), ...Base, color: ColorRef.optional(), ...ComponentRef }).strict(),
     /** A basic shape: an ellipse (an arc makes rings, progress and pie slices), a horizontal line, a polygon or a star. */
     z.object({ type: z.literal("shape"), ...Base, shape: z.enum(["ellipse", "line", "polygon", "star"]),

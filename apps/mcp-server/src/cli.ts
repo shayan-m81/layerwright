@@ -1,7 +1,9 @@
 // Command line: `<bin>` (or `<bin> serve`) runs the MCP server for Claude Code; the other commands
 // are for people at a terminal.
-import { resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { realpathSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { compilePlan, emptyDesignSystem } from "@cde/core";
 
@@ -13,6 +15,8 @@ const HELP = () => `Usage:
                                      and this project (run in your project folder)
       --agents claude,codex    install the agent plugin for these without asking (--no-agents: none)
       --cursor                 also set up Cursor (.cursor/mcp.json and a rule; automatic when .cursor exists)
+  ${BIN} update [--check]       update this computer's Layerwright: the Figma plugin and the /layer commands (run it as
+                                     npx -y layerwright@latest update, in any folder); --check only tells what's out
   ${BIN} plugin                 reinstall the Figma plugin and show how to import it (copies its path, opens its folder)
   ${BIN} claude [args…]         start Claude Code with requests from the Figma window arriving live (channels)
   ${BIN} agents [claude|codex]  install or refresh the agent plugin (/layer commands); default: the agents found
@@ -113,14 +117,28 @@ export async function toFigma(path: string, o: { viewports?: number[]; selector?
 
 /** The per-user fonts folder Figma desktop reads. */
 export function userFontsDir(): string {
-  const { homedir, platform } = { homedir: process.env.HOME ?? process.env.USERPROFILE ?? "", platform: process.platform };
-  if (platform === "darwin") return `${homedir}/Library/Fonts`;
-  if (platform === "win32") return `${process.env.LOCALAPPDATA ?? `${homedir}\\AppData\\Local`}\\Microsoft\\Windows\\Fonts`;
-  return `${homedir}/.local/share/fonts`;
+  const home = homedir();
+  if (process.platform === "darwin") return join(home, "Library", "Fonts");
+  if (process.platform === "win32") return join(process.env.LOCALAPPDATA ?? join(home, "AppData", "Local"), "Microsoft", "Windows", "Fonts");
+  return join(home, ".local", "share", "fonts");
+}
+
+/** After copying fonts into the user's folder: Windows loads a per-user font only once it's registered (HKCU, as
+ *  "Install" in Explorer does); Linux apps see new fonts after the font cache is rebuilt. */
+function registerFonts(files: string[], dest: string): string[] {
+  const failed: string[] = [];
+  if (process.platform === "win32") {
+    for (const f of files) {
+      const r = spawnSync("reg", ["add", "HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts", "/v", `${basename(f).replace(/\.[^.]+$/, "")} (${/\.otf$/i.test(f) ? "OpenType" : "TrueType"})`, "/t", "REG_SZ", "/d", join(dest, basename(f)), "/f"], { stdio: "ignore" });
+      if (r.status !== 0) failed.push(basename(f));
+    }
+  } else if (process.platform === "linux") spawnSync("fc-cache", ["-f", dest], { stdio: "ignore" });
+  return failed;
 }
 
 /** Find the fonts in an export (e.g. a Claude Design folder with _ds/…/fonts) and optionally install them. */
 export async function fontsCommand(args: string[], out: (s: string) => void = (s) => process.stdout.write(s + "\n"), dest = userFontsDir()): Promise<number> {
+  const system = dest === userFontsDir(); // the real fonts folder (tests install into a temporary one)
   const { readdirSync, statSync, existsSync, mkdirSync, copyFileSync } = await import("node:fs");
   const { join, basename } = await import("node:path");
   const onlyAt = args.indexOf("--only");
@@ -151,6 +169,8 @@ export async function fontsCommand(args: string[], out: (s: string) => void = (s
     copyFileSync(f, target); copied++;
     out(`  + ${basename(f)}`);
   }
+  const unregistered = system ? registerFonts(installable, dest) : [];
+  if (unregistered.length) out(`! Windows didn't register ${unregistered.join(", ")}: open ${dest}, right-click each and choose Install.`);
   out(`\n✓ ${copied} font(s) installed to ${dest}. Restart Figma so it sees them, then reopen the Layerwright plugin.`);
   return 0;
 }
@@ -217,28 +237,34 @@ export async function hubCommand(sub: string, port = Number(process.env.LAYERWRI
 }
 
 /** `inbox-watch`: the Claude Code plugin's monitor. Prints one line per request the user sends this session from the
- *  Figma window; Claude Code hands each line to Claude as a notification, which wakes the session to do it. */
-export async function inboxWatch(o: { file?: string; out?: (s: string) => void; pollMs?: number; signal?: AbortSignal } = {}): Promise<number> {
-  const { inboxFile } = await import("./meta.ts");
-  const { existsSync, mkdirSync, openSync, readSync, closeSync, statSync, writeFileSync, readFileSync, rmSync } = await import("node:fs");
+ *  Figma window; Claude Code hands each line to Claude as a notification, which wakes the session to do it. Once the
+ *  session has left Layerwright alone for idleMs (no Figma call, no request: the server keeps the time in `active`), it
+ *  says so and stops, and the agent leaves it stopped: the session's next Figma call hands it back. */
+export async function inboxWatch(o: { file?: string; active?: string; out?: (s: string) => void; pollMs?: number; idleMs?: number; signal?: AbortSignal } = {}): Promise<number> {
+  const { IDLE_MS, LOCK_TOUCH_MS, activeFile, inboxFile, lockHeld } = await import("./meta.ts");
+  const { ACTION_LABELS, stopPrompt } = await import("./inbox.ts");
+  const { existsSync, mkdirSync, openSync, readSync, closeSync, statSync, writeFileSync, readFileSync, rmSync, utimesSync } = await import("node:fs");
   const { dirname } = await import("node:path");
   const file = o.file ?? inboxFile();
+  const active = o.active ?? activeFile();
+  const idleMs = o.idleMs ?? IDLE_MS;
   const out = o.out ?? ((s: string) => process.stdout.write(s + "\n"));
   if (!file) { process.stderr.write("[layerwright] inbox-watch: no CLAUDE_CODE_SESSION_ID, nothing to watch\n"); return 0; }
   mkdirSync(dirname(file), { recursive: true });
   if (!existsSync(file)) writeFileSync(file, "");
   // One watcher per session: the plugin's monitor and one the agent started would announce everything twice.
   const lock = `${file}.lock`;
-  try {
-    const pid = Number(readFileSync(lock, "utf8"));
-    if (pid && pid !== process.pid) { process.kill(pid, 0); return 0; } // alive: it already watches
-  } catch { /* no lock, or its owner is gone */ }
+  if (lockHeld(lock, process.pid)) return 0; // alive: it already watches
   writeFileSync(lock, String(process.pid));
+  let touched = Date.now();
   const unlock = () => { try { if (Number(readFileSync(lock, "utf8")) === process.pid) rmSync(lock); } catch { /* gone */ } };
   process.once("exit", unlock);
   for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.once(sig, () => { unlock(); process.exit(0); });
   let pos = statSync(file).size; // only what arrives from now on
   let rest = "";
+  // When the session last used Layerwright: the server's note of it, a request arriving, or this watcher's start.
+  const since = Date.now();
+  const lastActive = () => Math.max(since, ...[active, file].map((f) => { try { return f ? statSync(f).mtimeMs : 0; } catch { return 0; } }));
   const read = () => {
     let size = 0;
     try { size = statSync(file).size; } catch { return; }
@@ -253,41 +279,55 @@ export async function inboxWatch(o: { file?: string; out?: (s: string) => void; 
     for (const l of lines) {
       let r: any;
       try { r = JSON.parse(l); } catch { continue; }
-      if (r.stop) { out(`The user stopped request ${r.id} in the Layerwright window in Figma. Stop working on it now (tell its background subagent too, if one runs it): make no more changes for it, keep what's already done, and don't report it as done.`); continue; }
-      const what = { code: "Build this in code", polish: "Polish this design", component: "Turn this into a component", mobile: "Make a mobile version", ask: "Help with this" }[r.kind as string] ?? r.kind;
+      if (r.stop) { out(stopPrompt(r.id)); continue; }
+      const what = ACTION_LABELS[r.kind as string] ?? r.kind;
       const skills = Array.isArray(r.skills) && r.skills.length ? ` with the skill${r.skills.length > 1 ? "s" : ""} ${r.skills.slice(0, 6).join(", ")}` : "";
       // From a note or an annotation: text on the canvas, which figma_inbox presents as such.
       const from = r.via === "note" || r.via === "annotation" ? `from a ${r.via} on the Figma canvas that mentions this session` : "from the Layerwright window in Figma";
-      out(`Request ${r.id} ${from}: ${r.kind === "ask" && !r.text && skills ? "Apply" : what}${r.text ? ` ("${String(r.text).slice(0, 200)}")` : ""}${skills} on ${r.layers}. Call figma_inbox now and do it (if you're in the middle of another request, in a background subagent), then figma_reply with the result.`);
+      out(`Request ${r.id} ${from}: ${r.kind === "ask" && !r.text && skills ? "Apply" : what}${r.text ? ` ("${String(r.text).slice(0, 200)}")` : ""}${skills}${r.kind === "update" || r.kind === "skill" ? "" : ` on ${r.layers}`}. Call figma_inbox now and do it (if you're in the middle of another request, in a background subagent), then figma_reply with the result.`);
     }
   };
   await new Promise<void>((done) => {
-    const t = setInterval(read, o.pollMs ?? 600);
-    o.signal?.addEventListener("abort", () => { clearInterval(t); read(); unlock(); done(); });
+    const end = () => { clearInterval(t); unlock(); done(); };
+    const t = setInterval(() => {
+      read();
+      if (Date.now() - touched > LOCK_TOUCH_MS) { touched = Date.now(); try { utimesSync(lock, new Date(), new Date()); } catch { /* gone */ } }
+      if (Date.now() - lastActive() < idleMs) return;
+      out(`Stopped watching the Layerwright window in Figma: this session hasn't used Layerwright for ${Math.round(idleMs / 60_000)} minutes, so it left Figma. Don't start this watcher again; a later Figma call hands it back if it's needed.`);
+      end();
+    }, o.pollMs ?? 600);
+    o.signal?.addEventListener("abort", () => { read(); end(); });
   });
   return 0;
 }
 
 /** `session-hint`: the plugin's SessionStart hook. When a Figma window is connected, or was used on this computer in
  *  the last two weeks, tells the new session to start watching for requests from it (the Monitor tool), so they
- *  start the session by themselves, whichever opens first. Prints nothing otherwise. */
-export async function sessionHint(o: { port?: number; self?: string; out?: (s: string) => void; recent?: boolean; project?: string } = {}): Promise<number> {
+ *  start the session by themselves, whichever opens first. Once a day, it also tells the user (not the session) when a
+ *  newer Layerwright is out. Prints nothing otherwise. */
+export async function sessionHint(o: { port?: number; self?: string; out?: (s: string) => void; recent?: boolean; project?: string; notice?: string | null } = {}): Promise<number> {
   const { probePort } = await import("./relay.ts");
   const { figmaUsedRecently } = await import("./prefs.ts");
-  const { projectUsesLayerwright } = await import("./meta.ts");
+  const { IDLE_MS, monitorAvailable, projectUsesLayerwright } = await import("./meta.ts");
+  const { updateNotice } = await import("./update.ts");
   const out = o.out ?? ((s: string) => process.stdout.write(s + "\n"));
+  const notice = o.notice === undefined ? updateNotice() : o.notice ?? undefined;
+  const say = (context?: string) => {
+    if (notice || context) out(JSON.stringify({ ...(notice ? { systemMessage: notice } : {}), ...(context ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context } } : {}) }));
+    return 0;
+  };
   // The agent plugin runs this hook in every Claude Code session on the computer: only a project that uses Layerwright
   // (its .layerwright folder) is told to watch for requests from Figma. Elsewhere the session stays out of Figma
   // until the user asks it for Figma work.
-  if (!projectUsesLayerwright(o.project ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd())) return 0;
+  if (!projectUsesLayerwright(o.project ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd())) return say();
   const p = await probePort(o.port ?? Number(process.env.LAYERWRIGHT_PORT ?? 7331), 1200);
   const connected = p.kind === "hub" && !!(p as any).status?.pluginConnected;
-  if (!connected && !(o.recent ?? figmaUsedRecently())) return 0;
-  const q = (a: string) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`);
+  if (!connected && !(o.recent ?? figmaUsedRecently())) return say();
+  if (!monitorAvailable()) return say(); // no Monitor tool here (Windows without Git Bash): requests come with the next Figma call
+  // (The Monitor tool runs it in bash, Git Bash on Windows: forward slashes there.)
+  const q = (a0: string) => { const a = process.platform === "win32" ? a0.replace(/\\/g, "/") : a0; return /^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`; };
   const self = o.self ?? [process.execPath, ...process.execArgv, process.argv[1]].filter(Boolean).map(q).join(" ");
-  out(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext:
-    `Layerwright: ${connected ? "a Figma window is connected" : "the Layerwright window in Figma was used on this computer recently"}. As your first action in this session, before answering, start the Monitor tool with command "${self} inbox-watch", description "Requests from the Layerwright window in Figma", timeout_ms 1800000, and start it again whenever it expires. Tell the user in one line that you're watching the Layerwright window in Figma for their requests (they can ask you to stop). It wakes you when the user sends a request from Figma; then call figma_inbox and do it.` } }));
-  return 0;
+  return say(`Layerwright: ${connected ? "a Figma window is connected" : "the Layerwright window in Figma was used on this computer recently"}. As your first action in this session, before answering, start the Monitor tool with command "${self} inbox-watch", description "Requests from the Layerwright window in Figma", timeout_ms 1800000. When it expires, start it again; when it stops by itself (this session left Layerwright alone for ${IDLE_MS / 60_000} minutes), leave it stopped: a later Figma call hands it back. Tell the user in one line that you're watching the Layerwright window in Figma for their requests (they can ask you to stop). It wakes you when the user sends a request from Figma; then call figma_inbox and do it.`);
 }
 
 /** The last thing the assistant said, from the end of a Claude Code transcript (JSON lines). */
@@ -364,6 +404,7 @@ export async function main(argv = process.argv.slice(2)) {
     process.exitCode = await (await import("./setup.ts")).init({ port, skipInstall: rest.includes("--skip-install"), cursor: rest.includes("--cursor") ? true : undefined, agents });
   }
   else if (cmd === "plugin") process.exitCode = (await import("./setup.ts")).pluginCommand();
+  else if (cmd === "update") process.exitCode = await (await import("./setup.ts")).update({ check: rest.includes("--check") });
   else if (cmd === "claude") process.exitCode = await (await import("./agents.ts")).claudeWithChannels(rest);
   else if (cmd === "agents") process.exitCode = await agentsCommand(rest);
   else if (cmd === "inbox-watch") process.exitCode = await inboxWatch();

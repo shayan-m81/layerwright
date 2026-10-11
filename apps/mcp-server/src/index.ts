@@ -4,7 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { WsBridge } from "./bridge.ts";
 import { RelayBridge } from "./relay.ts";
 import { createServer } from "./server.ts";
-import { PKG_VERSION, inboxFile, markProject, projectDir, projectUsesLayerwright } from "./meta.ts";
+import { PKG_VERSION, activeFile, inboxFile, markProject, projectDir, projectUsesLayerwright } from "./meta.ts";
 import { rmSync } from "node:fs";
 
 // Shared by default: every session joins one hub that owns the port, so any number of Claude Code and Cursor
@@ -19,8 +19,13 @@ process.stderr.write("[layerwright] MCP server ready\n");
 // Claude Code session on the computer: only a project that uses Layerwright joins Figma at once (so the window can
 // send it requests); any other session joins on its first Figma call, and isn't listed in the window until then.
 if (bridge instanceof WsBridge || projectUsesLayerwright()) bridge.start().catch((e) => process.stderr.write(`[layerwright] ${(e as Error).message}\n`));
-// When Claude Code goes away (stdin closes), release the port instead of lingering as an orphan.
-const shutdown = () => { bridge.close(); const f = inboxFile(); if (f) { try { rmSync(f, { force: true }); } catch { /* gone */ } } process.exit(0); };
+// When Claude Code goes away (stdin closes), release the port instead of lingering as an orphan, and remove this
+// session's files for its watcher.
+const shutdown = () => {
+  bridge.close();
+  for (const f of [inboxFile(), activeFile()]) if (f) { try { rmSync(f, { force: true }); } catch { /* gone */ } }
+  process.exit(0);
+};
 process.stdin.on("end", shutdown);
 process.stdin.on("close", shutdown);
 process.on("SIGTERM", shutdown);

@@ -1,11 +1,14 @@
-// `init` (one-command setup for a project) and `doctor` (diagnose a broken setup).
+// `init` (one-command setup for a project), `update` (bring this computer's Layerwright up to date) and `doctor`
+// (diagnose a broken setup).
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import WebSocket from "ws";
 import { BIN, CLI_FILE, DEFAULT_PORT, FROM_SOURCE, IN_NPX_CACHE, KEY_PLACEHOLDER, MIN_NODE, PKG_NAME, PKG_VERSION, PORT_RANGE, REPO_ROOT, markProject, pluginHome, pluginKey, pluginSource, portAllowed, skillSource } from "./meta.ts";
-import { AGENTS, AGENT_NAMES, PLUGIN_ID, buildMarketplace, detectAgents, installAgent, onPath, pluginInstalled, run as runAgentCli, type Agent, type Runner } from "./agents.ts";
+import { AGENTS, AGENT_NAMES, PLUGIN_ID, agentsHome, buildMarketplace, detectAgents, installAgent, onPath, pluginInstalled, run as runAgentCli, type Agent, type Runner } from "./agents.ts";
+import { UPDATE_COMMAND, checkForUpdate, newer } from "./update.ts";
+import { tcpProbe } from "./relay.ts";
 
 type Out = (s: string) => void;
 const stdout: Out = (s) => process.stdout.write(s + "\n");
@@ -68,7 +71,10 @@ export function installPluginFiles(src = pluginSource()): string {
 /** Put text on the clipboard; false when this computer has no tool for it. */
 function copyToClipboard(text: string): boolean {
   const tools: [string, string[]][] = process.platform === "darwin" ? [["pbcopy", []]] : process.platform === "win32" ? [["clip", []]] : [["wl-copy", []], ["xclip", ["-selection", "clipboard"]]];
-  for (const [cmd, args] of tools) { const r = spawnSync(cmd, args, { input: text, stdio: ["pipe", "ignore", "ignore"] }); if (r.status === 0) return true; }
+  // clip.exe reads text in the console's code page unless it starts with a UTF-16 byte order mark: a user folder with
+  // non-Latin letters would come out garbled.
+  const input = process.platform === "win32" ? Buffer.from("\ufeff" + text, "utf16le") : text;
+  for (const [cmd, args] of tools) { const r = spawnSync(cmd, args, { input, stdio: ["pipe", "ignore", "ignore"] }); if (r.status === 0) return true; }
   return false;
 }
 
@@ -76,7 +82,8 @@ function copyToClipboard(text: string): boolean {
 function revealFile(file: string): void {
   try {
     if (process.platform === "darwin") spawnSync("open", ["-R", file], { stdio: "ignore" });
-    else if (process.platform === "win32") spawnSync("explorer", [`/select,${file}`], { stdio: "ignore" });
+    // Explorer reads `/select,"<path>"` itself: left to Node, a path with a space would be quoted whole and misread.
+    else if (process.platform === "win32") spawnSync("explorer", [`/select,"${file}"`], { stdio: "ignore", windowsVerbatimArguments: true });
     else spawnSync("xdg-open", [dirname(file)], { stdio: "ignore" });
   } catch { /* nothing to show it with */ }
 }
@@ -85,6 +92,10 @@ function revealFile(file: string): void {
  *  because the file dialog doesn't list hidden folders: they only need to paste. */
 export function importGuide(home: string, interactive = Boolean(process.stdout.isTTY)): string {
   const manifest = join(home, "manifest.json");
+  // Figma desktop, the only place a development plugin runs, is for macOS and Windows.
+  if (process.platform === "linux") return `Figma's desktop app, the only place a development plugin runs, is made for macOS and Windows; in a browser Figma can't import it.
+     Run Figma desktop on a Mac or Windows computer with Layerwright there (the plugin talks to this computer's localhost only).
+     The plugin files: ${manifest}`;
   const copied = interactive && copyToClipboard(manifest);
   if (interactive) revealFile(manifest);
   const paste = process.platform === "darwin" ? "press ⌘⇧G, paste the path (⌘V) and press Enter" : "paste the path (Ctrl+V) into the File name box and press Enter";
@@ -100,6 +111,76 @@ export function pluginCommand(out: Out = stdout): number {
   const home = installPluginFiles(src);
   out(`✓ Figma plugin installed at ${home}\n  ${importGuide(home)}`);
   return 0;
+}
+
+/** The version of the agent plugin installed on this computer (its marketplace in ~/.layerwright/agents), if any. */
+export function installedAgentVersion(dir = agentsHome()): string | undefined {
+  try { return String(JSON.parse(readFileSync(join(dir, ".claude-plugin", "marketplace.json"), "utf8")).plugins[0].version); } catch { return undefined; }
+}
+
+export interface UpdateOptions {
+  out?: Out; dir?: string;
+  /** Only say what's installed and what's out. */
+  check?: boolean;
+  /** The agents whose plugin to refresh (default: those that have it; none under node:test). */
+  agents?: Agent[];
+  exec?: Runner;
+  /** The newest version on npm (tests pass their own). */
+  latest?: () => Promise<string | undefined>;
+  /** Move a project's pinned server entries to this version (default: unless this runs from a checkout). */
+  pins?: boolean;
+}
+
+/** `update`: bring this computer's Layerwright up to this version (run it as npx -y layerwright@latest update, in any
+ *  folder): the Figma plugin, the agent plugin for each agent that has it (Claude Code, Codex), and this folder's own
+ *  .mcp.json / .cursor/mcp.json entries that pin a version. No questions, and running it again changes nothing. A
+ *  copy older than the newest on npm says how to run the newest instead. */
+export async function update(o: UpdateOptions = {}): Promise<number> {
+  const out = o.out ?? stdout;
+  const dir = resolve(o.dir ?? process.cwd());
+  const u = await checkForUpdate({ force: true, fresh: true, fetchLatest: o.latest });
+  const had = installedAgentVersion()?.replace(/-dev\..*$/, "");
+  out(`Layerwright: installed ${had ?? "(no agent plugin)"} · newest ${u.latest ?? "(couldn't reach npm)"}${PKG_VERSION !== had ? ` · this command is ${PKG_VERSION}` : ""}`);
+  if (o.check) {
+    const behind = !!u.latest && (!had || newer(u.latest, had));
+    out(behind ? `! ${u.latest} is out. Update: ${UPDATE_COMMAND}` : u.latest ? "✓ Up to date" : "? Couldn't check: no answer from npm");
+    return 0;
+  }
+  if (u.updateAvailable) { out(`✗ This copy is ${PKG_VERSION}, and ${u.latest} is out: it would install the older one. Run: ${UPDATE_COMMAND}`); return 1; }
+  let failed = 0;
+  const src = pluginSource();
+  if (existsSync(join(src, "dist", "code.js"))) out(`✓ Figma plugin ${PKG_VERSION} installed at ${installPluginFiles(src)}`);
+  else { out(`✗ Built plugin not found in ${src}. Run "npm run build" in the repository.`); failed++; }
+  const agents = o.agents ?? (process.env.NODE_TEST_CONTEXT ? [] : detectAgents().filter((a) => pluginInstalled(a)));
+  if (agents.length) {
+    // The same port as before (init may have set another one).
+    let port: string | undefined;
+    try { port = JSON.parse(readFileSync(join(agentsHome(), "plugins", "layer", ".mcp.json"), "utf8")).mcpServers?.layerwright?.env?.LAYERWRIGHT_PORT; } catch { /* the default */ }
+    const entry = pluginServerEntry();
+    const market = buildMarketplace(port ? { ...entry, env: { LAYERWRIGHT_PORT: String(port) } } : entry);
+    for (const a of agents) {
+      const r = installAgent(a, market, o.exec);
+      out(r.ok ? `✓ ${AGENT_NAMES[a]} plugin ${PKG_VERSION} installed` : `✗ ${AGENT_NAMES[a]}: ${r.message}`);
+      if (!r.ok) failed++;
+    }
+  } else out(`– No Claude Code or Codex plugin to update (${selfCommand("init")} adds the /layer commands)`);
+  // A project server entry pinned to a version (init without the agent plugin): to this one.
+  if (o.pins ?? !FROM_SOURCE) for (const f of [join(dir, ".mcp.json"), join(dir, ".cursor", "mcp.json")]) {
+    let cfg: any;
+    try { cfg = JSON.parse(readFileSync(f, "utf8")); } catch { continue; }
+    const args: unknown = cfg?.mcpServers?.[BIN]?.args;
+    if (!Array.isArray(args)) continue;
+    const pinned = (a: unknown) => typeof a === "string" && a.startsWith(`${PKG_NAME}@`) && /^\d+\.\d+\.\d+/.test(a.slice(PKG_NAME.length + 1));
+    const i = args.findIndex(pinned);
+    if (i < 0 || args[i] === `${PKG_NAME}@${PKG_VERSION}`) continue;
+    args[i] = `${PKG_NAME}@${PKG_VERSION}`;
+    writeFileSync(f, JSON.stringify(cfg, null, 2) + "\n");
+    out(`✓ ${f} now runs ${PKG_NAME}@${PKG_VERSION}`);
+  }
+  out(`Next:
+  • Claude Code: type /reload-plugins in each open session (or start a new one). The desktop app and Codex: start a new session.
+  • Figma: close and reopen the Layerwright plugin.`);
+  return failed ? 1 : 0;
 }
 
 /** ۱ / ١ → 1: an answer typed with a Persian or Arabic keyboard. */
@@ -190,7 +271,7 @@ async function dropProjectEntry(dir: string, o: InitOptions, out: Out) {
   }
   const skill = join(dir, ".claude", "skills", "figma-design", "SKILL.md");
   let copy = false;
-  try { copy = /^---\nname: figma-design\n/.test(readFileSync(skill, "utf8")) && !tracked(dir, ".claude/skills/figma-design/SKILL.md"); } catch { /* none */ }
+  try { copy = /^---\r?\nname: figma-design\r?\n/.test(readFileSync(skill, "utf8")) && !tracked(dir, ".claude/skills/figma-design/SKILL.md"); } catch { /* none */ }
   if (!entry && !copy) return;
   const what = [entry && `the "${BIN}" entry in ${file}`, copy && `the skill copy ${skill}`].filter(Boolean).join(" and ");
   const ask = asker(o);
@@ -208,19 +289,24 @@ async function dropProjectEntry(dir: string, o: InitOptions, out: Out) {
   }
 }
 
-/** Register the server in an MCP config file, merged: other servers are never touched. false = the file is broken. */
-function registerMcp(file: string, port: number): boolean {
+/** Register the server in an MCP config file, merged: other servers are never touched. false = the file is broken.
+ *  On Windows npx is npx.cmd, which an MCP client starts only through cmd.exe: a file of this user's gets `cmd /c npx`;
+ *  one in git stays the team's (`npx`, which macOS and Linux need). */
+function registerMcp(file: string, port: number, dir: string): boolean {
   let cfg: any = {};
   if (existsSync(file)) { try { cfg = JSON.parse(readFileSync(file, "utf8")); } catch { return false; } }
   cfg.mcpServers ??= {};
-  cfg.mcpServers[BIN] = { ...serverEntry(), env: { LAYERWRIGHT_PORT: String(port) } };
+  const entry = serverEntry();
+  const viaCmd = process.platform === "win32" && entry.command === "npx" && !tracked(dir, relative(dir, file));
+  cfg.mcpServers[BIN] = { ...(viaCmd ? { command: "cmd", args: ["/c", "npx", ...entry.args] } : entry), env: { LAYERWRIGHT_PORT: String(port) } };
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
   return true;
 }
 
 /** The skill as a Cursor rule: same text, Cursor's frontmatter (Cursor doesn't read .claude/skills). */
-export function cursorRule(skill: string): string {
+export function cursorRule(skill0: string): string {
+  const skill = skill0.replace(/\r\n/g, "\n");
   const m = skill.match(/^---\n([\s\S]*?)\n---\n?/);
   const description = m?.[1].match(/^description:\s*(.+)$/m)?.[1] ?? "Layerwright: Figma design work through the layerwright MCP tools.";
   return `---\ndescription: ${description}\nalwaysApply: false\n---\n${m ? skill.slice(m[0].length) : skill}`;
@@ -237,8 +323,10 @@ export async function init(o: InitOptions = {}): Promise<number> {
   // From a git checkout: install dependencies and build the plugin. The npm package ships it prebuilt.
   if (FROM_SOURCE && !o.skipInstall) {
     out("… installing dependencies and building the Figma plugin");
-    execFileSync("npm", ["install", "--no-audit", "--no-fund"], { cwd: REPO_ROOT, stdio: "inherit" });
-    execFileSync("npm", ["run", "build"], { cwd: REPO_ROOT, stdio: "inherit" });
+    // On Windows npm is npm.cmd, which only starts through a shell.
+    const shell = process.platform === "win32";
+    execFileSync("npm", ["install", "--no-audit", "--no-fund"], { cwd: REPO_ROOT, stdio: "inherit", shell });
+    execFileSync("npm", ["run", "build"], { cwd: REPO_ROOT, stdio: "inherit", shell });
   }
   const src = pluginSource();
   if (!existsSync(join(src, "manifest.json")) || !existsSync(join(src, "dist", "code.js"))) { out(`✗ Built plugin not found in ${src}. Run "npm run build" in the repository.`); return 1; }
@@ -261,7 +349,7 @@ export async function init(o: InitOptions = {}): Promise<number> {
   else {
     // .mcp.json (merged, never clobbering other servers)
     const mcpPath = join(dir, ".mcp.json");
-    if (!registerMcp(mcpPath, port)) { out(`✗ ${mcpPath} is not valid JSON; fix or remove it and run init again.`); return 1; }
+    if (!registerMcp(mcpPath, port, dir)) { out(`✗ ${mcpPath} is not valid JSON; fix or remove it and run init again.`); return 1; }
     out(`✓ MCP server "${BIN}" registered in ${mcpPath}`);
 
     const skillDir = join(dir, ".claude", "skills", "figma-design");
@@ -273,7 +361,7 @@ export async function init(o: InitOptions = {}): Promise<number> {
   // Cursor: its own MCP config and the skill as a rule.
   if (o.cursor ?? existsSync(join(dir, ".cursor"))) {
     const cursorMcp = join(dir, ".cursor", "mcp.json");
-    if (!registerMcp(cursorMcp, port)) { out(`✗ ${cursorMcp} is not valid JSON; fix or remove it and run init again.`); return 1; }
+    if (!registerMcp(cursorMcp, port, dir)) { out(`✗ ${cursorMcp} is not valid JSON; fix or remove it and run init again.`); return 1; }
     const rule = join(dir, ".cursor", "rules", "figma-design.mdc");
     mkdirSync(dirname(rule), { recursive: true });
     writeFileSync(rule, cursorRule(readFileSync(skillSource(), "utf8")));
@@ -292,7 +380,7 @@ export async function init(o: InitOptions = {}): Promise<number> {
 
   if (!o.skipBrowserCheck) {
     if (await chromiumAvailable()) out("✓ Chromium available for HTML import");
-    else out("! No Chromium for HTML import. Run: npx playwright install chromium   (or install Google Chrome)");
+    else out(`! No Chromium for HTML import. Run: ${(await import("@cde/html-import")).chromiumInstallCommand()}   (or install Google Chrome)`);
   }
 
   const agentLine = agents.length
@@ -315,7 +403,6 @@ Trouble? Run: ${selfCommand("doctor")}`);
   return 0;
 }
 
-/** Ask a running bridge for its status over the /doctor path. */
 /** The build stamp baked into the installed plugin (see apps/figma-plugin/build.mjs). */
 function installedBuild(): string | undefined {
   for (const dir of [pluginHome(), pluginSource()]) {
@@ -324,7 +411,10 @@ function installedBuild(): string | undefined {
   return undefined;
 }
 
-export function probe(port: number, timeoutMs = 1500): Promise<{ ok: true; status: any } | { ok: false; reason: string }> {
+export async function probe(port: number, timeoutMs = 1500): Promise<{ ok: true; status: any } | { ok: false; reason: string }> {
+  // A free port is told by its refusal, which Windows takes a second or two to give (tcpProbe).
+  const tcp = await tcpProbe(port);
+  if (tcp !== "open") return { ok: false, reason: tcp === "refused" ? "ECONNREFUSED" : tcp };
   return new Promise((done) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/doctor`);
     const t = setTimeout(() => { ws.terminate(); done({ ok: false, reason: "timeout" }); }, timeoutMs);
@@ -397,7 +487,7 @@ export async function doctor(o: { dir?: string; port?: number; out?: Out; skipBr
 
   if (!o.skipBrowserCheck) {
     if (await chromiumAvailable()) pass("Chromium available for HTML import");
-    else failWith("no Chromium for HTML import", "run: npx playwright install chromium   (or install Google Chrome)");
+    else failWith("no Chromium for HTML import", `run: ${(await import("@cde/html-import")).chromiumInstallCommand()}   (or install Google Chrome)`);
   }
   {
     const { checkForUpdate } = await import("./update.ts");

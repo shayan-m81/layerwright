@@ -1,7 +1,7 @@
 // Timers the plugin's own code (src/) starts, tracked so a test can tell that nothing keeps running after a request.
 // Import it before the plugin code. Intervals are unref'd, so a plugin-wide poll doesn't keep the test run alive.
 const live = new Map<unknown, string>();
-const fromSrc = () => /\/src\/[\w-]+\.ts/.exec(new Error().stack ?? "")?.[0];
+const fromSrc = () => /[\\/]src[\\/][\w-]+\.ts/.exec(new Error().stack ?? "")?.[0].replace(/\\/g, "/"); // (Windows paths too)
 const g = globalThis as any;
 const { setTimeout: st, clearTimeout: ct, setInterval: si, clearInterval: ci } = globalThis;
 g.setTimeout = (fn: (...a: unknown[]) => void, ms?: number, ...a: unknown[]) => {

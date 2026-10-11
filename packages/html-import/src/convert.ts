@@ -21,7 +21,7 @@ const luminance = (h: string) => { const [r, g, b] = [1, 3, 5].map((i) => parseI
 
 const isFlex = (d: DomNode) => /flex/.test(d.style.display);
 const isOut = (d: DomNode) => d.style.position === "absolute" || d.style.position === "fixed";
-const hasVisual = (d: DomNode) => !!(d.style.bg || d.style.gradient || d.style.border || d.style.shadows || d.style.clip || d.style.opacity !== undefined || d.style.blur || d.style.backdropBlur);
+const hasVisual = (d: DomNode) => !!(d.style.bg || d.style.gradient || d.style.bgImage?.src || d.style.border || d.style.shadows || d.style.clip || d.style.opacity !== undefined || d.style.blur || d.style.backdropBlur);
 const textOnly = (d: DomNode) => d.kind === "element" && d.children.length === 1 && d.children[0].kind === "text";
 
 /** Structure fingerprint used to spot repeated siblings (cards, list items). */
@@ -73,11 +73,11 @@ export function toPlan(screens: { name: string; width: number; dom: DomNode }[],
   /** Converts one node. `_box` is kept on the result until the parent decides sizing/position. */
   const node = (d: DomNode, path: string): any => {
     if (d.kind === "text") return text(d);
-    if (d.kind === "svg") return { type: "icon", name: d.attrs.ariaLabel || "Icon", svg: d.svg, _box: d.box };
+    if (d.kind === "svg") return { type: "icon", name: d.attrs.ariaLabel || d.attrs.alt || "Icon", svg: d.svg, _box: d.box };
     if (d.kind === "image") {
       let src = d.src;
       if (src && !/^(data:image\/(png|jpe?g|gif);base64,|https:\/\/)/.test(src)) { warnings.push(`${path}: image "${src.slice(0, 80)}" is not a data/https URL; placeholder used.`); src = undefined; }
-      return { type: "image", name: d.attrs.ariaLabel || "Image", src, fit: d.style.objectFit === "contain" ? "fit" : "fill", radius: d.style.radius, _box: d.box };
+      return { type: "image", name: d.attrs.ariaLabel || d.attrs.alt || "Image", src, fit: d.style.objectFit === "contain" ? "fit" : "fill", radius: d.style.radius, _box: d.box };
     }
     // The user's mappings win over everything else: the element becomes that component, with its text as props.
     if (d.kind === "element" && d.attrs.mark !== undefined && opts.mappings?.[d.attrs.mark]) {
@@ -150,7 +150,7 @@ export function toPlan(screens: { name: string; width: number; dom: DomNode }[],
 
     const out: any = {
       type: "frame", name: d.name.slice(0, 120) || d.tag, layout,
-      fill: hex(s.bg), gradient: s.gradient && { type: s.gradient.type, angle: s.gradient.angle, stops: s.gradient.stops.map((st) => ({ color: hex(st.color)!, position: round(st.position) })) },
+      fill: hex(s.bg), image: s.bgImage?.src ? { src: s.bgImage.src, fit: s.bgImage.fit.toLowerCase() } : undefined, gradient: s.gradient && { type: s.gradient.type, angle: s.gradient.angle, stops: s.gradient.stops.map((st) => ({ color: hex(st.color)!, position: round(st.position) })) },
       blur: s.blur, backgroundBlur: s.backdropBlur,
       stroke: s.border ? hex(s.border.color) : undefined,
       ...(s.border ? (new Set(bw).size === 1 ? { strokeWeight: bw[0] } : { strokeWeights: { top: bw[0], right: bw[1], bottom: bw[2], left: bw[3] } }) : {}),

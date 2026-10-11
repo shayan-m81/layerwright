@@ -66,10 +66,21 @@ test("activity reads like a log for people; status checks stay quiet; an update 
   ui.fromPlugin({ type: "response", res: { id: "r2", ok: true, result: { createdRootIds: ["1", "2", "3"] } } });
   assert.match(ui.els.activity.innerHTML, /Built 3 frames/);
   assert.doesNotMatch(ui.els.activity.innerHTML, /ping/);
-  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "server-info", version: "0.2.0", update: { updateAvailable: true, current: "0.2.0", latest: "0.3.0", command: "npx layerwright@latest init", steps: ["Run: npx layerwright@latest init"] } }) });
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "server-info", version: "0.2.0", update: { updateAvailable: true, current: "0.2.0", latest: "0.3.0", command: "npx -y layerwright@latest update", steps: ["Run: npx -y layerwright@latest update"] } }) });
   assert.equal(ui.els.update.style.display, "block");
   assert.match(ui.els.update.innerHTML, /Layerwright 0\.3\.0 is available/);
+  assert.doesNotMatch(ui.els.update.innerHTML, /updateNow/, "no session to do it: only the command to copy");
   assert.equal(ui.els.version.textContent, "Layerwright 0.2.0");
+});
+
+test("the update notice's Update button sends the update to the session the window sends requests to", () => {
+  const ui = withSession();
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "server-info", version: "0.2.0", session: "sa", update: { updateAvailable: true, current: "0.2.0", latest: "0.3.0", command: "npx -y layerwright@latest update", steps: [] } }) });
+  assert.match(ui.els.update.innerHTML, /<button id='updateNow' class='primary'>Update with Checkout<\/button>/);
+  ui.els.updateNow.onclick();
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.posted.at(-1))), { type: "compose-action", session: "sa", kind: "update", text: "" });
+  assert.equal(ui.els.updateNow.disabled, true);
+  assert.match(ui.els.toast.innerHTML, /Checkout is updating Layerwright/);
 });
 
 test("changing the port leaves exactly one live socket (stale onclose no longer reconnects)", async () => {
@@ -126,7 +137,7 @@ test("several sessions: each is listed with what it's doing; a request for the s
   assert.ok(ui.posted.some((m) => m.type === "sessions" && m.sessions.length === 2), "the plugin learns who is connected");
   assert.equal(ui.els.status.textContent, "Connected · 2 sessions");
   assert.equal(ui.els.sessionsBox.style.display, "block");
-  assert.match(ui.els.sessions.innerHTML, /shop.*Claude Code · …\/code\/shop.*Idle/s);
+  assert.match(ui.els.sessions.innerHTML, /shop<\/b><small>Claude Code<\/small>.*Idle/s, "its app, and its folder when that isn't already its name");
 
   // Work is shown per session, in the status line and in the list.
   ui.sockets[0].onmessage({ data: JSON.stringify({ id: "sb~r1", method: "editNodes", session: admin }) });
@@ -146,7 +157,7 @@ test("several sessions: each is listed with what it's doing; a request for the s
   assert.deepEqual({ ...ui.posted.at(-1) }, { type: "assign-selection", session: "sa" });
   ui.fromPlugin({ type: "desk", count: 2, names: ["Button", "Card"], owner: "sa", to: "sa", why: "picked", asks: [] });
   assert.match(ui.els.selHint.innerHTML, /^Goes to <b class="who" style="--c:#7c3aed">shop<\/b>, your pick\. It stays until you pick another above\.$/, "its name in bold, in its colour");
-  assert.match(ui.els.selChips.innerHTML, /aria-pressed="true"[^>]*>.*shop/s);
+  assert.match(ui.els.selList.innerHTML, /aria-pressed="true"[^>]*>.*shop/s);
 
   // admin asks for it: a prominent card, answered with one click.
   ui.fromPlugin({ type: "desk", count: 2, names: ["Button", "Card"], owner: "sa", to: "sa", why: "picked", asks: [{ id: "a1", session: "sb" }] });
@@ -175,7 +186,7 @@ test("one session alone: the selection card sends to it without a choice to make
   ui.fromPlugin({ type: "desk", count: 3, names: ["A", "B", "C"], owner: null, asks: [] });
   assert.equal(ui.els.status.textContent, "Connected to Claude Code");
   assert.equal(ui.els.selCard.style.display, "block");
-  assert.match(ui.els.selChips.innerHTML, /aria-pressed="true"[^>]*>.*shop/s);
+  assert.match(ui.els.selList.innerHTML, /aria-pressed="true"[^>]*>.*shop/s);
   assert.equal(ui.els.selHint.style.display, "none");
   assert.doesNotMatch(ui.els.actions.innerHTML, /disabled/);
 });
@@ -347,10 +358,10 @@ test("the session picker: the chosen session up top, every session in the menu, 
   ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [{ id: "sa", name: "Checkout", color: "#7c3aed", client: "claude-code" }, { id: "sb", name: "Admin", color: "#0d99ff", client: "codex-mcp-client" }] }) });
   ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: "sa", to: "sa", why: "picked", asks: [] });
   assert.match(ui.els.pickerBtn.innerHTML, /Checkout.*Claude Code · idle/s);
-  assert.match(ui.els.selChips.innerHTML, /Checkout.*Admin.*Codex/s);
+  assert.match(ui.els.selList.innerHTML, /Checkout.*Admin.*Codex/s);
   ui.els.pickerBtn.onclick();
   assert.equal(ui.els.picker.dataset.open, "1");
-  assert.doesNotMatch(ui.els.selChips.innerHTML, /data-act="kick"/, "no Remove inside a session you give the selection to: a second click there removed it");
+  assert.doesNotMatch(ui.els.selList.innerHTML, /data-act="kick"/, "no Remove inside a session you give the selection to: a second click there removed it");
   // Remove is on the Sessions tab, and asks once more there.
   const now = Date.now;
   try {
@@ -482,6 +493,112 @@ test("@ in the chat box: the enabled skills that match, arrows and Enter pick on
   ui.els.skMenu.onclick({ target: { dataset: {}, parentElement: null } });
 });
 
+test("Create a skill with Claude: the first thing on the Skills tab; it opens Claude with /layer:skills new filled in, or asks a session, or copies the command", () => {
+  const ui = withSkills();
+  assert.equal(ui.els.skVia.textContent, "Open in Claude");
+  assert.match(ui.els.skHow.innerHTML, /new session in the Claude app with <code>\/layer:skills new<\/code> filled in/);
+  ui.els.skIdea.value = "  Buttons use 8 px corners ";
+  ui.els.skClaude.onclick();
+  // Figma opens https links only: Layerwright on this computer (the hub) opens it.
+  assert.deepEqual(sentOf(ui, "skills-open").at(-1), { type: "skills-open", via: "app", idea: "Buttons use 8 px corners" });
+  assert.equal(ui.els.clip.value, "/layer:skills new Buttons use 8 px corners", "on the clipboard too, in case nothing opens");
+  assert.match(ui.els.toast.innerHTML, /Opening the Claude app…/);
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "skills-opened", via: "app", ok: true }) });
+  assert.match(ui.els.toast.innerHTML, /Opened the Claude app: press Enter there/);
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "skills-opened", via: "app", ok: false, error: "No application knows how to open the URL" }) });
+  assert.match(ui.els.toast.innerHTML, /Couldn't open the Claude app \(No application knows how to open the URL\)\. The command is on your clipboard/);
+  ui.timers[ui.delays.lastIndexOf(5000)]();
+  assert.match(ui.els.toast.innerHTML, /older than this window and can't open Claude yet/, "a hub that never answers");
+  // Somewhere else: the menu lists the ways and the connected sessions; the choice is remembered by the plugin.
+  ui.els.skWhere.onclick();
+  assert.equal(ui.els.skGo.dataset.open, "1");
+  assert.match(ui.els.skWhereMenu.innerHTML, /data-via="app"[^>]*data-on="1"/);
+  assert.match(ui.els.skWhereMenu.innerHTML, /data-via="session" data-to="sa"[^>]*>.*Ask Checkout/);
+  ui.els.skWhereMenu.onclick({ target: { dataset: { via: "terminal" }, parentElement: null } });
+  assert.deepEqual({ ...ui.posted.at(-1) }, { type: "set-skill-via", via: "terminal" });
+  assert.equal(ui.els.skGo.dataset.open, "");
+  assert.equal(ui.els.skVia.textContent, "Open in Terminal");
+  ui.els.skIdea.value = "";
+  ui.els.skClaude.onclick();
+  assert.deepEqual(sentOf(ui, "skills-open").at(-1), { type: "skills-open", via: "terminal", idea: "" });
+  assert.equal(ui.els.clip.value, "/layer:skills new ");
+  // A connected session writes it in its chat: a request with the user's words and no layers; the tab stays.
+  ui.els.skWhereMenu.onclick({ target: { dataset: { via: "session", to: "sa" }, parentElement: null } });
+  assert.equal(ui.els.skVia.textContent, "Ask Checkout");
+  assert.match(ui.els.skHow.innerHTML, /Sends it to <b>Checkout<\/b>: it asks you in its chat/);
+  ui.els.skIdea.value = "Our tone of voice";
+  ui.els.skClaude.onclick();
+  assert.deepEqual({ ...ui.posted.at(-1) }, { type: "compose-action", session: "sa", kind: "skill", text: "Our tone of voice" });
+  assert.equal(ui.els.skIdea.value, "");
+  ui.fromPlugin({ type: "send-action", session: "sa", action: { id: "q7", kind: "skill", text: "Our tone of voice", nodes: [], at: 1 } });
+  assert.match(ui.els.toast.innerHTML, /Sent to Checkout: it asks you in its chat/);
+  assert.equal(ui.delays.includes(700), false, "no jump to Activity: the skill lands here");
+  // Copy the command.
+  ui.els.skWhereMenu.onclick({ target: { dataset: { via: "copy" }, parentElement: null } });
+  ui.els.skIdea.value = "x";
+  ui.els.skClaude.onclick();
+  assert.equal(ui.els.clip.value, "/layer:skills new x");
+  // The plugin remembers the choice for next time.
+  ui.fromPlugin({ type: "settings", cursor: true, zoom: true, mini: false, guideSeen: true, skillVia: "vscode" });
+  assert.equal(ui.els.skVia.textContent, "Open in VS Code");
+  // The skill the session wrote arrives: said, and lit up once.
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "skills", categories: [{ id: "ux", name: "UX" }, { id: "yours", name: "Yours" }], skills: [
+    { id: "design-critique", name: "Design Critique", when: "Critiquing a screen", description: "", category: "ux", origin: "library", enabled: true },
+    { id: "tone-of-voice", name: "Tone of voice", when: "Writing UI copy", description: "", category: "yours", origin: "yours", enabled: true, source: "written" },
+  ] }) });
+  assert.match(ui.els.toast.innerHTML, /New skill: Tone of voice/);
+  assert.match(ui.els.skillList.innerHTML, /data-fresh="1"><div class="txt" data-open="tone-of-voice"/);
+  // The link box and the form are the quieter ways in; the form hands what's written to Claude.
+  assert.notEqual(ui.els.skAdd.dataset.open, "1");
+  ui.els.skLinkBtn.onclick();
+  assert.equal(ui.els.skAdd.dataset.open, "1");
+  ui.els.skWrite.onclick();
+  Object.assign(ui.els.sfName, { value: "Grid rules" }); Object.assign(ui.els.sfWhen, { value: "Layouts" }); Object.assign(ui.els.sfBody, { value: "" });
+  ui.els.sfClaude.onclick();
+  assert.equal(ui.els.skillForm.dataset.open, "");
+  assert.equal(ui.els.skIdea.value, "Grid rules: Layouts");
+});
+
+test("write your own skill: the form saves it through the hub, Edit on a skill of yours opens it filled in, and an older hub that never answers is said plainly", () => {
+  const ui = withSkills();
+  ui.els.skWrite.onclick();
+  assert.equal(ui.els.skillForm.dataset.open, "1");
+  assert.equal(ui.els.sfTitle.textContent, "Write a skill");
+  assert.match(ui.els.sfCat.innerHTML, /<option value="ux">UX<\/option>/);
+  ui.els.sfSave.onclick();
+  assert.match(ui.els.toast.innerHTML, /Give the skill a name/);
+  assert.equal(sentOf(ui, "skills-write").length, 0);
+  Object.assign(ui.els.sfName, { value: "Button rules" }); Object.assign(ui.els.sfWhen, { value: "Building buttons" });
+  Object.assign(ui.els.sfBody, { value: "- 8 px corners" }); Object.assign(ui.els.sfCat, { value: "ux" });
+  ui.els.sfSave.onclick();
+  assert.deepEqual(sentOf(ui, "skills-write").at(-1), { type: "skills-write", name: "Button rules", description: "Building buttons", body: "- 8 px corners", category: "ux" });
+  assert.equal(ui.els.skillForm.dataset.busy, "1");
+  const mine = { id: "button-rules", name: "Button rules", when: "Building buttons", description: "Building buttons", category: "ux", origin: "yours", enabled: true, source: "written" };
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "skills", categories: [{ id: "ux", name: "UX" }], skills: [mine], written: { id: "button-rules", name: "Button rules", edited: false } }) });
+  assert.equal(ui.els.skillForm.dataset.open, "");
+  assert.match(ui.els.toast.innerHTML, /Skill written: Button rules/);
+  assert.match(ui.els.skillList.innerHTML, /written by you/);
+  // Edit, from its page.
+  ui.els.skillList.onclick({ target: { dataset: { open: "button-rules" }, parentElement: null } });
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "skill-text", id: "button-rules", file: "SKILL.md", files: ["SKILL.md"], skill: mine, text: "---\nname: Button rules\ndescription: Building buttons\n---\n\n# Button rules\n\n- 8 px corners\n" }) });
+  assert.equal(ui.els.spEdit.style.display, "");
+  assert.match(ui.els.spMeta.innerHTML, /written by you/);
+  ui.els.spEdit.onclick();
+  assert.deepEqual([ui.els.sfTitle.textContent, ui.els.sfName.value, ui.els.sfWhen.value, ui.els.sfBody.value], ["Edit Button rules", "Button rules", "Building buttons", "- 8 px corners"]);
+  ui.els.sfBody.value = "- 12 px corners";
+  ui.els.sfSave.onclick();
+  assert.deepEqual(sentOf(ui, "skills-write").at(-1), { type: "skills-write", id: "button-rules", name: "Button rules", description: "Building buttons", body: "- 12 px corners", category: "ux" });
+  // A hub older than this window doesn't know skills-write and never answers: said plainly.
+  ui.timers[ui.delays.lastIndexOf(6000)]();
+  assert.equal(ui.els.skillForm.dataset.busy, "");
+  assert.match(ui.els.toast.innerHTML, /older than this window and can't save skills yet/);
+  // A library skill has no Edit.
+  ui.els.sfCancel.onclick();
+  ui.els.skillList.onclick({ target: { dataset: { open: "design-handoff" }, parentElement: null } });
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "skill-text", id: "design-handoff", file: "SKILL.md", files: ["SKILL.md"], skill: { id: "design-handoff", name: "Design Handoff", origin: "library", enabled: true }, text: "# Handoff" }) });
+  assert.equal(ui.els.spEdit.style.display, "none");
+});
+
 test("a skill's page: opens from its row, its Markdown is shown safely, its files and links work, and Use in chat picks it", () => {
   const ui = withSkills();
   ui.els.skillList.onclick({ target: { dataset: { open: "design-critique" }, parentElement: null } });
@@ -589,8 +706,8 @@ test("the session picker: with several sessions nobody is chosen until the user 
   ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [old, mid] }) });
   ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: null, to: null, why: null, asks: [] });
   assert.match(ui.els.pickerBtn.innerHTML, /<b>Choose a session<\/b>/, "no guess");
-  assert.match(ui.els.selChips.innerHTML, /<b>Middle<\/b>[\s\S]*<b>Old one<\/b>/, "newest first in the menu");
-  assert.doesNotMatch(ui.els.selChips.innerHTML, /Newest/, "no label that reads like a default");
+  assert.match(ui.els.selList.innerHTML, /<b>Middle<\/b>[\s\S]*<b>Old one<\/b>/, "newest first in the menu");
+  assert.doesNotMatch(ui.els.selList.innerHTML, /Newest/, "no label that reads like a default");
   ui.els.askInput.value = "hi";
   ui.els.askSend.onclick();
   assert.ok(!ui.posted.some((m: any) => m.type === "compose-action"), "nothing is sent before a pick");
@@ -837,4 +954,55 @@ test("one window per Figma file: its hello names the window; the user's selectio
   assert.equal(ui.els.resume.hidden, true);
   assert.notEqual(ui.els.connText.textContent, "Paused");
   assert.equal(ui.sockets.at(-1).url, "ws://localhost:7336");
+});
+
+test("a session changed the skills (/layer:skills): the Skills tab asks the hub for the list again", () => {
+  const ui = withSkills();
+  const before = sentOf(ui, "skills-get").length;
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "skills-changed" }) });
+  assert.equal(sentOf(ui, "skills-get").length, before + 1);
+});
+
+test("finding a session: the ones working or waiting first, then the most recently active, when each was last active, idle ones folded away, and a find box once there are many", () => {
+  const ui = boot();
+  ui.sockets[0].open();
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "pairing", paired: true }) });
+  const now = Date.now(), min = 60_000;
+  const s = (id: string, name: string, activeAt: number, workdir: string) => ({ id, name, color: "#7c3aed", client: "claude-code", workdir, connectedAt: now - 300 * min, activeAt });
+  ui.sockets[0].onmessage({ data: JSON.stringify({ type: "sessions", sessions: [
+    s("s1", "Old work", now - 120 * min, "/u/me/herein"), s("s2", "Checkout", now - 3 * min, "/u/me/shop"), s("s3", "herein 2", now - 200 * min, "/u/me/herein"),
+    s("s4", "Docs", now - 10 * min, "/u/me/docs"), s("s5", "Admin", now - 25 * min, "/u/me/admin"),
+  ] }) });
+  const names = () => [...String(ui.els.sessions.innerHTML).matchAll(/<b>([^<]+)<\/b>/g)].map((m) => m[1]);
+  assert.deepEqual(names(), ["Checkout", "Docs", "Admin"], "the most recently active first; the idle ones folded away");
+  assert.match(ui.els.sessions.innerHTML, /Checkout<\/b><small>shop · Claude Code · active 3 min ago/);
+  assert.match(ui.els.sessions.innerHTML, /▸ Idle · 2/);
+  ui.els.sessions.onclick({ target: { dataset: { act: "idle-toggle" } } });
+  assert.deepEqual(names(), ["Checkout", "Docs", "Admin", "Old work", "herein 2"]);
+  assert.match(ui.els.sessions.innerHTML, /Old work<\/b><small>herein · Claude Code · idle 2 h/);
+  // A session at work goes to the top, wherever it was.
+  ui.sockets[0].onmessage({ data: JSON.stringify({ id: "s3~r1", method: "inspect", session: { id: "s3", name: "herein 2" } }) });
+  assert.equal(names()[0], "herein 2");
+  assert.match(ui.els.sessions.innerHTML, /herein 2<\/b><small>herein · Claude Code · working now/);
+  // The find box: by name, folder or file.
+  assert.equal(ui.els.sessionFilter.style.display, "block");
+  ui.els.sessionFilter.value = "herein";
+  ui.els.sessionFilter.oninput();
+  assert.deepEqual(names(), ["herein 2", "Old work"], "matches by folder too, idle ones included");
+  ui.els.sessionFilter.value = "nothing like it";
+  ui.els.sessionFilter.oninput();
+  assert.match(ui.els.sessions.innerHTML, /No session matches/);
+  ui.els.sessionFilter.value = "";
+  ui.els.sessionFilter.oninput();
+  // The header shows the busiest first, with a ring on the one working; a click opens the Sessions tab.
+  assert.match(ui.els.avatars.innerHTML, /^<span class="avatar" data-live="1"[^>]*title="herein 2 · working now"/);
+  ui.els.avatars.onclick();
+  assert.equal(ui.els.tabs.dataset.tab, "sessions");
+  // The Send to menu: the same order, and its own find box.
+  ui.fromPlugin({ type: "desk", count: 1, names: ["Card"], owner: null, to: null, why: null, asks: [] });
+  assert.match(ui.els.selList.innerHTML, /<b>herein 2<\/b>[\s\S]*<b>Checkout<\/b>[\s\S]*<b>Docs<\/b>/);
+  ui.els.pickerBtn.onclick();
+  ui.els.pickFilter.value = "doc";
+  ui.els.pickFilter.oninput();
+  assert.deepEqual([...String(ui.els.selList.innerHTML).matchAll(/<b>([^<]+)<\/b>/g)].map((m) => m[1]), ["Docs"]);
 });

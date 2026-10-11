@@ -7,7 +7,7 @@ import { skillSource } from "./meta.ts";
 
 /** The skill without its frontmatter, split at "## " headings: "" is the intro, then heading → section text. */
 export function skillSections(md: string): Map<string, string> {
-  const body = md.replace(/^---\n[\s\S]*?\n---\n/, "");
+  const body = md.replace(/\r\n/g, "\n").replace(/^---\n[\s\S]*?\n---\n/, "");
   const out = new Map<string, string>();
   const parts = body.split(/^(?=## )/m);
   out.set("", parts[0].trim());
