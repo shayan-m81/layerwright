@@ -169,7 +169,9 @@ export class RelayBridge implements FigmaTransport {
     if (gen !== this.gen) return;
     if (p.kind === "free" && Date.now() >= this.noSpawnUntil) {
       try { await (this.o.startHub ?? spawnHub)(this.port); } catch (e) { this.log(`couldn't start the hub: ${(e as Error).message}`); }
-      for (let i = 0; i < 30 && p.kind === "free"; i++) {
+      // Until it listens: about 5 s, by the clock (each check of a free port takes a second or two on Windows), and not
+      // after this session closed or left.
+      for (const until = Date.now() + 5000; p.kind === "free" && Date.now() < until && !this.closed && gen === this.gen;) {
         await new Promise((r) => setTimeout(r, 150));
         p = await probePort(this.port, 800);
       }

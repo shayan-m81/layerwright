@@ -93,8 +93,8 @@ function revealFile(file: string): void {
 export function importGuide(home: string, interactive = Boolean(process.stdout.isTTY)): string {
   const manifest = join(home, "manifest.json");
   // Figma desktop, the only place a development plugin runs, is for macOS and Windows.
-  if (process.platform === "linux") return `Figma's desktop app, the only place a development plugin runs, is made for macOS and Windows; in a browser Figma can't import it.
-     Run Figma desktop on a Mac or Windows computer with Layerwright there (the plugin talks to this computer's localhost only).
+  if (process.platform === "linux") return `Figma desktop, the only place a development plugin runs, is made for macOS and Windows (Figma in a browser can't import one).
+     Set Layerwright up on that Mac or Windows computer: the plugin talks to its own computer's localhost only.
      The plugin files: ${manifest}`;
   const copied = interactive && copyToClipboard(manifest);
   if (interactive) revealFile(manifest);

@@ -555,10 +555,11 @@ test("a newer Layerwright of the same protocol takes the hub once it's idle (an 
   const hello = (version: string) => new Promise<any[]>((done) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/client`);
     const got: any[] = [];
-    ws.on("message", (m) => { got.push(JSON.parse(String(m))); });
+    // Joined (welcome): leave again at once; one that's turned away is closed by the hub. (Not by a timer: a slow
+    // machine may welcome it later than any fixed wait.)
+    ws.on("message", (m) => { const msg = JSON.parse(String(m)); got.push(msg); if (msg.type === "welcome") ws.close(); });
     ws.on("open", () => ws.send(JSON.stringify({ type: "hello", protocol: HUB_PROTOCOL, key: KEY, version, workdir: `/work/${version}` })));
     ws.on("close", (code) => done([...got, { closed: code }]));
-    setTimeout(() => { if (got.some((m) => m.type === "welcome")) { ws.close(); } }, 150);
   });
   assert.equal((await hello("1.3.0"))[0].type, "welcome");
   assert.equal((await hello("1.2.0"))[0].type, "welcome", "an older session joins (it can't take over)");
