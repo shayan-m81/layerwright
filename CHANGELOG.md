@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-11
+
 ### Changed
 - HTML import brings the pictures along, in both the editable and the pixel-exact mode: an SVG `<img>` is a vector (it was a flat picture), WebP and AVIF images are decoded to PNG (they were placeholders), sprite icons (`<use>`, also from a sprite file) are expanded (they were empty), CSS background images become image fills (they were dropped), CSS-mask icons become the SVG in the element's colour (they were solid squares), icon-font icons (Font Awesome, Material Symbols…) become pictures of the glyph (they were dropped), and `<canvas>` comes as a picture. The pixel-exact mode imports `<img>` at all (it dropped them). Every picture is loaded by the server, so the plugin still never goes online, and what can't be brought in is reported in `warnings` instead of being left out silently.
 - The AI cursor shows a session's whole task instead of only the moment a change lands: it comes with the session's first step (reading a frame, scanning the Design System, taking a picture), skims what the session reads, works on what it changes, thinks between steps, and goes once the session is done (its turn ends in Claude Code, the request from the window is finished) or quiet (45 seconds, three minutes for a session whose hooks say when its turn ends or one working on a request from the window). It waves with "asks you in Claude Code" while the session waits for your answer. Its tag is one short line: the session's name and what it's doing. The toast at the bottom also says "✦ Checkout · thinking…" between steps and "done ✓" when the turn ends. What 1.0 fixed stays fixed: every undo step is closed with the cursors taken off the canvas and drawn again in the same moment, so no step holds one and two requests are still two steps; it steps aside while you select, edit or change page; status checks and links draw nothing; leftovers are tagged with their user. One thing Figma decides: a ⌘Z right after a step may only take the cursor away (Figma counts what a plugin drew since its last step as the newest change); the cursor then stays away until the session's next step, and a redo doesn't bring it back.
@@ -262,7 +264,8 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 - The plugin no longer opens a duplicate connection after the port is changed.
 
-[Unreleased]: https://github.com/shayan-m81/layerwright/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/shayan-m81/layerwright/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/shayan-m81/layerwright/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/shayan-m81/layerwright/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/shayan-m81/layerwright/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/shayan-m81/layerwright/compare/v1.0.0...v1.1.0
