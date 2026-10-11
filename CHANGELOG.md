@@ -5,6 +5,36 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-11
+
+### Changed
+- HTML import brings the pictures along, in both the editable and the pixel-exact mode: an SVG `<img>` is a vector (it was a flat picture), WebP and AVIF images are decoded to PNG (they were placeholders), sprite icons (`<use>`, also from a sprite file) are expanded (they were empty), CSS background images become image fills (they were dropped), CSS-mask icons become the SVG in the element's colour (they were solid squares), icon-font icons (Font Awesome, Material Symbols…) become pictures of the glyph (they were dropped), and `<canvas>` comes as a picture. The pixel-exact mode imports `<img>` at all (it dropped them). Every picture is loaded by the server, so the plugin still never goes online, and what can't be brought in is reported in `warnings` instead of being left out silently.
+- The AI cursor shows a session's whole task instead of only the moment a change lands: it comes with the session's first step (reading a frame, scanning the Design System, taking a picture), skims what the session reads, works on what it changes, thinks between steps, and goes once the session is done (its turn ends in Claude Code, the request from the window is finished) or quiet (45 seconds, three minutes for a session whose hooks say when its turn ends or one working on a request from the window). It waves with "asks you in Claude Code" while the session waits for your answer. Its tag is one short line: the session's name and what it's doing. The toast at the bottom also says "✦ Checkout · thinking…" between steps and "done ✓" when the turn ends. What 1.0 fixed stays fixed: every undo step is closed with the cursors taken off the canvas and drawn again in the same moment, so no step holds one and two requests are still two steps; it steps aside while you select, edit or change page; status checks and links draw nothing; leftovers are tagged with their user. One thing Figma decides: a ⌘Z right after a step may only take the cursor away (Figma counts what a plugin drew since its last step as the newest change); the cursor then stays away until the session's next step, and a redo doesn't bring it back.
+- One Claude Code session is one session in the plugin window, also when it runs two Layerwright servers (the plugin's and a user-level or project `layerwright` entry, which made every session show twice): the hub shows them as one, with one name, colour and cursor, and either of them can pick up a request sent to it. `figma_status` counts sessions, not servers.
+- Finding a session in the plugin window: sessions that wait for you or work now come first, then the ones used most recently; each says when it was last active ("working now", "active 3 min ago", "idle 2 h"), with its folder when that isn't already its name. Sessions idle for over half an hour are folded under **Idle** on the Sessions tab, and a find box (name, folder or file) shows there and in the Send to menu once there are more than four. The avatars at the top show the busiest sessions first, with a ring on the ones working, and open the Sessions tab.
+- A session that hasn't used Layerwright for 30 minutes (no Figma call, no request from the window, none still open) leaves Figma: the plugin window no longer lists sessions from hours ago, only the ones in use. Its next Figma call joins again as the same session (same name and colour).
+- The request watcher (`inbox-watch`) stops by itself at the same moment and says so, and the agent leaves it stopped instead of starting another one every 30 minutes. The next Figma call (any of them, not only `figma_status`) hands it back.
+- Updating no longer means running `init` again in a project: the update notice in the plugin window, `figma_status` and `doctor` now give `npx -y layerwright@latest update`.
+
+### Added
+- `figma_import_assets`: icons and pictures from files or folders in one step. SVGs become editable vectors (components with `components: true`, named by their path in the folder), PNG/JPEG/GIF/WebP/AVIF become image layers, laid out in a grid in a section.
+- In a plan, a frame's or shape's `image` can be new bytes (`src`: a data URL or an https URL), not only an image already in the file.
+- `layerwright update` (run it as `npx -y layerwright@latest update`, in any folder) updates this computer's Layerwright without questions: the Figma plugin (still paired), the Claude Code and Codex plugin for each agent that has it (same port as before), and a project `.mcp.json` / `.cursor/mcp.json` that pins a version. `--check` only says what's installed and what's out.
+- `/layer:update` in Claude Code and Codex, with the `layerwright_update` tool behind it: checks npm now, asks, runs the update in the terminal and says what's left (`/reload-plugins` or a new session, reopen the plugin in Figma).
+- Once a day, Claude Code tells you as a session starts when a newer Layerwright is out (a notice to you, not to Claude; from the servers' daily check, no network at startup).
+- An **Update with <session>** button on the plugin window's update notice: the session the window sends requests to runs the update in its terminal and answers in the window when it's done. Without a session, the command to copy.
+- A newer Layerwright takes over the shared Figma connection from an older one (same protocol) as soon as nothing is in flight there, so an update reaches the hub too; the older hub's sessions come back to the newer one by themselves.
+- Write your own skill: **Write your own skill** in the Skills tab of the plugin window (a name, when sessions should use it, the instructions in Markdown, a category), and **Edit** on a skill of yours. `/layer:skills <what it should do>` (or `/layer:skills new …`) drafts one with you and saves it once you agree, and `/layer:skills edit <id>` changes one of yours (`layerwright_skills` action `write`). A skill a session adds, writes or removes shows in the Skills tab at once, and a new one lights up there.
+- **Create a skill with Claude**, first on the Skills tab: write what the skill should do (or nothing), and it opens a new Claude Code session with `/layer:skills new …` filled in, in the Claude app, a terminal or VS Code (you press Enter there), or asks a connected session, which writes it with you in its chat. The arrow beside it picks where, and the window remembers. Adding from a link and writing it yourself are the quieter ways in under it. They're saved with your own skills in `~/.layerwright/skills` and stay across updates.
+
+### Fixed
+- Windows: Claude Code starts the plugin's MCP server, hooks and monitor through a small Node launcher that ships with the plugin (`node "${CLAUDE_PLUGIN_ROOT}/scripts/run.mjs" …`): npx is `npx.cmd` / `npx.ps1` there, which hooks and MCP servers can't start (and PowerShell may refuse to run). Hooks and the monitor that `init` writes for a global install or a checkout read the same in Git Bash and PowerShell, and a project's own `.mcp.json` / `.cursor/mcp.json` gets `cmd /c npx` unless it's in git.
+- Windows: the first session on a computer starts the shared hub again. Windows refuses a connection to a free localhost port only after a second or two, which looked like "held by another program" and stopped the hub from starting; `doctor` and `hub status` said the same.
+- Windows: `layerwright fonts --install` registers the fonts it copies (Windows loads a per-user font only once registered), a watcher killed outright no longer blocks the next one through a reused pid, a port Windows reserves (Hyper-V, WSL, Docker) is said plainly instead of starting a hub every few seconds, the path copied by `init` keeps non-Latin letters, and Explorer opens the plugin's folder when the user folder has a space. Without Git Bash Claude Code has no Monitor tool, so a session isn't asked to start one; requests come with its next Figma call or `/layer:inbox`.
+- Linux: a distribution Chromium (`/usr/bin/chromium`, snap) is found for HTML import, `fonts --install` refreshes the font cache, and `init`/`plugin` say that Figma's desktop app (the only place a development plugin runs) is for macOS and Windows.
+- The suggested Chromium install is the build Layerwright's playwright-core expects (`npx -y playwright-core@<version> install chromium`), not the newest Playwright's.
+- `npm test` runs on Windows too (`scripts/test.mjs`), text files keep LF in every checkout (`.gitattributes`), and CI runs on Linux, Windows and macOS.
+
 ## [1.3.0] - 2026-10-06
 
 ### Added
@@ -234,7 +264,8 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 - The plugin no longer opens a duplicate connection after the port is changed.
 
-[Unreleased]: https://github.com/shayan-m81/layerwright/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/shayan-m81/layerwright/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/shayan-m81/layerwright/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/shayan-m81/layerwright/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/shayan-m81/layerwright/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/shayan-m81/layerwright/compare/v1.0.0...v1.1.0

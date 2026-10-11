@@ -1,9 +1,9 @@
 // Package identity and bundled assets. Works both from source (tsx, src/*.ts) and from the published
 // bundle (dist/cli.js), since both sit one level below the package's package.json.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -28,14 +28,16 @@ export function projectDir(): string {
  *  Claude Code session on the computer (the agent plugin is installed for all of them). The home folder's own
  *  ~/.layerwright doesn't count. */
 export function projectUsesLayerwright(dir = projectDir()): boolean {
-  const home = resolve(layerwrightHome());
-  return [".layerwright", ".design-engineer"].some((d) => { const p = resolve(dir, d); return p !== home && existsSync(p); });
+  const home = layerwrightHome();
+  return [".layerwright", ".design-engineer"].some((d) => { const p = resolve(dir, d); return !samePath(p, home) && existsSync(p); });
 }
+/** The same folder? Windows paths ignore case (VS Code may give "c:\\…" for "C:\\…"). */
+function samePath(a: string, b: string) { return relative(resolve(a), resolve(b)) === ""; }
 
 /** Mark this project as one that uses Layerwright (see projectUsesLayerwright). Never throws. */
 export function markProject(dir = projectDir()): void {
   const p = resolve(dir, ".layerwright");
-  if (p === resolve(layerwrightHome())) return;
+  if (samePath(p, layerwrightHome())) return;
   try { mkdirSync(p, { recursive: true }); } catch { /* read-only folder: it joins on first use again next time */ }
 }
 
@@ -98,6 +100,41 @@ export function pluginKey(create = false): string | undefined {
  *  plugin monitors alike, so both find the same file. */
 export function inboxFile(session = process.env.CLAUDE_CODE_SESSION_ID): string | undefined {
   return session && /^[\w-]{6,80}$/.test(session) ? join(layerwrightHome(), "inbox", `${session}.jsonl`) : undefined;
+}
+/** How long a session may leave Layerwright alone (no Figma call, no request from a Figma window) before it leaves
+ *  Figma: the plugin window stops listing it and its watcher (inbox-watch) stops. Its next Figma call joins again. */
+export const IDLE_MS = 30 * 60_000;
+/** When this Claude Code session last used Layerwright (the file's time), for its watcher:
+ *  ~/.layerwright/inbox/<session>.active */
+export function activeFile(session = process.env.CLAUDE_CODE_SESSION_ID): string | undefined {
+  return session && /^[\w-]{6,80}$/.test(session) ? join(layerwrightHome(), "inbox", `${session}.active`) : undefined;
+}
+/** Is this session's watcher running? inbox-watch keeps its pid in <inbox file>.lock. */
+export function watcherRunning(file = inboxFile()): boolean {
+  return !!file && lockHeld(`${file}.lock`);
+}
+/** How often the watcher touches its lock, and when a lock nobody touched is its owner's leftover. A watcher killed
+ *  outright (on Windows always: no signal reaches it) leaves its lock, and Windows soon gives its pid to another
+ *  process: the pid alone would keep saying it runs. */
+export const LOCK_TOUCH_MS = 5_000, LOCK_STALE_MS = 20_000;
+/** A pid lock whose owner is alive and still touches it. */
+export function lockHeld(lock: string, except?: number): boolean {
+  try {
+    const pid = Number(readFileSync(lock, "utf8"));
+    if (!pid || pid === except || Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) return false;
+    process.kill(pid, 0);
+    return true;
+  } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
+}
+/** Has Claude Code a Monitor tool here? On Windows it needs Git Bash (Git for Windows), as Claude Code's Bash tool
+ *  does: without it a session can't watch for requests, and they reach it with its next Figma call or /layer:inbox. */
+export function monitorAvailable(env: NodeJS.ProcessEnv = process.env, platform = process.platform, exists: (path: string) => boolean = existsSync): boolean {
+  if (platform !== "win32") return true;
+  if (env.CLAUDE_CODE_GIT_BASH_PATH) return exists(env.CLAUDE_CODE_GIT_BASH_PATH);
+  const roots = [env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA && join(env.LOCALAPPDATA, "Programs")].filter(Boolean) as string[];
+  if (roots.some((r) => exists(join(r, "Git", "bin", "bash.exe")))) return true;
+  // Git elsewhere: bash.exe sits next to its cmd folder.
+  return (env.PATH ?? env.Path ?? "").split(";").some((d) => d && exists(join(d, "git.exe")) && exists(join(d, "..", "bin", "bash.exe")));
 }
 /** What this Claude Code session is doing in its chat, from the plugin's hooks (layerwright hook-event): it asked the
  *  user a question, needs a permission, or ended its turn. ~/.layerwright/inbox/<session>.state.json */

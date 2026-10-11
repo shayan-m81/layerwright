@@ -1,6 +1,9 @@
 // Reads the rendered DOM into a plain, layout-aware tree (DomNode). Runs in the page; convert.ts
 // turns it into the Design DSL. Everything here is computed style + boxes, so it is deterministic.
+// Pictures (<img>, CSS backgrounds and masks) are loaded afterwards, in Node (assets.ts).
 import type { Page } from "playwright-core";
+import { assetName, fitSvg, loadAssets, needsLoading, svgPng } from "./assets.ts";
+import { installHelpers } from "./page.ts";
 
 export interface Rgba { hex: string; a: number }
 export interface DomBox { x: number; y: number; w: number; h: number }
@@ -15,6 +18,8 @@ export interface DomStyle {
   opacity?: number; clip?: boolean;
   font?: { family: string; weight: number; size: number; lineHeight?: number; letterSpacing?: number; italic: boolean; color?: Rgba; align: string; transform?: string };
   objectFit?: string;
+  /** A CSS background picture (`src` once loaded), and a CSS mask (an icon in the element's colour). */
+  bgImage?: { url: string; fit: "FILL" | "FIT" | "TILE"; src?: string }; mask?: string;
 }
 export interface DomNode {
   kind: "element" | "text" | "svg" | "image";
@@ -22,11 +27,11 @@ export interface DomNode {
   text?: string; lines?: number; svg?: string; src?: string;
   /** Styled pieces of one text (inline <b>, <span>, <a>): offsets into `text` with the piece's own font. */
   runs?: { start: number; end: number; font: NonNullable<DomStyle["font"]>; href?: string }[];
-  attrs: { role?: string; type?: string; placeholder?: string; value?: string; ariaLabel?: string; href?: string; id?: string; testid?: string; mark?: number };
+  attrs: { role?: string; type?: string; placeholder?: string; value?: string; ariaLabel?: string; alt?: string; href?: string; id?: string; testid?: string; mark?: number };
   children: DomNode[];
 }
 
-export interface DomRead { root: DomNode; webFonts: Record<string, string[]> }
+export interface DomRead { root: DomNode; webFonts: Record<string, string[]>; warnings: string[] }
 
 /** Read the rendered DOM. Elements matching `marks[i]` carry `attrs.mark = i` (user component mappings). */
 export async function readDom(page: Page, selector = "body", marks: string[] = []): Promise<DomNode> {
@@ -34,10 +39,54 @@ export async function readDom(page: Page, selector = "body", marks: string[] = [
 }
 
 export async function readPage(page: Page, selector = "body", marks: string[] = []): Promise<DomRead> {
+  await installHelpers(page);
   const res = await page.evaluate(SERIALIZE_DOM, { selector, marks });
   if ("error" in res) throw new Error(res.error);
   if (!res.root) throw new Error(`Nothing rendered for "${selector}".`);
-  return res as DomRead;
+  const read = res as DomRead;
+  read.warnings = [...read.warnings, ...(await loadPictures(page, read.root))];
+  return read;
+}
+
+/** Loads the pictures and puts them in the tree: an SVG becomes a vector (a mask's in the element's colour), anything
+ *  else PNG/JPEG/GIF data. A background SVG under other content is drawn as a PNG. */
+async function loadPictures(page: Page, root: DomNode): Promise<string[]> {
+  const all: DomNode[] = [];
+  const visit = (d: DomNode) => { all.push(d); d.children.forEach(visit); };
+  visit(root);
+  const urls = all.flatMap((d) => [d.kind === "image" && needsLoading(d.src) ? d.src! : "", d.kind === "element" ? d.style.bgImage?.url ?? "" : "", d.kind === "element" ? d.style.mask ?? "" : ""]).filter(Boolean);
+  if (!urls.length) return [];
+  const loaded = await loadAssets(page, urls);
+  const warnings: string[] = [];
+  for (const d of all) {
+    const { w, h } = d.box;
+    if (d.kind === "image" && d.src && loaded.has(d.src)) {
+      const l = loaded.get(d.src)!;
+      const svg = "svg" in l ? await fitSvg(page, l.svg, w, h) : undefined;
+      if (svg) Object.assign(d, { kind: "svg", svg, src: undefined });
+      else if ("src" in l) d.src = l.src;
+      else { warnings.push(`The picture ${assetName(d.src)} couldn't be loaded (${"error" in l ? l.error : "not a valid SVG"}); a placeholder is used.`); d.src = undefined; }
+    }
+    if (d.kind !== "element") continue;
+    const mask = d.style.mask, l = mask && loaded.get(mask);
+    if (mask && l) {
+      const hex = d.style.bg?.hex ?? d.style.gradient?.stops[0]?.color.hex ?? d.style.font?.color?.hex;
+      const svg = "svg" in l ? await fitSvg(page, l.svg, w, h, hex) : undefined;
+      if (svg) { Object.assign(d, { kind: "svg", svg, children: [] }); continue; }
+      warnings.push(`"${d.name}" is drawn with a CSS mask that isn't an SVG (${assetName(mask)}); it's imported as a plain box.`);
+    }
+    const bg = d.style.bgImage, b = bg && loaded.get(bg.url);
+    if (!bg || !b) continue;
+    if ("svg" in b && !d.children.length && !d.style.bg && !d.style.border) {
+      // An icon drawn as a background: a vector.
+      const svg = await fitSvg(page, b.svg, w, h);
+      if (svg) { Object.assign(d, { kind: "svg", svg }); continue; }
+    }
+    const src = "src" in b ? b.src : "svg" in b ? await svgPng(page, b.svg, w * 2, h * 2) : undefined;
+    if (src) bg.src = src;
+    else { warnings.push(`The background picture ${assetName(bg.url)} of "${d.name}" couldn't be loaded (${"error" in b ? b.error : "not a valid SVG"}); left out.`); d.style.bgImage = undefined; }
+  }
+  return warnings;
 }
 
 const SERIALIZE_DOM = ({ selector, marks }: { selector: string; marks: string[] }): any => {
@@ -139,64 +188,12 @@ const SERIALIZE_DOM = ({ selector, marks }: { selector: string; marks: string[] 
   const attrs = (el: Element) => ({
     role: el.getAttribute("role") ?? undefined, type: el.getAttribute("type") ?? undefined,
     placeholder: el.getAttribute("placeholder") ?? undefined, value: (el as HTMLInputElement).value || undefined,
-    ariaLabel: el.getAttribute("aria-label") ?? undefined, href: el.getAttribute("href") ?? undefined,
+    ariaLabel: el.getAttribute("aria-label") ?? undefined, alt: el.getAttribute("alt") || undefined, href: el.getAttribute("href") ?? undefined,
     id: el.id || undefined, testid: el.getAttribute("data-testid") ?? undefined,
     mark: (() => { const i = marks.findIndex((m) => el.matches(m)); return i >= 0 ? i : undefined; })(),
   });
 
-  const svgMarkup = (el: SVGSVGElement, r: DOMRect) => {
-    const clone = el.cloneNode(true) as SVGSVGElement;
-    const src = [el, ...el.querySelectorAll("*")], dst = [clone, ...clone.querySelectorAll("*")];
-    src.forEach((s, i) => {
-      const cs = getComputedStyle(s), d = dst[i];
-      d.removeAttribute("style"); d.removeAttribute("class");
-      if (i === 0) return;
-      const f = rgba(cs.fill), st = rgba(cs.stroke);
-      d.setAttribute("fill", f ? f.hex : "none");
-      if (f && f.a < 1) d.setAttribute("fill-opacity", String(f.a));
-      if (st) { d.setAttribute("stroke", st.hex); d.setAttribute("stroke-width", String(px(cs.strokeWidth))); d.setAttribute("stroke-linecap", cs.strokeLinecap); d.setAttribute("stroke-linejoin", cs.strokeLinejoin); }
-      // Dashes: a progress ring (one dash about as long as the circle, shifted by an offset) becomes a real arc,
-      // since Figma renders SVG dash patterns differently; other dashes are kept as a plain pattern.
-      if (st && cs.strokeDasharray && cs.strokeDasharray !== "none") {
-        const dash = cs.strokeDasharray.split(/[ ,]+/).map(px).filter((n) => n > 0);
-        const off = px(cs.strokeDashoffset);
-        d.removeAttribute("stroke-dashoffset"); d.removeAttribute("stroke-dasharray");
-        const isCircle = s.tagName.toLowerCase() === "circle";
-        const rr = isCircle ? px(s.getAttribute("r") ?? "0") : 0, cx = px(s.getAttribute("cx") ?? "0"), cy = px(s.getAttribute("cy") ?? "0");
-        const circ = 2 * Math.PI * rr;
-        const visible = dash.length === 1 ? dash[0] - off : dash.length === 2 && dash[1] >= circ * 0.98 ? dash[0] - off : NaN;
-        if (isCircle && rr > 0 && Number.isFinite(visible) && (dash[0] >= circ * 0.98 || dash.length === 2)) {
-          const frac = Math.max(0, Math.min(1, visible / circ));
-          if (frac < 0.999) {
-            const a = frac * 2 * Math.PI;
-            const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-            for (const at of [...d.attributes]) if (!["cx", "cy", "r"].includes(at.name)) path.setAttribute(at.name, at.value);
-            path.setAttribute("d", frac <= 0 ? "" : `M ${cx + rr} ${cy} A ${rr} ${rr} 0 ${a > Math.PI ? 1 : 0} 1 ${cx + rr * Math.cos(a)} ${cy + rr * Math.sin(a)}`);
-            path.setAttribute("fill", "none");
-            d.replaceWith(path);
-          }
-        } else if (dash.length) d.setAttribute("stroke-dasharray", dash.join(" "));
-      }
-    });
-    // A CSS transform on the <svg> itself (e.g. rotate(-90deg) to start a ring at the top) is baked into the markup.
-    const tf = getComputedStyle(el).transform;
-    if (tf && tf !== "none") {
-      const m = tf.match(/matrix\(([^)]+)\)/);
-      const vb = (el as SVGSVGElement).viewBox?.baseVal;
-      if (m) {
-        const [a, b, c, dd, e, f] = m[1].split(",").map(Number);
-        const w = vb && vb.width ? vb.width : r.width, h = vb && vb.height ? vb.height : r.height;
-        const k = r.width ? w / r.width : 1;
-        const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
-        g.setAttribute("transform", `translate(${w / 2} ${h / 2}) matrix(${a} ${b} ${c} ${dd} ${e * k} ${f * k}) translate(${-w / 2} ${-h / 2})`);
-        while (clone.firstChild) g.appendChild(clone.firstChild);
-        clone.appendChild(g);
-      }
-    }
-    clone.setAttribute("width", String(r.width)); clone.setAttribute("height", String(r.height));
-    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-    return clone.outerHTML;
-  };
+  const lw = (window as any).__lw; // page.ts: SVG, pictures, icon fonts
 
   // Lines of a text range. Pieces in different fonts on one line have slightly different tops, so counting
   // distinct tops over-counts.
@@ -281,22 +278,22 @@ const SERIALIZE_DOM = ({ selector, marks }: { selector: string; marks: string[] 
     if ((r.width < 0.5 || r.height < 0.5) && cs.overflow !== "visible") return null;
     const box = { x: r.left - ox, y: r.top - oy, w: r.width, h: r.height };
     const base = { tag, name: nameOf(el), box, style: styleOf(el, cs), attrs: attrs(el), children: [] as any[] };
-    if (tag === "svg") return { ...base, kind: "svg", svg: svgMarkup(el as SVGSVGElement, r) };
-    if (tag === "img") {
-      const img = el as HTMLImageElement;
-      let src = img.currentSrc || img.src;
-      // Local images become data URLs here (the page can read them); remote https stays a URL for the server to fetch.
-      if (src && !/^https:/.test(src) && img.complete && img.naturalWidth) {
-        try { const c = document.createElement("canvas"); c.width = img.naturalWidth; c.height = img.naturalHeight; c.getContext("2d")!.drawImage(img, 0, 0); src = c.toDataURL("image/png"); } catch { /* tainted canvas: keep the URL */ }
-      }
-      return { ...base, kind: "image", src };
-    }
+    if (tag === "svg") return { ...base, kind: "svg", svg: lw.svgMarkup(el) };
+    // Pictures by their address; readPage loads them (Node, then the plugin gets only data).
+    if (tag === "img") return { ...base, kind: "image", src: lw.imgSrc(el) };
+    if (tag === "canvas") { const src = lw.canvasPng(el); if (src) return { ...base, kind: "image", src }; }
+    const pics = lw.pictures(el, cs);
+    if (pics.bg) (base.style as DomStyle).bgImage = pics.bg;
+    if (pics.mask) (base.style as DomStyle).mask = pics.mask;
     if (["input", "textarea", "select"].includes(tag)) {
       const i = el as HTMLInputElement;
       const shown = i.value || i.placeholder || (tag === "select" ? (el as HTMLSelectElement).selectedOptions[0]?.text : "") || "";
       if (shown) base.children.push({ kind: "text", tag: "#text", name: shown.slice(0, 40), box: (() => { const lh = cs.lineHeight === "normal" ? px(cs.fontSize) * 1.25 : px(cs.lineHeight); const bl = px(cs.borderLeftWidth), br = px(cs.borderRightWidth); return { x: px(cs.paddingLeft) + bl, y: Math.max(0, (r.height - lh) / 2), w: Math.max(1, r.width - px(cs.paddingLeft) - px(cs.paddingRight) - bl - br), h: lh }; })(), style: { ...base.style, font: { ...base.style.font, color: i.value ? base.style.font.color : rgba(getComputedStyle(el, "::placeholder").color) ?? base.style.font.color } }, text: shown, lines: 1, attrs: {}, children: [] });
       return { ...base, kind: "element" };
     }
+    // An icon-font icon: a picture of the glyph (Figma would show a box or the ligature's word).
+    const glyph = lw.glyphIcon(el, base.name);
+    if (glyph) return { ...base, kind: "image", src: glyph, attrs: { ...base.attrs, alt: base.attrs.ariaLabel || "Icon" }, children: [] };
     const merged = inlineRuns(el, cs, r);
     if (merged) { base.children.push(merged); return { ...base, kind: "element" }; }
     for (const n of el.childNodes) {
@@ -325,11 +322,11 @@ const SERIALIZE_DOM = ({ selector, marks }: { selector: string; marks: string[] 
     }
   }
   const el = document.querySelector(selector);
-  if (!el) return { root: null, webFonts };
+  if (!el) return { root: null, webFonts, warnings: lw.warnings };
   const r = el.getBoundingClientRect();
   let root = walk(el, r.left, r.top);
   if (root?.kind === "contents") root = null;
   // The page body is at least as tall as the document; an element keeps its own box.
   if (root) { root.box.x = 0; root.box.y = 0; if (el === document.body) root.box.h = Math.max(root.box.h, document.documentElement.scrollHeight); }
-  return { root, webFonts };
+  return { root, webFonts, warnings: lw.warnings };
 };

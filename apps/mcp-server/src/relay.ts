@@ -2,6 +2,7 @@
 // first when nothing holds the port yet. Same interface as WsBridge, so the tools can't tell the difference.
 import { spawn } from "node:child_process";
 import { mkdirSync, openSync } from "node:fs";
+import { connect } from "node:net";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,8 +15,23 @@ import { currentTask } from "./task.ts";
 
 type Probe = { kind: "hub"; status: any } | { kind: "legacy"; status: any } | { kind: "free" } | { kind: "unknown"; reason: string };
 
-/** What answers on the port: a hub, an older single-session server, or nothing. */
-export function probePort(port: number, timeoutMs = 1500): Promise<Probe> {
+/** Does anything listen on the port? Windows takes a second or two to refuse a connection on localhost (it tries the
+ *  SYN again after the reset), so a free port is told by its refusal, waited for, not by a short timeout. */
+export function tcpProbe(port: number, timeoutMs = process.platform === "win32" ? 5000 : 1500): Promise<"open" | "refused" | string> {
+  return new Promise((done) => {
+    const s = connect({ port, host: "127.0.0.1" });
+    const t = setTimeout(() => { s.destroy(); done("timeout"); }, timeoutMs);
+    s.once("connect", () => { clearTimeout(t); s.destroy(); done("open"); });
+    s.once("error", (e: NodeJS.ErrnoException) => { clearTimeout(t); done(e.code === "ECONNREFUSED" ? "refused" : e.code ?? e.message); });
+  });
+}
+
+/** What answers on the port: a hub, an older single-session server, or nothing. `timeoutMs` is how long the program
+ *  on the port may take to answer. */
+export async function probePort(port: number, timeoutMs = 1500): Promise<Probe> {
+  const tcp = await tcpProbe(port);
+  if (tcp === "refused") return { kind: "free" };
+  if (tcp !== "open") return { kind: "unknown", reason: tcp };
   return new Promise((done) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/doctor`);
     const t = setTimeout(() => { ws.terminate(); done({ kind: "unknown", reason: "timeout" }); }, timeoutMs);
@@ -57,6 +73,9 @@ export interface RelayOptions {
   anyPort?: boolean;
   /** The pairing key this session presents to the hub (default: ~/.layerwright/key, made if missing). */
   key?: () => string | undefined;
+  /** The agent session this server belongs to (default: CLAUDE_CODE_SESSION_ID): the hub shows one session for all of
+   *  an agent session's Layerwright servers. */
+  agent?: string;
 }
 
 interface Pending { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout; method: string; timeoutMs: number; started: number }
@@ -74,6 +93,8 @@ export class RelayBridge implements FigmaTransport {
   private title?: string;
   /** An older hub gave the port to a newer Layerwright: until then the newer session starts the hub, not this one. */
   private noSpawnUntil = 0;
+  /** Hubs started in a row that never came up (a port the system won't give): wait longer before the next one. */
+  private spawnFails = 0;
   lastProgress?: { label: string; done?: number; total?: number; at: number };
   startError?: string;
   /** This session as the hub named it (shown in the plugin window). */
@@ -101,15 +122,35 @@ export class RelayBridge implements FigmaTransport {
   /** The hub keeps one window per Figma file and answers `windows` / `bind` (1.3+; its welcome says so). */
   private hubFiles = false;
   private used = false;
+  /** Left the hub for being idle (leave): no reconnecting until the next start(). `gen` counts the leaves, so an
+   *  attempt still under way from before one doesn't connect after it. */
+  private parked = false;
+  private gen = 0;
   /** Connect (starting the hub if needed). Resolves once connected or after a first failed round; keeps trying.
-   *  Called once: at startup in a project that uses Layerwright, else on the first Figma call (request, inbox,
-   *  figma_status), so sessions that never use Figma aren't listed in the plugin window. */
+   *  Called at startup in a project that uses Layerwright, else on the first Figma call (request, inbox,
+   *  figma_status), so sessions that never use Figma aren't listed in the plugin window; and again on the first Figma
+   *  call after leaving for being idle. */
   start(): Promise<void> {
+    if (this.parked) { this.parked = false; this.log("joining the shared Figma connection again"); }
     return (this.starting ??= this.startNow());
   }
-  /** Joined, or joining: false until the first start(). */
+  /** Joined, or joining: false until the first start(), and after leave(). */
   get started() { return !!this.starting; }
   join() { return this.start(); }
+  /** No Layerwright for a while (server.ts decides): leave the hub, so the plugin window stops listing this session.
+   *  The next start() (any Figma call) joins again, with the same id, name and colour while nobody else has them.
+   *  Never while a request is in flight. */
+  leave() {
+    if (!this.starting || this.closed || this.pending.size) return;
+    this.parked = true;
+    this.gen++;
+    this.starting = undefined;
+    clearTimeout(this.retryTimer);
+    const ws = this.ws;
+    this.dropped();
+    ws?.close(1000, "idle");
+    this.log("left the shared Figma connection after a while without Figma work (it joins again on its next Figma call)");
+  }
 
   private async startNow(): Promise<void> {
     if (!this.o.anyPort && (this.port < 7331 || this.port > 7340)) {
@@ -122,14 +163,19 @@ export class RelayBridge implements FigmaTransport {
   }
 
   private async attempt(): Promise<void> {
-    if (this.closed) return;
+    if (this.closed || this.parked) return;
+    const gen = this.gen;
     let p = await probePort(this.port);
+    if (gen !== this.gen) return;
     if (p.kind === "free" && Date.now() >= this.noSpawnUntil) {
       try { await (this.o.startHub ?? spawnHub)(this.port); } catch (e) { this.log(`couldn't start the hub: ${(e as Error).message}`); }
-      for (let i = 0; i < 30 && p.kind === "free"; i++) {
+      // Until it listens: about 5 s, by the clock (each check of a free port takes a second or two on Windows), and not
+      // after this session closed or left.
+      for (const until = Date.now() + 5000; p.kind === "free" && Date.now() < until && !this.closed && gen === this.gen;) {
         await new Promise((r) => setTimeout(r, 150));
         p = await probePort(this.port, 800);
       }
+      this.spawnFails = p.kind === "free" ? this.spawnFails + 1 : 0;
     }
     if (p.kind === "legacy") {
       this.startError = `Port ${this.port} is held by an older Layerwright${p.status?.version ? ` (${p.status.version})` : ""} that another session started, and it can't be shared. Close that session or restart it to update; this one connects by itself once the port is free.`;
@@ -145,10 +191,11 @@ export class RelayBridge implements FigmaTransport {
     if (p.kind !== "hub") {
       this.startError = Date.now() < this.noSpawnUntil
         ? "The shared Figma connection is moving to a newer Layerwright; this session joins it in a moment."
-        : `Couldn't start the Layerwright hub on port ${this.port} (its log: ~/.layerwright/hub.log). Run: npx layerwright doctor`;
+        : `Couldn't start the Layerwright hub on port ${this.port} (its log says why: ${join(process.env.LAYERWRIGHT_HOME ?? join(homedir(), ".layerwright"), "hub.log")}). Run: npx layerwright doctor`;
       this.log(this.startError);
-      return this.retry(Date.now() < this.noSpawnUntil ? 1000 : 3000);
+      return this.retry(Date.now() < this.noSpawnUntil ? 1000 : this.spawnFails >= 3 ? 30_000 : 3000);
     }
+    if (gen !== this.gen || this.parked) return;
     await this.connect();
   }
 
@@ -164,7 +211,7 @@ export class RelayBridge implements FigmaTransport {
       const t = setTimeout(() => { ws.terminate(); }, 3000);
       // A reconnect asks for this session's id, colour and name back (the hub gives them when nobody else has them).
       const was = this.session;
-      ws.on("open", () => ws.send(JSON.stringify({ type: "hello", protocol: HUB_PROTOCOL, version: this.version, workdir: this.o.workdir ?? process.cwd(), client: this.client, title: this.title, pid: process.pid, key: this.key(),
+      ws.on("open", () => ws.send(JSON.stringify({ type: "hello", protocol: HUB_PROTOCOL, version: this.version, workdir: this.o.workdir ?? process.cwd(), client: this.client, title: this.title, pid: process.pid, key: this.key(), agent: this.o.agent ?? process.env.CLAUDE_CODE_SESSION_ID,
         resume: was?.id, color: was?.color, name: was && !was.titled ? was.name : undefined, since: was?.connectedAt,
         file: this.lastFile, fileName: this.lastFileName })));
       ws.on("message", (raw) => {
@@ -172,6 +219,7 @@ export class RelayBridge implements FigmaTransport {
         try { msg = JSON.parse(String(raw)); } catch { return; }
         if (msg.type === "welcome") {
           clearTimeout(t);
+          if (this.parked) { ws.close(1000, "idle"); return settle(); } // left while it was joining
           this.ws = ws;
           this.hubFiles = msg.multiFile === true;
           this.session = msg.session;
@@ -191,6 +239,8 @@ export class RelayBridge implements FigmaTransport {
         const joined = this.ws === ws;
         if (joined) this.dropped();
         settle();
+        // Left for being idle, or a newer connection took over meanwhile: nothing to come back to.
+        if (this.parked || (this.ws && this.ws !== ws)) return;
         // Removed in the Figma window: stay away until this session asks again (figma_status → rejoin).
         if (code === CLOSE_KICKED) { this.kicked = true; this.startError = "This session was removed in the Layerwright window in Figma. Call figma_status to join again."; return; }
         if (code === CLOSE_REPLACED) this.noSpawnUntil = Date.now() + 15_000;

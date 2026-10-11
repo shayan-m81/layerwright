@@ -66,7 +66,7 @@ test("save: true writes .layerwright/exports/<node>.png; a folder or a file path
 test("save stays inside the project: an absolute path elsewhere, ../ or a link out of it is refused, and nothing is written", async () => {
   const work = mkdtempSync(join(tmpdir(), "lw-export-"));
   const outside = mkdtempSync(join(tmpdir(), "lw-outside-"));
-  symlinkSync(outside, join(work, "link"));
+  symlinkSync(outside, join(work, "link"), "junction"); // (a junction on Windows: no admin rights needed)
   const r = await connectRaw(work);
   for (const save of [join(outside, "x.png"), "../x.png", "a/../../x.png", "link/x.png", outside]) {
     const res: any = await r({ save });

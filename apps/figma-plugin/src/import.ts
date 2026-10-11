@@ -170,6 +170,14 @@ function override(inst: SceneNode, src: ImportNode, mode: "text" | "match", fill
   }
 }
 
+/** A picture's bytes (a data:image/…;base64 URL from the importer: PNG, JPEG or GIF) as an image fill; none if Figma
+ *  won't take them. */
+function picture(src: string, scaleMode: ImagePaint["scaleMode"]): ImagePaint | undefined {
+  const m = src.match(/^data:image\/[\w.+-]+;base64,(.+)$/);
+  if (!m) return undefined;
+  try { return { type: "IMAGE", imageHash: figma.createImage(figma.base64Decode(m[1])).hash, scaleMode }; } catch { return undefined; }
+}
+
 function build(n: ImportNode, parent: BaseNode & ChildrenMixin, fonts: Fonts): SceneNode {
   if (n.type === "svg") {
     const node = figma.createNodeFromSvg(n.svg);
@@ -178,6 +186,18 @@ function build(n: ImportNode, parent: BaseNode & ChildrenMixin, fonts: Fonts): S
     node.x = n.x; node.y = n.y;
     if (n.w > 0 && n.h > 0) node.resize(n.w, n.h);
     return node;
+  }
+  if (n.type === "image") {
+    const r = figma.createRectangle();
+    parent.appendChild(r);
+    r.name = n.name;
+    r.x = n.x; r.y = n.y;
+    r.resize(Math.max(0.01, n.w), Math.max(0.01, n.h));
+    const img = n.src ? picture(n.src, n.fit ?? "FILL") : undefined;
+    r.fills = [img ?? { type: "SOLID", color: { r: 0.9, g: 0.91, b: 0.92 } }]; // a placeholder when it didn't load
+    if (n.radius) [r.topLeftRadius, r.topRightRadius, r.bottomRightRadius, r.bottomLeftRadius] = n.radius.map((x) => Math.min(x, n.w / 2, n.h / 2));
+    if (n.opacity !== undefined) r.opacity = n.opacity;
+    return r;
   }
   if (n.type === "text") {
     const t = figma.createText();
@@ -214,6 +234,8 @@ function build(n: ImportNode, parent: BaseNode & ChildrenMixin, fonts: Fonts): S
   f.resize(Math.max(0.01, n.w), Math.max(0.01, n.h));
   const fills: Paint[] = [];
   if (n.fill) fills.push(solid(n.fill));
+  const bg = n.image && picture(n.image.src, n.image.fit);
+  if (bg) fills.push(bg);
   if (n.gradient) fills.push(gradientOf(n.gradient));
   f.fills = fills;
   if (n.stroke) {

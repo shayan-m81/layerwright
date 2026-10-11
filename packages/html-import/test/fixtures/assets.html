@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Assets</title>
+<style>
+  @font-face { font-family: "Fixture Icons"; src: url(fonts/Vazirmatn-Regular.ttf); }
+  body { margin: 0; font: 14px/20px sans-serif; color: #111111; background: #FFFFFF; }
+  .row { display: flex; gap: 12px; align-items: center; padding: 16px; }
+  img, canvas { display: block; }
+  .ic { width: 24px; height: 24px; color: #0A84FF; }
+  .hero { width: 240px; height: 120px; padding: 16px; box-sizing: border-box; background: #000000 url(assets/photo.png) center / cover no-repeat; color: #FFFFFF; }
+  .bgicon { display: block; width: 24px; height: 24px; background: url(assets/logo.svg) center / contain no-repeat; }
+  .mask { display: block; width: 24px; height: 24px; background: #CC0000; -webkit-mask: url(assets/logo.svg) center / contain no-repeat; mask: url(assets/logo.svg) center / contain no-repeat; }
+  .fi { display: block; width: 20px; height: 20px; font: 20px/20px "Fixture Icons"; color: #16A34A; }
+  .fi::before { content: "\e900"; }
+  .ligature { display: block; font: 24px/24px "Fixture Icons"; color: #333333; }
+</style>
+</head>
+<body>
+  <svg style="display:none" aria-hidden="true"><symbol id="i-star" viewBox="0 0 24 24"><path d="M12 2l3 7 7 .5-5.5 4.5 2 7L12 17l-6.5 4 2-7L2 9.5 9 9z"/></symbol></svg>
+  <div class="row">
+    <img src="assets/photo.png" alt="Photo" width="40" height="24" />
+    <img src="assets/photo.webp" alt="Webp photo" width="40" height="24" />
+    <img src="assets/logo.svg" alt="Logo" width="32" height="32" />
+    <svg class="ic" aria-label="Star" viewBox="0 0 24 24"><use href="#i-star" fill="currentColor" /></svg>
+    <svg class="ic" aria-label="Heart" viewBox="0 0 24 24"><use href="assets/sprite.svg#i-heart" /></svg>
+    <i class="bgicon" aria-label="Background icon"></i>
+    <span class="mask" aria-label="Masked icon"></span>
+    <i class="fi" aria-label="Font icon"></i>
+    <span class="ligature">home</span>
+    <canvas id="chart" width="30" height="20"></canvas>
+  </div>
+  <div class="hero">Over a photo</div>
+  <script>
+    const g = document.getElementById("chart").getContext("2d");
+    g.fillStyle = "#14AE5C"; g.fillRect(0, 0, 30, 20);
+  </script>
+</body>
+</html>

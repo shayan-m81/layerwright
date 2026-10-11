@@ -198,7 +198,7 @@ export const styles = new Map<string, any>([
 
 /** The plugin's side of Figma: what it showed and said (window messages, notifications, links opened, settings
  *  saved), the event handlers it registered, and the window's size. */
-export const host = { posted: [] as any[], notified: [] as string[], toasts: [] as { text: string; timeout?: number; open: boolean }[], opened: [] as string[], storage: new Map<string, unknown>(), handlers: new Map<string, ((e?: any) => void)[]>(), ui: { width: 0, height: 0 } };
+export const host = { posted: [] as any[], notified: [] as string[], toasts: [] as { text: string; timeout?: number; open: boolean; expire(): void }[], opened: [] as string[], storage: new Map<string, unknown>(), handlers: new Map<string, ((e?: any) => void)[]>(), ui: { width: 0, height: 0 } };
 /** Fire a Figma event at the plugin (Figma sends them after the plugin's code yields). */
 export function emit(type: string, e?: any) { for (const fn of host.handlers.get(type) ?? []) fn(e); }
 const EVENTS = ["selectionchange", "currentpagechange", "close", "run", "drop", "documentchange", "stylechange", "textreview", "slidesviewchange", "canvasviewchange", "timerstart", "timerstop", "timerpause", "timerresume", "timeradjust", "timerdone"];
@@ -257,7 +257,8 @@ export function resetFigma() {
       if (typeof m !== "string") throw new Error("in notify: Expected string");
       if (o?.timeout !== undefined && !(o.timeout > 0)) throw new Error("in notify: timeout must be a positive number");
       host.notified.push(m);
-      const t = { text: m, timeout: o?.timeout, open: true };
+      // expire(): Figma closing it when its timeout is reached (tests call it instead of waiting).
+      const t = { text: m, timeout: o?.timeout, open: true, expire() { if (t.open) { t.open = false; o?.onDequeue?.("timeout"); } } };
       host.toasts.push(t);
       return { cancel() { if (t.open) { t.open = false; o?.onDequeue?.("dismiss"); } } };
     },

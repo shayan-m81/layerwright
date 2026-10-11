@@ -263,3 +263,57 @@ maybe("radial and conic gradients, layer blur and backdrop blur come across (pla
   const kids = (shot.tree as any).children;
   assert.deepEqual(kids.map((k: any) => k.type === "svg" ? k.name : k.gradient?.type ?? k.blur ?? k.backdropBlur), ["radial", "angular", 4, 12, "radial", "notch-fillet"]);
 });
+
+/** A plan or tree with picture bytes cut to their type: the bytes differ by platform, what they are doesn't. */
+const pictureless = (v: any): any => Array.isArray(v) ? v.map(pictureless)
+  : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, typeof x === "string" && x.startsWith("data:image/") ? x.slice(0, x.indexOf(";")) : pictureless(x)])) : v;
+
+maybe("pictures: <img> (PNG, WebP, SVG), sprites, CSS backgrounds and masks, icon fonts and <canvas> become vectors and images", async () => {
+  const r = await renderToPlan(fixture("assets.html"), { viewports: [600] });
+  assert.deepEqual(r.warnings, []);
+  snapshot("assets", pictureless(r.plan));
+  const [row, hero] = (r.plan.screens[0] as any).children;
+  const by = (name: string) => row.children.find((n: any) => n.name === name);
+  assert.match(by("Photo").src, /^data:image\/png;base64,/);
+  assert.match(by("Webp photo").src, /^data:image\/png;base64,/, "WebP is decoded to PNG, which Figma takes");
+  assert.equal(by("Logo").type, "icon", "an SVG <img> is a vector");
+  assert.match(by("Logo").svg, /^<svg[^>]*viewBox="0 0 32 32"[\s\S]*<circle[^>]*fill="#7C3AED"/);
+  assert.doesNotMatch(by("Star").svg + by("Heart").svg, /<use/, "sprite icons are expanded, from the page and from a sprite file");
+  assert.match(by("Star").svg, /<path[^>]*fill="#0A84FF"/, "currentColor comes from the <use>");
+  assert.match(by("Heart").svg, /<path[^>]*d="M12 21/);
+  assert.equal(by("Background icon").type, "icon", "an SVG background on an empty element is a vector");
+  assert.match(by("Masked icon").svg, /fill="#CC0000"/, "a CSS mask is the SVG in the element's colour");
+  assert.doesNotMatch(by("Masked icon").svg, /#7C3AED/);
+  assert.match(by("Font icon").src, /^data:image\/png/, "an icon-font glyph is a picture, not a box in Figma");
+  assert.equal(row.children.filter((n: any) => n.type === "image").length, 5, "photo, WebP, font icon, ligature icon, canvas");
+  assert.deepEqual([hero.image.fit, hero.fill], ["fill", "#000000"]);
+  assert.match(hero.image.src, /^data:image\/png/);
+  // Built on the strict mock: the pictures are real image fills, the background over the colour.
+  const { resetFigma } = await import("../../../apps/figma-plugin/test/figma-mock.ts");
+  const { executePlan } = await import("../../../apps/figma-plugin/src/execute.ts");
+  const c = compilePlan({ ...fixtureDs(), typography: [] }, r.plan);
+  assert.deepEqual(c.errors, []);
+  const page = resetFigma();
+  const report = await executePlan(c.plan!);
+  assert.deepEqual(report.warnings.filter((w) => /image|SVG/i.test(w)), []);
+  const heroNode = page.findAll((n: any) => n.name === ".hero")[0];
+  assert.deepEqual(heroNode.fills.map((f: any) => f.type), ["SOLID", "IMAGE"]);
+  assert.equal(page.findAll((n: any) => n.type === "RECTANGLE" && n.fills[0]?.type === "IMAGE").length, 5);
+});
+
+maybe("pictures in the pixel-exact importer: <img>, backgrounds, masks, sprites, icon fonts and <canvas>", async () => {
+  const { importHtml } = await import("../src/index.ts");
+  const [shot] = await importHtml({ file: fixture("assets.html"), viewport: 600 });
+  assert.deepEqual(shot.warnings, []);
+  const kids = (shot.tree as any).children;
+  assert.deepEqual(kids.map((k: any) => `${k.type}:${k.name}`), ["image:Photo", "image:Webp photo", "svg:Logo", "svg:Star", "svg:Heart", "svg:Background icon", "svg:Masked icon", "image:Font icon", "image:icon", "image:image", "frame:div"]);
+  assert.ok(kids.filter((k: any) => k.type === "image").every((k: any) => /^data:image\/png;base64,/.test(k.src)));
+  assert.match(kids[6].svg, /fill="#CC0000"/);
+  assert.deepEqual([kids[10].image.fit, kids[10].fill.hex], ["FILL", "#000000"]);
+  const { resetFigma } = await import("../../../apps/figma-plugin/test/figma-mock.ts");
+  const { importTree } = await import("../../../apps/figma-plugin/src/import.ts");
+  const page = resetFigma();
+  await importTree({ screens: [{ name: shot.name, tree: shot.tree }] });
+  assert.equal(page.findAll((n: any) => n.type === "RECTANGLE" && n.fills[0]?.type === "IMAGE").length, 5);
+  assert.deepEqual(page.findAll((n: any) => n.name === "div")[0].fills.map((f: any) => f.type), ["SOLID", "IMAGE"]);
+});

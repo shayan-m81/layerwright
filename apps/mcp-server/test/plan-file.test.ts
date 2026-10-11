@@ -100,7 +100,7 @@ test("save and planFile stay inside the project; preview takes a plan or a planF
   const work = mkdtempSync(join(tmpdir(), "lw-plan-"));
   const outside = mkdtempSync(join(tmpdir(), "lw-outside-"));
   writeFileSync(join(outside, "x.json"), JSON.stringify({ name: "x", screens: [{ type: "frame" }] }));
-  symlinkSync(outside, join(work, "link"));
+  symlinkSync(outside, join(work, "link"), "junction"); // (a junction on Windows: no admin rights needed)
   const { call, calls } = await connect(work);
   for (const save of ["../x.json", join(outside, "y.json"), "link/y.json"]) {
     const r = await call("figma_inspect", { target: "1:2", format: "plan", save });
@@ -121,17 +121,19 @@ test("save and planFile stay inside the project; preview takes a plan or a planF
   assert.match((await call("figma_preview_plan", { planFile: "broken.json" })).data.errors[0].message, /Malformed JSON/);
 });
 
-test("a save never goes through a link: a link to a file that doesn't exist yet, or a linked exports folder", async () => {
+test("a save never goes through a link: a link to a file that doesn't exist yet, or a linked exports folder", async (t) => {
   const work = mkdtempSync(join(tmpdir(), "lw-plan-"));
   const outside = mkdtempSync(join(tmpdir(), "lw-outside-"));
-  symlinkSync(join(outside, "new.json"), join(work, "dangling.json")); // points at nothing (yet)
+  // A file link needs Developer Mode or admin rights on Windows.
+  try { symlinkSync(join(outside, "new.json"), join(work, "dangling.json")); } // points at nothing (yet)
+  catch (e) { if (process.platform === "win32" && (e as NodeJS.ErrnoException).code === "EPERM") return t.skip("no file links here (Windows without Developer Mode)"); throw e; }
   const { call } = await connect(work);
   const r = await call("figma_inspect", { target: "1:2", format: "plan", save: "dangling.json" });
   assert.ok(r.isError);
   assert.match(r.data.errors[0].message, /is a link; Layerwright doesn't write through links/);
   assert.equal(existsSync(join(outside, "new.json")), false, "nothing written outside the project");
   mkdirSync(join(work, ".layerwright"), { recursive: true });
-  symlinkSync(outside, join(work, ".layerwright", "exports"));
+  symlinkSync(outside, join(work, ".layerwright", "exports"), "junction");
   const home = await call("figma_inspect", { target: "1:2", format: "plan", save: true });
   assert.ok(home.isError);
   assert.match(home.data.errors[0].message, /folder linked outside \.layerwright/);

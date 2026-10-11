@@ -12,22 +12,24 @@ npm workspaces monorepo, Node 20+, TypeScript run directly via `tsx` (no compile
 
 ```bash
 npm install
-npx playwright install chromium   # only if Google Chrome isn't installed (HTML import tests need a Chromium)
+npx playwright-core install chromium   # only if Google Chrome isn't installed (HTML import tests need a Chromium); Linux: --with-deps
 npm run typecheck                 # tsc --noEmit for all four workspaces
-npm test                          # node:test over every workspace's test/*.test.ts
+npm test                          # node:test over every workspace's test/*.test.ts (scripts/test.mjs: same on Windows)
 npm run build                     # sync skill → build figma-plugin → bundle mcp-server (order matters)
 npm run mcp                       # run the CLI/MCP server from source (tsx apps/mcp-server/src/cli.ts)
 ```
 
-CI (and the PR checklist) runs `npm run typecheck && npm run build && npm test`.
+CI (and the PR checklist) runs `npm run typecheck && npm run build && npm test` on Linux (Node 20 and 22), Windows and macOS.
 
-Single test file / single test:
+Single test file / single test (works in any shell; flags pass to node's test runner):
 ```bash
-LAYERWRIGHT_NO_UPDATE_CHECK=1 node --import tsx --test --test-timeout=120000 packages/core/test/resolve.test.ts
-LAYERWRIGHT_NO_UPDATE_CHECK=1 node --import tsx --test --test-name-pattern="server.json" apps/mcp-server/test/registry.test.ts
+npm test -- packages/core/test/resolve.test.ts
+npm test -- --test-name-pattern="server.json" apps/mcp-server/test/registry.test.ts
 ```
 
-HTML importer snapshots (`packages/html-import/test/__snapshots__`): regenerate with `UPDATE_SNAPSHOTS=1 npm test` and review the diff.
+HTML importer snapshots (`packages/html-import/test/__snapshots__`): regenerate with `npm test -- --update-snapshots` and review the diff.
+
+Windows and Linux: keep commands shell-neutral. Claude Code starts the plugin's server, hooks and monitor through `plugins/layer/scripts/run.mjs` (`node "${CLAUDE_PLUGIN_ROOT}/scripts/run.mjs" <npx arguments>`): npx is a `.cmd`/`.ps1` on Windows, which hooks and MCP servers can't start. Spawn `npm`/`npx`/`claude` with a shell on Windows (`agents.ts` `run`), compare paths with `path.relative`, write LF (`.gitattributes`), and remember Windows refuses a localhost connection only after a second or two (`relay.ts` `tcpProbe`).
 
 Plugin dev loop: `npm run build` (or `npm run watch -w @cde/figma-plugin`), then `npx tsx apps/mcp-server/src/cli.ts plugin` to copy the build into `~/.layerwright/figma-plugin` with this computer's pairing key, and run that copy in Figma desktop (import its `manifest.json` once). Don't run `apps/figma-plugin/manifest.json` directly: that copy has no key, and the hub refuses unpaired windows. After changing server code, reconnect the MCP server (`/mcp`) so the session stops running the code it loaded at start.
 
@@ -38,7 +40,7 @@ Agent ──stdio/MCP──▶ MCP server (one per session) ──ws──▶ hu
 ```
 
 - `packages/core` (`@cde/core`): pure TS, no I/O, bundled into both the server and the plugin. The Design DSL (Zod schemas in `dsl.ts`), resolver/compiler (`resolver.ts`, resolves component/variant/variable/text-style names against a cached DS scan and returns structured errors with suggestions), semantic inference, retrieval, analyzer/critique, plan export, and the shared types including the bridge protocol.
-- `packages/html-import` (`@cde/html-import`): renders HTML in headless Chromium via `playwright-core` (`browser.ts`), reads computed styles/boxes (`dom.ts`), converts DOM → DSL in `convert.ts` (**pure and deterministic**), maps buttons/inputs/links to DS components (`design-system.ts`), and the pixel-faithful layer tree (`tree.ts`).
+- `packages/html-import` (`@cde/html-import`): renders HTML in headless Chromium via `playwright-core` (`browser.ts`), reads computed styles/boxes (`dom.ts`), converts DOM → DSL in `convert.ts` (**pure and deterministic**), maps buttons/inputs/links to DS components (`design-system.ts`), and the pixel-faithful layer tree (`tree.ts`). Both serializers share the in-page helpers in `page.ts` (inline SVG, `<use>` sprites, icon fonts, where each picture comes from); `assets.ts` then loads the pictures in Node through the page's context and hands Figma only SVG markup or PNG/JPEG/GIF data (WebP/AVIF decoded by the browser), so the plugin never fetches anything.
 - `apps/mcp-server` (published as `layerwright`): `cli.ts` is the entry for both the MCP server and the CLI subcommands (`init`, `doctor`, `import`, `hub`, `agents`, `report`, `inbox-watch`, `hook-event`, …). `server.ts` registers the MCP tools. Bridge layers: `bridge.ts` (`WsBridge`, direct single-session mode, `LAYERWRIGHT_DIRECT=1`), `hub.ts` (shared per-machine router; tags plugin request ids as `<session>~<id>`, idles out after 60s with no sessions), `relay.ts` (`RelayBridge`: the session's client to the hub; spawns the hub detached if the port is free). `prompts.ts` builds MCP prompts at runtime by slicing `skills/figma-design/SKILL.md` by `## ` heading, so renaming skill headings can break prompts. `meta.ts` decides `FROM_SOURCE` (running from a checkout vs the `dist/` bundle) and resolves where the plugin, skill, skills library and agent plugin live in each case.
 - `apps/figma-plugin` (`@cde/figma-plugin`): esbuild IIFE bundle. `code.ts` is the main thread entry, `ui.html` the relay/plugin window, `execute.ts` the fixed executor for resolved plans, `edit.ts` for `figma_edit` ops, `scan.ts` DS scan/inspect, `import.ts` the faithful importer, plus cursor/notes/sessions/undo UX.
 
@@ -48,7 +50,11 @@ Bridge protocol is `{ id, method, params }` → `{ id, ok, result | error }`; th
 
 Who may connect (keep this when touching `hub.ts`/`bridge.ts`): `originAllowed()` refuses any upgrade with a browser Origin (the plugin iframe sends `null`; Node clients send none), sessions and the plugin window must present `pluginKey()` (`~/.layerwright/key`), and only whitelisted `notify` message types are passed to the window.
 
-Undo and the AI cursor (`apps/figma-plugin/src/undo.ts`, `cursor.ts`, `own.ts`): every document-changing request is `holdUndo()` → work → erase cursor → `releaseUndo()`, i.e. exactly one undo step, and cursor nodes never exist outside a request. Read-only methods draw nothing. Plugin writes outside a request (note replies) go through `ownStep()`. `own.ts` remembers what Layerwright itself selected, wrote or moved, since Figma reports the plugin's and the user's changes alike as LOCAL.
+Undo and the AI cursor (`apps/figma-plugin/src/undo.ts`, `cursor.ts`, `own.ts`, `working.ts`): every document-changing request is `holdUndo()` → work → `cursorWorkEnd()` → `releaseUndo()`, i.e. exactly one undo step. The cursor lives for a session's whole task (reads too, and "thinking" between steps) and goes when the session is done (`session-state` `kind: "done"`, a finished request from the window) or quiet, so every commit goes through undo.ts's `commit()`: `cursorsStash()` takes all cursor nodes off, `figma.commitUndo()`, and they are drawn again in the same moment. Never call `figma.commitUndo()` directly. Figma takes what a plugin drew since its last commit as the newest undo step (tested in Figma), so the user's first ⌘Z after a step may only take the cursor away: it then stays away until its session's next step, and a redo that brings it back has it removed again (`ghosts`). Its tag is one line: the session's name and a short line of what it's doing. Cursors step aside on the user's selection, edit or page change (`cursorsYield`), and one an undo removes stays off until its session's next step. Status checks and links (`ping`, `refs`) draw nothing. Plugin writes outside a request (note replies) go through `ownStep()`. `own.ts` remembers what Layerwright itself selected, wrote or moved, since Figma reports the plugin's and the user's changes alike as LOCAL.
+
+Session lifetime (`server.ts`, `relay.ts`, `cli.ts` `inbox-watch`): after `IDLE_MS` (30 min) without a Figma call or a request from a window, a session leaves the hub (`RelayBridge.leave`) and its watcher stops by itself (it reads `~/.layerwright/inbox/<session>.active`); the next Figma call joins again and hands the watcher back as `doFirst`.
+
+Updates (`setup.ts` `update`, `update.ts`): `npx -y layerwright@latest update` updates the Figma plugin, the agent plugin and pinned project entries; `layerwright_update` checks npm now (`fresh`), the SessionStart hook shows a once-a-day `systemMessage` (`updateNotice`), and a hub hands the port to a newer version with the same `HUB_PROTOCOL` once it's idle. User-written skills go through `SkillStore.write` (the window's `skills-write`, paired only; `layerwright_skills` action `write`).
 
 ## Ground rules (from CONTRIBUTING.md)
 
@@ -61,7 +67,7 @@ Undo and the AI cursor (`apps/figma-plugin/src/undo.ts`, `cursor.ts`, `own.ts`):
 ## Things that must stay in sync
 
 - `skills/figma-design/SKILL.md` is the source of truth for the skill. `npm run build` copies it to `plugins/layer/skills/figma-design/SKILL.md`; the mcp-server build also ships it, `skills/library`, and `plugins/layer` into `dist/`. `.claude/skills/figma-design/SKILL.md` is this repo's own project copy. Edit the source, not the copies.
-- Version bumps: `apps/mcp-server/package.json`, `server.json` (description ≤ 100 chars), `plugins/layer/.claude-plugin/plugin.json`, `plugins/layer/.codex-plugin/plugin.json` (version and its pinned `layerwright@<version>` arg), `plugins/layer/.mcp.json`, `plugins/layer/hooks/hooks.json`, `plugins/layer/monitors/monitors.json` (all pinned `npx -y --prefer-offline layerwright@<version>`, never `@latest`), `.claude-plugin/marketplace.json`. `apps/mcp-server/test/registry.test.ts` fails when these disagree. Releases are cut by pushing a `v*` tag matching the mcp-server package version; release notes are extracted from the matching CHANGELOG section.
+- Version bumps: `apps/mcp-server/package.json`, `server.json` (description ≤ 100 chars), `plugins/layer/.claude-plugin/plugin.json`, `plugins/layer/.codex-plugin/plugin.json` (version and its pinned `layerwright@<version>` arg), `plugins/layer/.mcp.json`, `plugins/layer/hooks/hooks.json`, `plugins/layer/monitors/monitors.json` (all pinned `-y --prefer-offline layerwright@<version>`, never `@latest`; Claude Code's run it through the launcher, Codex's through `npx`), `.claude-plugin/marketplace.json`. `apps/mcp-server/test/registry.test.ts` fails when these disagree. Releases are cut by pushing a `v*` tag matching the mcp-server package version; release notes are extracted from the matching CHANGELOG section.
 
 ## Runtime state and env vars
 

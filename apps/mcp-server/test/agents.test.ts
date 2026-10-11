@@ -14,7 +14,11 @@ process.env.CLAUDE_CONFIG_DIR = tmp();
 process.env.CODEX_HOME = tmp();
 // Fake `claude` and `codex` on PATH, so detection finds them; the real ones are never run.
 const bin = tmp();
-for (const c of ["claude", "codex"]) { writeFileSync(join(bin, c), "#!/bin/sh\nexit 0\n"); chmodSync(join(bin, c), 0o755); }
+// (On Windows a command is found by its extension: claude.cmd.)
+for (const c of ["claude", "codex"]) {
+  if (process.platform === "win32") writeFileSync(join(bin, `${c}.cmd`), "@exit /b 0\r\n");
+  else { writeFileSync(join(bin, c), "#!/bin/sh\nexit 0\n"); chmodSync(join(bin, c), 0o755); }
+}
 process.env.PATH = bin + delimiter + (process.env.PATH ?? "");
 const plugin = tmp();
 mkdirSync(join(plugin, "dist"));
@@ -48,18 +52,30 @@ test("the marketplace: both catalogues, the plugin with its commands and skill, 
   assert.equal(JSON.parse(readFileSync(join(dir, ".claude-plugin", "marketplace.json"), "utf8")).plugins[0].source, "./plugins/layer");
   assert.deepEqual(JSON.parse(readFileSync(join(dir, ".agents", "plugins", "marketplace.json"), "utf8")).plugins[0].source, { source: "local", path: "./plugins/layer" });
   const mcp = JSON.parse(readFileSync(join(p, ".mcp.json"), "utf8")).mcpServers.layerwright;
-  assert.deepEqual(mcp, { command: "npx", args: ["-y", "--prefer-offline", "layerwright@9.9.9"], env: { LAYERWRIGHT_PORT: "7336", LAYERWRIGHT_WORKDIR: "${CLAUDE_PROJECT_DIR}" } });
+  // Claude Code starts npx through the plugin's launcher (node is a real program on Windows too); Codex finds npx.cmd.
+  assert.deepEqual(mcp, { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/scripts/run.mjs", "-y", "--prefer-offline", "layerwright@9.9.9"], env: { LAYERWRIGHT_PORT: "7336", LAYERWRIGHT_WORKDIR: "${CLAUDE_PROJECT_DIR}" } });
+  assert.ok(existsSync(join(p, "scripts", "run.mjs")), "the launcher ships with the plugin");
   const codex = JSON.parse(readFileSync(join(p, ".codex-plugin", "plugin.json"), "utf8"));
   assert.deepEqual(codex.mcpServers.layerwright, { command: "npx", args: ["-y", "--prefer-offline", "layerwright@9.9.9"], env: { LAYERWRIGHT_PORT: "7336" } });
   assert.equal(codex.skills, "./skills/");
   // The monitor runs the same Layerwright: inbox-watch wakes the session when a request comes from Figma.
-  assert.deepEqual(JSON.parse(readFileSync(join(p, "monitors", "monitors.json"), "utf8"))[0].command, "npx -y --prefer-offline layerwright@9.9.9 inbox-watch");
-  assert.equal(JSON.parse(readFileSync(join(p, "hooks", "hooks.json"), "utf8")).hooks.SessionStart[0].hooks[0].command, "npx -y --prefer-offline layerwright@9.9.9 session-hint");
+  const run = 'node "${CLAUDE_PLUGIN_ROOT}/scripts/run.mjs" -y --prefer-offline layerwright@9.9.9';
+  assert.deepEqual(JSON.parse(readFileSync(join(p, "monitors", "monitors.json"), "utf8"))[0].command, `${run} inbox-watch`);
+  assert.equal(JSON.parse(readFileSync(join(p, "hooks", "hooks.json"), "utf8")).hooks.SessionStart[0].hooks[0].command, `${run} session-hint`);
   const hooks = JSON.parse(readFileSync(join(p, "hooks", "hooks.json"), "utf8")).hooks;
-  assert.equal(hooks.Stop[0].hooks[0].command, "npx -y --prefer-offline layerwright@9.9.9 hook-event", "the chat hooks: when the session waits for the user, Figma says so");
+  assert.equal(hooks.Stop[0].hooks[0].command, `${run} hook-event`, "the chat hooks: when the session waits for the user, Figma says so");
   assert.equal(hooks.PreToolUse[0].matcher, "AskUserQuestion");
-  assert.equal(hooks.UserPromptSubmit[0].hooks[0].command, "npx -y --prefer-offline layerwright@9.9.9 hook-event", "the user's reply in the chat clears 'waiting for you'");
+  assert.equal(hooks.UserPromptSubmit[0].hooks[0].command, `${run} hook-event`, "the user's reply in the chat clears 'waiting for you'");
   for (const s of ["help", "connect", "import", "design", "edit", "code", "check", "components", "prototype", "shot", "inbox", "doctor", "report", "figma-design"]) assert.ok(existsSync(join(p, "skills", s, "SKILL.md")), s);
+});
+
+test("hook and monitor command lines read the same in sh, Git Bash and PowerShell", async () => {
+  const { shellLine } = await import("../src/agents.ts");
+  const node = "C:\\Program Files\\nodejs\\node.exe", cli = "C:\\Users\\First Last\\AppData\\Roaming\\npm\\node_modules\\layerwright\\dist\\cli.js";
+  assert.equal(shellLine(node, [cli, "hook-event"], "win32"), 'node "C:/Users/First Last/AppData/Roaming/npm/node_modules/layerwright/dist/cli.js" hook-event',
+    "Windows: node by name (a quoted program path doesn't run in PowerShell), paths in double quotes with forward slashes");
+  assert.equal(shellLine("/opt/node 20/bin/node", ["/Users/me/my cli.js", "inbox-watch"], "darwin"), "'/opt/node 20/bin/node' '/Users/me/my cli.js' inbox-watch", "elsewhere: this exact node");
+  assert.equal(shellLine("node", ["${CLAUDE_PLUGIN_ROOT}/scripts/run.mjs", "-y", "layerwright@1.0.0"], "darwin"), 'node "${CLAUDE_PLUGIN_ROOT}/scripts/run.mjs" -y layerwright@1.0.0', "the launcher's path in double quotes, as Claude Code's docs say");
 });
 
 test("on Windows the agents' CLIs run through cmd.exe: a path with spaces stays one argument", async () => {

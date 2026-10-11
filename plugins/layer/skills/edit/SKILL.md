@@ -13,4 +13,4 @@ The change is what the user typed after the command. Follow the figma-design ski
 2. Read before you write: `figma_inspect({ format: "summary" })`, then `"text"`, `"instances"` or `"tree"` as needed.
 3. Changing or removing existing layers needs the user's yes: say exactly what will change, then `figma_edit({ ops, approved: true })` (one call, one undo step), or a plan with `inserts` for new parts.
 4. Look at the result (`figma_export_image`) and fix what looks wrong.
-5. Report what changed; one Cmd+Z in Figma reverts it.
+5. Report what changed; one undo in Figma (⌘Z, or Ctrl+Z on Windows) reverts it.

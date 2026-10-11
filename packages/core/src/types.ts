@@ -248,7 +248,9 @@ export interface ResolvedBase {
 export interface ResolvedShadow { type: "DROP_SHADOW" | "INNER_SHADOW"; x: number; y: number; blur: number; spread: number; hex: string }
 export interface ResolvedGradient { type?: "linear" | "radial" | "angular" | "diamond"; angle: number; stops: { hex: string; position: number }[] }
 /** An image already in the file, by its hash (figma.getImageByHash): nothing is uploaded again. */
-export interface ResolvedImageFill { hash: string; scaleMode: "FILL" | "FIT" | "CROP" | "TILE" }
+/** An image on a frame or shape: one already in the file (hash), or new bytes (src: a data URL by the time it reaches
+ *  the plugin; the server inlines https). */
+export interface ResolvedImageFill { hash?: string; src?: string; scaleMode: "FILL" | "FIT" | "CROP" | "TILE" }
 export type ResolvedLineHeight = { unit: "PIXELS" | "PERCENT"; value: number } | { unit: "AUTO" };
 
 export interface ResolvedFrame extends ResolvedBase {
@@ -412,22 +414,21 @@ export type BridgeMethod =
   | "cleanup"
   | "refs";
 
-/** A Claude Code / Cursor session connected to the shared bridge (the hub). */
-/** `titled`: the name is the agent's title for its task, not the folder name it started with. */
-/** `connectedAt`: when it first joined (kept across reconnects). */
-/** `file`: the Figma file it works in (from the hub, for the windows' Sessions tab). */
-export interface SessionInfo { id: string; name: string; color: string; workdir?: string; client?: string; version?: string; connectedAt: number; titled?: boolean; file?: string }
+/** A Claude Code / Cursor session connected to the shared bridge (the hub). `titled`: the name is the agent's title for
+ *  its task, not the folder name it started with. `connectedAt`: when it first joined (kept across reconnects).
+ *  `file`, `activeAt`: the Figma file it works in and when it last used Figma (from the hub, for the windows). */
+export interface SessionInfo { id: string; name: string; color: string; workdir?: string; client?: string; version?: string; connectedAt: number; titled?: boolean; file?: string; activeAt?: number }
 /** A request the user sent from the Figma window to one session: a quick action ("code", "polish"…) or their own
- *  words ("ask"), about the layers selected when they sent it. */
-/** `skills`: skills the user picked for this request in the window's chat box (@name): the agent reads them first.
+ *  words ("ask"), about the layers selected when they sent it.
+ *  `skills`: skills the user picked for this request in the window's chat box (@name): the agent reads them first.
  *  `via`: the user wrote it on the canvas ("@session …"), in a note (a text layer, id `note`, on the layers) or in an
  *  annotation on the layer; the answer goes under it. */
 export interface FigmaAction { id: string; kind: string; text?: string; nodes: { id: string; name: string; type: string }[]; more?: number; page?: string; file?: string; at: number; skills?: string[]; via?: "annotation" | "note"; note?: string }
 /** queued: waiting for the session's next step · sent: pushed into the conversation · seen: the agent has it ·
  *  working / done / failed: what the agent reported with figma_reply · stopped: the user stopped it in the window. */
 export type FigmaActionStatus = "queued" | "sent" | "seen" | "working" | "done" | "failed" | "stopped";
-/** `session` is set by the hub: which session sent the request. Absent with a direct (single-session) bridge. */
-/** `task`: the request from the Figma window this work is for (its own cursor in the plugin), when the agent named it. */
+/** `session` is set by the hub: which session sent the request. Absent with a direct (single-session) bridge.
+ *  `task`: the request from the Figma window this work is for (its own cursor in the plugin), when the agent named it. */
 export interface BridgeRequest { id: string; method: BridgeMethod; params?: unknown; session?: SessionInfo; task?: string }
 export interface BridgeResponse { id: string; ok: boolean; result?: unknown; error?: StructuredError }
 /** `protocol` 2+: the plugin understands sessions (selection hand-off, per-session activity). */
@@ -442,7 +443,12 @@ export interface ImportPaint { hex: string; a: number }
 export type ImportNode =
   | { type: "frame"; name: string; x: number; y: number; w: number; h: number; fill?: ImportPaint; gradient?: { type?: "linear" | "radial" | "angular" | "diamond"; angle: number; stops: (ImportPaint & { pos: number })[] }; blur?: number; backdropBlur?: number;
       shadows?: (ImportPaint & { inset: boolean; x: number; y: number; blur: number; spread: number })[]; stroke?: ImportPaint & { weights: number[] };
-      radius?: number[]; clip?: boolean; blend?: string; opacity?: number; placeholder?: string; swap?: ImportSwapRef; children: ImportNode[] }
+      radius?: number[]; clip?: boolean; blend?: string; opacity?: number; placeholder?: string; swap?: ImportSwapRef;
+      /** A CSS background picture, painted over the fill and under the gradient (src: a data:image/… URL). */
+      image?: { src: string; fit: ImportFit }; children: ImportNode[] }
   | { type: "text"; name: string; x: number; y: number; w: number; h: number; content: string; font: { family: string; style: string }; size: number;
       lineHeight?: number; letterSpacing?: number; color?: string; opacity?: number; align: "LEFT" | "RIGHT" | "CENTER"; wrap: boolean }
-  | { type: "svg"; name: string; x: number; y: number; w: number; h: number; svg: string };
+  | { type: "svg"; name: string; x: number; y: number; w: number; h: number; svg: string }
+  /** An <img>, a <canvas> or an icon-font icon: a picture (src: a data:image/… URL; none: it didn't load, a placeholder). */
+  | { type: "image"; name: string; x: number; y: number; w: number; h: number; src?: string; fit?: ImportFit; radius?: number[]; opacity?: number };
+export type ImportFit = "FILL" | "FIT" | "TILE" | "CROP";

@@ -1,11 +1,12 @@
 {
   "mcpServers": {
     "layerwright": {
-      "command": "npx",
+      "command": "node",
       "args": [
+        "${CLAUDE_PLUGIN_ROOT}/scripts/run.mjs",
         "-y",
         "--prefer-offline",
-        "layerwright@1.3.0"
+        "layerwright@1.4.0"
       ],
       "env": {
         "LAYERWRIGHT_WORKDIR": "${CLAUDE_PROJECT_DIR}"

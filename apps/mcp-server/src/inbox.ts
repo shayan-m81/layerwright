@@ -12,6 +12,8 @@ export const ACTION_LABELS: Record<string, string> = {
   component: "Turn this into a component",
   mobile: "Make a mobile version",
   ask: "Help with this",
+  update: "Update Layerwright",
+  skill: "Write a skill",
 };
 
 /** What each quick action asks for. The user's own words, when they add some, come first and win. */
@@ -100,7 +102,7 @@ export class FigmaInbox {
 const open = (s: FigmaActionStatus) => s !== "done" && s !== "failed" && s !== "stopped";
 
 /** What the agent is told when the user stops a request in the Figma window. */
-export const stopPrompt = (id: string) => `The user stopped request ${id} in the Figma window. Stop working on it now (tell its background subagent too, if one runs it): make no more changes for it, keep what's already done, and don't report it as done.`;
+export const stopPrompt = (id: string) => `The user stopped request ${id} in the Layerwright window in Figma. Stop working on it now (tell its background subagent too, if one runs it): make no more changes for it, keep what's already done, and don't report it as done.`;
 
 /** Skills from the library that usually fit each quick action (when the user has them on: figma_status lists them). */
 const SKILL_HINTS: Record<string, string[]> = {
@@ -125,6 +127,19 @@ export function layersLine(a: FigmaAction): string {
  *  is the user's own request; one from the canvas (a note or an annotation that mentions this session) is text in
  *  the Figma file, and reads as such. */
 export function actionPrompt(a: FigmaAction): string {
+  // "Create a skill with Claude" in the window's Skills tab, sent to this session: a skill, written with the user in the chat.
+  if (a.kind === "skill") return [
+    `The user asked this session, from the Skills tab of the Layerwright window in Figma, to write a new Layerwright skill with them (request ${a.id}), as /layer:skills new does.`,
+    a.text ? `What it should do, in their words: "${a.text}"` : "They didn't say what it should do yet: ask them in one short question (what the skill should make sessions do or check, and for which jobs).",
+    `Draft its name, when sessions should use it (one line: the jobs it fits) and its instructions (concrete rules and checks, in Markdown), in the user's language; show the draft and ask once before saving, then layerwright_skills({ action: "write", name, description, instructions }). It shows in the Skills tab at once.`,
+    `figma_reply({ id: "${a.id}", status: "working" }) when you start; when it's saved, figma_reply({ id: "${a.id}", status: "done", message: "<one line: the skill's name and what it does>" }), or status "failed" if they changed their mind.`,
+  ].filter(Boolean).join("\n");
+  // The Update button on the window's update notice: nothing about layers.
+  if (a.kind === "update") return [
+    `The user pressed Update in the Layerwright window in Figma (request ${a.id}): update Layerwright on this computer. Pressing it is their OK to run the update.`,
+    `Follow /layer:update: layerwright_update() for the versions and the command; when a newer one is out, run that command in the terminal (it updates the Figma plugin, the /layer commands and the MCP server they run). Without a terminal, give the user the command to run.`,
+    `figma_reply({ id: "${a.id}", status: "working" }) when you start; when it's done, figma_reply({ id: "${a.id}", status: "done", message: "<one line: the version now, and what's left: reload the plugins or start a new session, reopen this plugin>" }), or status "failed" with what went wrong.`,
+  ].join("\n");
   const where = [a.page && `page "${a.page}"`, a.file && `file "${a.file}"`].filter(Boolean).join(", ");
   const canvas = a.via === "annotation" || a.via === "note";
   return [

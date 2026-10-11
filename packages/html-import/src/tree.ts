@@ -1,14 +1,19 @@
 // HTML → Figma node tree (pixel-faithful, absolute layers; used by figma_import_html). Renders a prototype in headless Chrome and serializes what the browser
-// actually painted (boxes, computed styles, text runs, inline SVG). No model tokens are spent on layout.
+// actually painted (boxes, computed styles, text runs, inline SVG, pictures). No model tokens are spent on layout.
+import type { Page } from "playwright-core";
 import type { ImportNode } from "@cde/core";
+import { assetName, fitSvg, loadAssets, needsLoading, svgPng } from "./assets.ts";
 import { withPage } from "./browser.ts";
+import { installHelpers } from "./page.ts";
 
 export interface ImportTarget { selector: string; name?: string; index?: number }
 /** Replace matching elements with instances of an existing component. Variant = first rule whose test matches
  *  (a CSS selector inside the element, or "text:<substring>"); otherwise `default`. */
 export interface ImportSwap { selector: string; component: string; id?: string; key?: string; variants?: { test: string; variant: string }[]; default?: string; overrides?: "none" | "text" | "match"; fills?: boolean }
 export interface ImportAction { click: string; index?: number; waitMs?: number }
-export interface ImportedScreen { name: string; width: number; height: number; tree: ImportNode; nodeCount: number }
+export interface ImportedScreen { name: string; width: number; height: number; tree: ImportNode; nodeCount: number;
+  /** What couldn't be imported as it looks (a picture that didn't load, an icon-font icon beside text). */
+  warnings: string[] }
 
 export async function importHtml(opts: { file: string; root?: string; targets?: ImportTarget[]; swaps?: ImportSwap[]; actions?: ImportAction[]; viewport?: number; waitMs?: number }): Promise<ImportedScreen[]> {
   return withPage(opts.file, { root: opts.root, width: opts.viewport ?? 2400, height: 1200, waitMs: opts.waitMs ?? 1500 }, async (page) => {
@@ -16,8 +21,52 @@ export async function importHtml(opts: { file: string; root?: string; targets?: 
       await page.locator(a.click).nth(a.index ?? 0).click();
       await page.waitForTimeout(a.waitMs ?? 300);
     }
-    return (await page.evaluate(SERIALIZE, { targets: opts.targets ?? null, swaps: opts.swaps ?? [] })) as ImportedScreen[];
+    await installHelpers(page);
+    const { screens, warnings } = (await page.evaluate(SERIALIZE, { targets: opts.targets ?? null, swaps: opts.swaps ?? [] })) as { screens: ImportedScreen[]; warnings: string[] };
+    for (const [i, sc] of screens.entries()) sc.warnings = [...(i ? [] : warnings), ...(await loadPictures(page, sc.tree))];
+    return screens;
   });
+}
+
+/** Loads the pictures and puts them in the tree: an SVG becomes a vector (a mask's in the element's colour), anything
+ *  else PNG/JPEG/GIF data; a background SVG under other content is drawn as a PNG. */
+async function loadPictures(page: Page, root: any): Promise<string[]> {
+  const all: any[] = [];
+  const visit = (n: any) => { all.push(n); (n.children ?? []).forEach(visit); };
+  visit(root);
+  const urls = all.flatMap((n) => [n.type === "image" && needsLoading(n.src) ? n.src : "", n.image?.url ?? "", n.mask ?? ""]).filter(Boolean);
+  if (!urls.length) return [];
+  const loaded = await loadAssets(page, urls);
+  const warnings: string[] = [];
+  const toSvg = (n: any, svg: string) => { for (const k of Object.keys(n)) if (!["name", "x", "y", "w", "h"].includes(k)) delete n[k]; Object.assign(n, { type: "svg", svg }); };
+  for (const n of all) {
+    if (n.type === "image" && n.src && loaded.has(n.src)) {
+      const l = loaded.get(n.src)!;
+      const svg = "svg" in l ? await fitSvg(page, l.svg, n.w, n.h) : undefined;
+      if (svg) toSvg(n, svg);
+      else if ("src" in l) n.src = l.src;
+      else { warnings.push(`The picture ${assetName(n.src)} couldn't be loaded (${"error" in l ? l.error : "not a valid SVG"}); a placeholder is used.`); delete n.src; }
+      continue;
+    }
+    if (n.mask) {
+      const l = loaded.get(n.mask)!, hex = n.fill?.hex ?? n.gradient?.stops?.[0]?.hex ?? n.maskColor;
+      const svg = "svg" in l ? await fitSvg(page, l.svg, n.w, n.h, hex) : undefined;
+      if (svg) { toSvg(n, svg); continue; }
+      warnings.push(`"${n.name}" is drawn with a CSS mask that isn't an SVG (${assetName(n.mask)}); it's imported as a plain box.`);
+      delete n.mask; delete n.maskColor;
+    }
+    if (n.image?.url) {
+      const l = loaded.get(n.image.url)!;
+      if ("svg" in l && !n.children?.length && !n.fill && !n.stroke) {
+        const svg = await fitSvg(page, l.svg, n.w, n.h);
+        if (svg) { toSvg(n, svg); continue; }
+      }
+      const src = "src" in l ? l.src : "svg" in l ? await svgPng(page, l.svg, n.w * 2, n.h * 2) : undefined;
+      if (src) n.image = { src, fit: n.image.fit };
+      else { warnings.push(`The background picture ${assetName(n.image.url)} of "${n.name}" couldn't be loaded (${"error" in l ? l.error : "not a valid SVG"}); left out.`); delete n.image; }
+    }
+  }
+  return warnings;
 }
 
 // Runs inside the page. Kept dependency-free and self-contained.
@@ -92,61 +141,11 @@ const SERIALIZE = ({ targets, swaps }: { targets: ImportTarget[] | null; swaps: 
   let count = 0;
   const nameOf = (el: Element) => el.getAttribute("aria-label") || el.getAttribute("data-name") || el.getAttribute("role") || el.tagName.toLowerCase();
 
+  const lw = (window as any).__lw; // page.ts: SVG, pictures, icon fonts
   function svgNode(el: SVGSVGElement, ox: number, oy: number) {
     const r = el.getBoundingClientRect();
-    const clone = el.cloneNode(true) as SVGSVGElement;
-    const src = [el, ...el.querySelectorAll("*")] as Element[];
-    const dst = [clone, ...clone.querySelectorAll("*")] as Element[];
-    src.forEach((s, i) => {
-      const cs = getComputedStyle(s); const d = dst[i];
-      d.removeAttribute("style"); d.removeAttribute("class");
-      if (i === 0) return;
-      const f = color(cs.fill); const st = color(cs.stroke);
-      d.setAttribute("fill", f ? f.hex : "none");
-      if (f && f.a < 1) d.setAttribute("fill-opacity", String(f.a));
-      if (st) { d.setAttribute("stroke", st.hex); d.setAttribute("stroke-width", String(px(cs.strokeWidth))); d.setAttribute("stroke-linecap", cs.strokeLinecap); d.setAttribute("stroke-linejoin", cs.strokeLinejoin); }
-      // Dashes: a progress ring (one dash about as long as the circle, shifted by an offset) becomes a real arc,
-      // since Figma renders SVG dash patterns differently; other dashes are kept as a plain pattern.
-      if (st && cs.strokeDasharray && cs.strokeDasharray !== "none") {
-        const dash = cs.strokeDasharray.split(/[ ,]+/).map(px).filter((n) => n > 0);
-        const off = px(cs.strokeDashoffset);
-        d.removeAttribute("stroke-dashoffset"); d.removeAttribute("stroke-dasharray");
-        const isCircle = s.tagName.toLowerCase() === "circle";
-        const rr = isCircle ? px(s.getAttribute("r") ?? "0") : 0, cx = px(s.getAttribute("cx") ?? "0"), cy = px(s.getAttribute("cy") ?? "0");
-        const circ = 2 * Math.PI * rr;
-        const visible = dash.length === 1 ? dash[0] - off : dash.length === 2 && dash[1] >= circ * 0.98 ? dash[0] - off : NaN;
-        if (isCircle && rr > 0 && Number.isFinite(visible) && (dash[0] >= circ * 0.98 || dash.length === 2)) {
-          const frac = Math.max(0, Math.min(1, visible / circ));
-          if (frac < 0.999) {
-            const a = frac * 2 * Math.PI;
-            const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-            for (const at of [...d.attributes]) if (!["cx", "cy", "r"].includes(at.name)) path.setAttribute(at.name, at.value);
-            path.setAttribute("d", frac <= 0 ? "" : `M ${cx + rr} ${cy} A ${rr} ${rr} 0 ${a > Math.PI ? 1 : 0} 1 ${cx + rr * Math.cos(a)} ${cy + rr * Math.sin(a)}`);
-            path.setAttribute("fill", "none");
-            d.replaceWith(path);
-          }
-        } else if (dash.length) d.setAttribute("stroke-dasharray", dash.join(" "));
-      }
-    });
-    // A CSS transform on the <svg> itself (e.g. rotate(-90deg) to start a ring at the top) is baked into the markup.
-    const tf = getComputedStyle(el).transform;
-    if (tf && tf !== "none") {
-      const m = tf.match(/matrix\(([^)]+)\)/);
-      const vb = (el as SVGSVGElement).viewBox?.baseVal;
-      if (m) {
-        const [a, b, c, dd, e, f] = m[1].split(",").map(Number);
-        const w = vb && vb.width ? vb.width : r.width, h = vb && vb.height ? vb.height : r.height;
-        const k = r.width ? w / r.width : 1;
-        const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
-        g.setAttribute("transform", `translate(${w / 2} ${h / 2}) matrix(${a} ${b} ${c} ${dd} ${e * k} ${f * k}) translate(${-w / 2} ${-h / 2})`);
-        while (clone.firstChild) g.appendChild(clone.firstChild);
-        clone.appendChild(g);
-      }
-    }
-    clone.setAttribute("width", String(r.width)); clone.setAttribute("height", String(r.height));
-    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
     count++;
-    return { type: "svg", name: el.getAttribute("aria-label") || "art", x: r.left - ox, y: r.top - oy, w: r.width, h: r.height, svg: clone.outerHTML };
+    return { type: "svg", name: el.getAttribute("aria-label") || "art", x: r.left - ox, y: r.top - oy, w: r.width, h: r.height, svg: lw.svgMarkup(el) };
   }
 
   function textNodes(el: Element, ox: number, oy: number, cs: CSSStyleDeclaration) {
@@ -196,9 +195,19 @@ const SERIALIZE = ({ targets, swaps }: { targets: ImportTarget[] | null; swaps: 
     const opacity = +cs.opacity < 1 ? +cs.opacity : undefined;
     const tag = el.tagName.toLowerCase();
 
+    // Pictures by their address (importHtml loads them, so the plugin gets only data), and icon-font icons as pictures.
+    const box = { x: r.left - ox, y: r.top - oy, w: r.width, h: r.height };
+    const fit = (cs.objectFit === "contain" || cs.objectFit === "scale-down") ? "FIT" : "FILL";
+    const picture = (src: string | undefined, f = fit, name = "image") => { count++; return [{ type: "image", name: el.getAttribute("alt") || el.getAttribute("aria-label") || name, ...box, src, fit: f, radius: radius.some(Boolean) ? radius : undefined, opacity }]; };
+    if (tag === "img") return picture(lw.imgSrc(el));
+    if (tag === "canvas") { const src = lw.canvasPng(el); if (src) return picture(src); }
+    const glyph = lw.glyphIcon(el, nameOf(el));
+    if (glyph) return picture(glyph, "FIT", "icon");
+    const pics = lw.pictures(el, cs);
+
     if (notch) { count++; const w = r.width, h = r.height; return [{ type: "svg", name: "notch-fillet", x: r.left - ox, y: r.top - oy, w, h, svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><path d="M0 0A${w} ${h} 0 0 0 ${w} ${h}L0 ${h}Z" fill="${notch.hex}"/></svg>` }]; }
 
-    const visual = isRoot || (cs.display !== "contents" && swaps.some((s) => el.matches(s.selector))) || bg || grad || sh || bw.some(Boolean) || clip || blend || opacity !== undefined || tag === "image-slot" || blurOf(cs.filter) || blurOf((cs as any).backdropFilter ?? "");
+    const visual = isRoot || (cs.display !== "contents" && swaps.some((s) => el.matches(s.selector))) || bg || grad || pics.bg || pics.mask || sh || bw.some(Boolean) || clip || blend || opacity !== undefined || tag === "image-slot" || blurOf(cs.filter) || blurOf((cs as any).backdropFilter ?? "");
     const kids: any[] = [];
     const cx = visual ? r.left : ox, cy = visual ? r.top : oy;
     if (tag !== "image-slot") {
@@ -220,6 +229,8 @@ const SERIALIZE = ({ targets, swaps }: { targets: ImportTarget[] | null; swaps: 
       radius: radius.some(Boolean) ? radius : undefined, clip, blend, opacity, children: kids,
     };
     if (swapInfo) node.swap = swapInfo;
+    if (pics.bg) node.image = { url: pics.bg.url, fit: pics.bg.fit };
+    if (pics.mask) { node.mask = pics.mask; node.maskColor = color(cs.color)?.hex; }
     if (tag === "image-slot") node.placeholder = el.getAttribute("placeholder") || "image";
     return [node];
   }
@@ -241,11 +252,12 @@ const SERIALIZE = ({ targets, swaps }: { targets: ImportTarget[] | null; swaps: 
     });
     if (!roots.length) roots = [{ el: document.body, name: document.title || "Screen" }];
   }
-  return roots.map(({ el, name }) => {
+  const screens = roots.map(({ el, name }) => {
     count = 0;
     const r = el.getBoundingClientRect();
     const [tree] = walk(el, r.left, r.top, true);
     tree.x = 0; tree.y = 0; tree.name = name;
     return { name, width: r.width, height: r.height, tree, nodeCount: count };
   });
+  return { screens, warnings: lw.warnings };
 };

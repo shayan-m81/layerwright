@@ -7,7 +7,7 @@ import { readFileSync, readlinkSync } from "node:fs";
 export interface OlderServer { pid: number; version: string; workdir?: string }
 
 /** CLI subcommands: a process running one of them is a tool call, not a session's MCP server. */
-const SUBCOMMANDS = new Set(["init", "doctor", "import", "hub", "agents", "report", "inbox-watch", "hook-event", "session-hint", "plugin", "fonts", "claude", "help"]);
+const SUBCOMMANDS = new Set(["init", "doctor", "import", "hub", "agents", "report", "inbox-watch", "hook-event", "session-hint", "plugin", "update", "fonts", "claude", "help"]);
 
 /** The package folder of a Layerwright server process, from its command line. */
 export function packageDirOf(command: string): string | undefined {

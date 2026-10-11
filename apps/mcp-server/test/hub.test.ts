@@ -14,6 +14,8 @@ import { withTask } from "../src/task.ts";
 
 // This computer's pairing key, in a home of its own: the hubs and sessions below read it from there by default.
 process.env.LAYERWRIGHT_HOME = mkdtempSync(join(tmpdir(), "lw-hub-"));
+// Never the Claude Code session that runs these tests: its id would make every session below one agent session.
+delete process.env.CLAUDE_CODE_SESSION_ID;
 const KEY = pluginKey(true)!;
 
 const quiet = () => {};
@@ -118,6 +120,10 @@ test("a session passes only its own kinds of notice to the window, as plain fiel
   await until(() => plugin.got.some((m) => m.type === "session-state"));
   assert.deepEqual(plugin.got.find((m) => m.type === "session-state"), { type: "session-state", waiting: true, kind: "question", text: "Which one?", session: a.session!.id });
   assert.ok(!plugin.got.some((m) => m.method || m.type === "skills" || (m.type === "sessions" && m.sessions.some((s: any) => s.name === "fake"))));
+  // A session changed the skills (layerwright_skills): the windows hear only that, and ask for the list again.
+  a.notify({ type: "skills-changed", skills: ["sneaky"] });
+  await until(() => plugin.got.some((m) => m.type === "skills-changed"));
+  assert.deepEqual(plugin.got.find((m) => m.type === "skills-changed"), { type: "skills-changed" });
   a.close(); plugin.ws.close(); hub.close();
 });
 
@@ -420,8 +426,11 @@ test("the plugin's SessionStart hook: tells a new session in a Layerwright proje
   await hub.start();
   const out: string[] = [];
   const push = (s: string) => { out.push(s); };
-  await sessionHint({ port, self: "node cli.js", out: push, recent: false, project });
+  await sessionHint({ port, self: "node cli.js", out: push, recent: false, project, notice: null });
   assert.deepEqual(out, [], "no Figma window, none used lately: nothing said");
+  // A newer Layerwright is out: the user hears it (not Claude), in any project.
+  await sessionHint({ port, self: "node cli.js", out: push, recent: false, project: elsewhere, notice: "Layerwright 9.0.0 is available (you have 1.3.0). Type /layer:update to update" });
+  assert.deepEqual(JSON.parse(out.pop()!), { systemMessage: "Layerwright 9.0.0 is available (you have 1.3.0). Type /layer:update to update" });
   await sessionHint({ port, self: "node cli.js", out: push, recent: true, project });
   assert.match(JSON.parse(out.pop()!).hookSpecificOutput.additionalContext, /used on this computer recently[\s\S]*"node cli\.js inbox-watch"/, "used lately: watch before the window is open again");
   const plugin = fakePlugin(port);
@@ -513,6 +522,121 @@ test("a session joins on its first Figma call when it wasn't started (outside a 
   assert.equal(marked, 1, "once");
   assert.equal(hub.sessions().length, 2);
   idle.close(); busy.close(); plugin.ws.close(); hub.close();
+});
+
+test("a session left alone leaves the hub (the window stops listing it) and stays out; its next Figma call joins again as the same session", async () => {
+  const port = 17343;
+  const hub = new Hub(port, { log: quiet });
+  await hub.start();
+  const plugin = fakePlugin(port);
+  await plugin.open();
+  const s = new RelayBridge(port, { log: quiet, workdir: "/work/shop", startHub: () => {}, anyPort: true });
+  await s.start();
+  s.setTitle("Checkout");
+  await until(() => hub.sessions()[0]?.name === "Checkout");
+  const was = s.session!;
+  s.leave();
+  await until(() => hub.sessions().length === 0);
+  assert.equal(s.started, false);
+  assert.equal(s.connected(), false);
+  await wait(500);
+  assert.equal(hub.sessions().length, 0, "it doesn't reconnect by itself");
+  assert.deepEqual(await s.request("inspect", {}), { by: "Checkout", method: "inspect" }, "a Figma call joins again and goes through");
+  const back = hub.sessions()[0];
+  assert.deepEqual([back.id, back.name, back.color, back.connectedAt], [was.id, was.name, was.color, was.connectedAt], "the same session, not a new one");
+  s.close(); plugin.ws.close(); hub.close();
+});
+
+test("a newer Layerwright of the same protocol takes the hub once it's idle (an update reaches the hub); the same or an older version just joins", async () => {
+  const port = 17344;
+  let exited = "";
+  const hub = new Hub(port, { log: quiet, version: "1.3.0", onExit: (r) => { exited = r; } });
+  await hub.start();
+  const hello = (version: string) => new Promise<any[]>((done) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/client`);
+    const got: any[] = [];
+    // Joined (welcome): leave again at once; one that's turned away is closed by the hub. (Not by a timer: a slow
+    // machine may welcome it later than any fixed wait.)
+    ws.on("message", (m) => { const msg = JSON.parse(String(m)); got.push(msg); if (msg.type === "welcome") ws.close(); });
+    ws.on("open", () => ws.send(JSON.stringify({ type: "hello", protocol: HUB_PROTOCOL, key: KEY, version, workdir: `/work/${version}` })));
+    ws.on("close", (code) => done([...got, { closed: code }]));
+  });
+  assert.equal((await hello("1.3.0"))[0].type, "welcome");
+  assert.equal((await hello("1.2.0"))[0].type, "welcome", "an older session joins (it can't take over)");
+  const s = new RelayBridge(port, { log: quiet, workdir: "/work/old", startHub: () => {}, anyPort: true, version: "1.3.0" });
+  await s.start();
+  const newer = await hello("1.4.0");
+  assert.equal(newer[0].type, "restarting");
+  await until(() => exited !== "");
+  assert.equal(exited, "replaced by a newer Layerwright", "nothing in flight: it gives the port up at once");
+  s.close();
+});
+
+test("two Layerwright servers of one Claude Code session (the plugin's and a user or project entry) are one session in the window: one name, one cursor, requests reach it", async () => {
+  const port = 17345;
+  const hub = new Hub(port, { log: quiet });
+  await hub.start();
+  const plugin = fakePlugin(port);
+  await plugin.open();
+  const opts = { log: quiet, workdir: "/work/shop", startHub: () => {}, anyPort: true };
+  const a = new RelayBridge(port, { ...opts, agent: "cc-session-1" });
+  const b = new RelayBridge(port, { ...opts, agent: "cc-session-1" });
+  const other = new RelayBridge(port, { ...opts, agent: "cc-session-2" });
+  await a.start(); await b.start(); await other.start();
+  const listed = () => plugin.got.filter((m) => m.type === "sessions").at(-1)!.sessions;
+  await until(() => listed().length === 2);
+  assert.deepEqual(listed().map((x: any) => x.name).sort(), ["shop", "shop 2"], "two Claude Code sessions, not three");
+  assert.equal(a.session!.name, b.session!.name, "its servers share a name");
+  assert.equal(a.session!.color, b.session!.color, "and a colour");
+  // Whichever server works, the plugin sees the same session (one cursor, one selection owner).
+  await b.request("inspect", {});
+  const seen = plugin.got.filter((m) => m.method === "inspect").map((m) => m.session.id);
+  assert.deepEqual(seen, [b.session!.id], "the server that works becomes the face");
+  await until(() => listed().some((x: any) => x.id === b.session!.id));
+  await a.request("inspect", {});
+  assert.deepEqual(plugin.got.filter((m) => m.method === "inspect").map((m) => m.session.id), [b.session!.id, b.session!.id]);
+  // A title from either server names the session.
+  a.setTitle("Checkout");
+  await until(() => listed().some((x: any) => x.name === "Checkout"));
+  assert.equal(listed().length, 2);
+  await until(() => b.session?.name === "Checkout");
+  // A request sent from the window to it, and its other server picks it up at once (it's the same session).
+  plugin.ws.send(JSON.stringify({ type: "action", session: b.session!.id, action: { id: "q9", kind: "code", nodes: [], at: 1 } }));
+  let got: any;
+  b.onAction = (x) => { got = x; };
+  await until(() => !!got);
+  assert.equal((await a.inboxTake("q9")).action?.id, "q9", "taken by its other server without waiting");
+  // When the face goes, the other server is the face; removing the session from the window removes both.
+  b.close();
+  await until(() => listed().some((x: any) => x.id === a.session!.id && x.name === "Checkout"));
+  plugin.ws.send(JSON.stringify({ type: "kick", session: a.session!.id }));
+  await until(() => listed().length === 1);
+  a.close(); other.close(); plugin.ws.close(); hub.close();
+});
+
+test("old servers that send no session id are grouped by the agent process they run under (past npm, npx and shells)", async () => {
+  const port = 17346;
+  // Two Claude Code sessions (claude 100 and 200), each with two servers under npm exec; the desktop app's copy.
+  const table: Record<number, { ppid: number; comm: string }> = {
+    11: { ppid: 10, comm: "node" }, 10: { ppid: 100, comm: "npm exec layerwright@1.3.0" },
+    12: { ppid: 13, comm: "node" }, 13: { ppid: 100, comm: "npm exec layerwright@latest" },
+    21: { ppid: 20, comm: "node" }, 20: { ppid: 200, comm: "npm exec layerwright@1.3.0" },
+    100: { ppid: 5, comm: "claude" }, 200: { ppid: 5, comm: "claude" }, 5: { ppid: 1, comm: "zsh" },
+  };
+  const hub = new Hub(port, { log: quiet, processOf: (pid) => table[pid] });
+  await hub.start();
+  const plugin = fakePlugin(port);
+  await plugin.open();
+  const join = (pid: number, workdir: string) => new Promise<void>((done) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/client`);
+    ws.on("open", () => ws.send(JSON.stringify({ type: "hello", protocol: HUB_PROTOCOL, key: KEY, pid, workdir })));
+    ws.on("message", () => done());
+  });
+  await join(11, "/work/herein"); await join(12, "/work/herein"); await join(21, "/work/herein");
+  await until(() => plugin.got.filter((m) => m.type === "sessions").at(-1)?.sessions.length === 2);
+  const names = plugin.got.filter((m) => m.type === "sessions").at(-1)!.sessions.map((x: any) => x.name).sort();
+  assert.deepEqual(names, ["herein", "herein 2"], "three servers, two Claude Code sessions");
+  hub.close(); plugin.ws.close();
 });
 
 test("an older hub gives the port to a newer session once, and its own sessions wait for the newer hub instead of starting an old one", async () => {

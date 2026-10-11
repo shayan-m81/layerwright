@@ -331,8 +331,8 @@ const ALIGN: Record<string, "MIN" | "CENTER" | "MAX" | "SPACE_BETWEEN" | "BASELI
 const WEIGHT = { thin: "Thin", extralight: "Extra Light", light: "Light", regular: "Regular", medium: "Medium", semibold: "Semi Bold", bold: "Bold", extrabold: "Extra Bold", black: "Black" } as const;
 const LH_UNIT = { px: "PIXELS", percent: "PERCENT" } as const;
 const SCALE_MODE = { fill: "FILL", fit: "FIT", crop: "CROP", tile: "TILE" } as const;
-/** An image already in the file, as the plugin paints it. */
-const imageFill = (img: { hash: string; fit?: keyof typeof SCALE_MODE } | undefined): ResolvedImageFill | undefined => img && { hash: img.hash, scaleMode: SCALE_MODE[img.fit ?? "fill"] };
+/** An image on a frame or shape (one already in the file, or new bytes), as the plugin paints it. */
+const imageFill = (img: { hash?: string; src?: string; fit?: keyof typeof SCALE_MODE } | undefined): ResolvedImageFill | undefined => img && { ...(img.hash ? { hash: img.hash } : { src: img.src }), scaleMode: SCALE_MODE[img.fit ?? "fill"] };
 /** A raw radius above MAX_RADIUS (Figma's "full" pill value, 33554400) is fully round all the same: clamp it. */
 const clampRadius = (n: Num | undefined): Num | undefined => (n && !n.variableId && !n.variableKey && n.value !== undefined && n.value > MAX_RADIUS ? { value: MAX_RADIUS } : n);
 const ROLE_FALLBACK: Record<string, { size: number; weight: "Regular" | "Medium" | "Semi Bold" | "Bold" }> = {

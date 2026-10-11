@@ -302,6 +302,7 @@
   /* ---------- notices ---------- */
   #update { display: none; background: color-mix(in srgb, var(--brand2) 9%, var(--bg)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand2) 30%, transparent); }
   #update ol { margin: 6px 0 8px 16px; padding: 0; color: var(--fg2); }
+  #update .primary { background: var(--brand2); border-color: var(--brand2); color: #fff; font-weight: 600; }
   #error { display: none; background: color-mix(in srgb, var(--bad) 9%, var(--bg)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bad) 30%, transparent); animation: enter .3s var(--ease) both; }
   #error .row { display: flex; align-items: flex-start; gap: 8px; }
   #error .icon { flex: none; width: 16px; height: 16px; border-radius: 50%; background: var(--bad); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 11px; margin-top: 1px; }
@@ -331,6 +332,13 @@
   #sessions .who small { display: block; color: var(--fg3); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* Sessions removed here: still listed, faded, until they join again (their agent's next figma_status). */
   #sessions li.gone { opacity: .62; }
+  #sessions li.idle { opacity: .72; }
+  #sessions li.idle-head { padding: 6px 8px; color: var(--fg3); font-size: 11px; font-weight: 600; cursor: pointer; }
+  #sessions li.idle-head:hover { color: var(--fg); }
+  .s-find { display: block; width: 100%; box-sizing: border-box; margin: 0 0 6px; padding: 6px 9px; border-radius: 8px; font-size: 12px; }
+  #pickFilter { margin: 2px 2px 4px; width: calc(100% - 4px); }
+  #avatars { cursor: pointer; }
+  .stack .avatar[data-live="1"] { box-shadow: 0 0 0 2px var(--bg2), 0 0 0 3.5px var(--c); }
   #sessions li.gone .avatar { filter: grayscale(1); }
 
   /* ---------- requests sent from here ---------- */
@@ -374,10 +382,60 @@
   #activity .t { color: var(--fg3); font-size: 10.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
   /* ---------- skills ---------- */
-  .sk-add { background: var(--bg2); border-radius: var(--r); padding: 10px 12px 12px; }
+  /* Making one with Claude comes first: a tinted card with the one strong button on this tab. */
+  .sk-hero { position: relative; border-radius: 14px; padding: 12px;
+    background: linear-gradient(140deg, color-mix(in srgb, var(--brand2) 13%, var(--bg)), color-mix(in srgb, var(--cyan) 6%, var(--bg)) 75%);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand2) 26%, transparent); }
+  .sk-hero .hd { display: flex; align-items: flex-start; gap: 10px; }
+  .sk-hero .gl { width: 30px; height: 30px; flex: none; border-radius: 9px; display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, var(--brand2), var(--brand)); box-shadow: 0 6px 14px -6px rgba(124, 58, 237, .8); }
+  .sk-hero .hd b { display: block; font-size: 12.5px; font-weight: 650; letter-spacing: -.01em; line-height: 1.3; }
+  .sk-hero .hd small { display: block; margin-top: 2px; font-size: 10.5px; line-height: 1.4; color: var(--fg2); }
+  .sk-hero textarea { display: block; width: 100%; margin-top: 10px; min-height: 46px; resize: none; font: inherit; font-size: 11.5px; line-height: 1.4; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 7px 9px; }
+  .sk-hero textarea:focus { outline: none; border-color: var(--brand2); box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand2) 25%, transparent); }
+  .sk-go { position: relative; display: flex; margin-top: 8px; }
+  .sk-go .cta { flex: 1; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 8px 10px; border: 0; border-radius: 9px 0 0 9px; color: #fff; font-weight: 650;
+    background: linear-gradient(135deg, var(--brand2), var(--brand)); box-shadow: 0 8px 18px -10px rgba(124, 58, 237, .9); }
+  .sk-go .cta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sk-go .cta:hover { background: linear-gradient(135deg, #9b70f8, #6d28d9); }
+  .sk-go .cta-more { flex: none; border: 0; border-left: 1px solid rgba(255, 255, 255, .3); border-radius: 0 9px 9px 0; padding: 0 9px; color: #fff; background: var(--brand); }
+  .sk-go .cta-more:hover { background: #6d28d9; }
+  .sk-go .cta-more svg { transition: transform .35s var(--spring); }
+  .sk-go[data-open="1"] .cta-more svg { transform: rotate(180deg); }
+  .sk-where { position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 6; display: none; flex-direction: column; gap: 2px; padding: 4px; border-radius: 12px;
+    background: var(--bg); box-shadow: 0 0 0 1px var(--line), 0 12px 28px -10px rgba(15, 12, 30, .3); }
+  .sk-go[data-open="1"] .sk-where { display: flex; animation: menuIn .24s var(--ease) both; transform-origin: top center; }
+  .sk-where button { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: 0; border-radius: 8px; padding: 6px 8px; background: none; }
+  .sk-where button:hover, .sk-where button[data-on="1"] { background: color-mix(in srgb, var(--brand2) 10%, var(--bg)); }
+  .sk-where .wi { width: 24px; height: 24px; flex: none; border-radius: 7px; display: grid; place-items: center; color: var(--brand2); background: color-mix(in srgb, var(--brand2) 12%, transparent); }
+  .sk-where .wt { flex: 1; min-width: 0; line-height: 1.25; }
+  .sk-where .wt b { display: block; font-size: 11.5px; font-weight: 600; }
+  .sk-where .wt small { display: block; font-size: 10px; color: var(--fg3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sk-where .ck { color: var(--brand2); visibility: hidden; }
+  .sk-where button[data-on="1"] .ck { visibility: visible; }
+  .sk-where .sep { height: 1px; margin: 3px 6px; background: var(--line); }
+  .sk-hero .how { display: block; margin-top: 7px; font-size: 10px; line-height: 1.45; color: var(--fg2); }
+  /* The other ways in: quiet, one line under it. */
+  .sk-other { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -2px 2px 0; font-size: 10.5px; color: var(--fg3); }
+  .sk-other .chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 550; color: var(--fg2); background: var(--bg); }
+  .sk-other .chip:hover, .sk-other .chip[aria-expanded="true"] { color: var(--fg); border-color: color-mix(in srgb, var(--brand2) 40%, var(--line)); }
+  .sk-add { display: none; background: var(--bg2); border-radius: var(--r); padding: 10px 12px 12px; }
+  .sk-add[data-open="1"], .sk-add[data-busy="1"] { display: block; animation: rise .2s var(--ease) both; }
   .sk-add .askbox { margin-top: 0; }
   .sk-add small { display: block; margin-top: 7px; color: var(--fg2); font-size: 10.5px; }
   .sk-add[data-busy="1"] .send { animation: turn 1s linear infinite; pointer-events: none; }
+  .sf-claude { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  /* A skill that just arrived (a session wrote it): it lights up once. */
+  .sk-group .row[data-fresh="1"] { animation: fresh 2.6s var(--ease); }
+  @keyframes fresh { 0%, 45% { background: color-mix(in srgb, var(--brand2) 16%, var(--bg)); } }
+  /* writing a skill: a page like a skill's own */
+  .sf-body { flex: 1; overflow: auto; padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+  .sf-body label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; font-weight: 600; color: var(--fg2); }
+  .sf-body label small { font-weight: 400; color: var(--fg3); }
+  .sf-body input, .sf-body select, .sf-body textarea { font: inherit; font-size: 12px; font-weight: 400; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; width: 100%; box-sizing: border-box; }
+  .sf-body textarea { min-height: 220px; resize: vertical; line-height: 1.45; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+  .sf-actions { display: flex; gap: 8px; justify-content: flex-end; padding: 10px 14px; border-top: 1px solid var(--line); }
+  .sf-actions .primary { background: var(--brand2); border-color: var(--brand2); color: #fff; font-weight: 600; }
+  .skpage[data-busy="1"] .sf-actions .primary { opacity: .6; pointer-events: none; }
   @keyframes turn { to { transform: rotate(360deg); } }
   .sk-tools { display: flex; align-items: center; gap: 8px; margin: 0 2px; }
   .sk-tools input { flex: 1; width: auto; padding: 5px 8px; border-radius: 8px; }
@@ -641,7 +699,7 @@
         <div id="toRow" class="to"><span>Send to</span><span id="toCount"></span></div>
         <div id="picker" class="picker">
           <button id="pickerBtn" class="picker-btn" aria-haspopup="listbox"></button>
-          <div id="selChips" class="menu" role="listbox" aria-label="Which session gets the selection"></div>
+          <div id="selChips" class="menu" role="listbox" aria-label="Which session gets the selection"><input id="pickFilter" class="s-find" placeholder="Find a session…" aria-label="Find a session" /><div id="selList"></div></div>
         </div>
         <div id="selHint"></div>
         <div id="actions" class="acts-grid"></div>
@@ -660,6 +718,7 @@
     <!-- Sessions: who is connected and what each one is doing -->
     <section id="panel-sessions" class="panel" role="tabpanel">
       <div id="sessionsBox"><h2 class="label">Connected</h2></div>
+      <input id="sessionFilter" class="s-find" placeholder="Find a session: its name, folder or file…" aria-label="Find a session" />
       <ul id="sessions"></ul>
       <div id="noSessions" class="empty">
         <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2.5"/><path d="M7 9l3 2.5L7 14M12.5 14H17"/></svg>
@@ -678,8 +737,25 @@
 
     <!-- Skills: what the agent reads before a job it fits; the library ships with Layerwright, the user adds their own -->
     <section id="panel-skills" class="panel" role="tabpanel">
+      <!-- The way to make one: Claude writes it with the user, in Claude (a new session with /layer:skills new) or in a connected session -->
+      <div id="skCreate" class="sk-hero">
+        <div class="hd">
+          <span class="gl" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5c.5 4.6 2.9 7 7.5 7.5-4.6.5-7 2.9-7.5 7.5-.5-4.6-2.9-7-7.5-7.5 4.6-.5 7-2.9 7.5-7.5zM19 15.5c.25 2 1.25 3 3.25 3.25-2 .25-3 1.25-3.25 3.25-.25-2-1.25-3-3.25-3.25 2-.25 3-1.25 3.25-3.25z"/></svg></span>
+          <div><b>Create a skill with Claude</b><small>A rule every session should follow, like how your buttons look or your tone of voice. Claude drafts it with you and saves it here.</small></div>
+        </div>
+        <textarea id="skIdea" rows="2" dir="auto" maxlength="1000" placeholder="What should it do? (optional) e.g. Buttons use 8 px corners and a verb as the label"></textarea>
+        <div id="skGo" class="sk-go">
+          <button id="skClaude" class="cta"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5c.5 4.6 2.9 7 7.5 7.5-4.6.5-7 2.9-7.5 7.5-.5-4.6-2.9-7-7.5-7.5 4.6-.5 7-2.9 7.5-7.5z"/></svg><span id="skVia">Open in Claude</span></button>
+          <button id="skWhere" class="cta-more" aria-haspopup="menu" aria-expanded="false" title="Where to write it" aria-label="Where to write it"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
+          <div id="skWhereMenu" class="sk-where" role="menu" aria-label="Where to write it"></div>
+        </div>
+        <small id="skHow" class="how"></small>
+      </div>
+      <div class="sk-other"><span>Or</span>
+        <button id="skLinkBtn" class="chip" aria-expanded="false" title="Add a skill from a link or a pasted SKILL.md"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/></svg>Add from a link</button>
+        <button id="skWrite" class="chip" title="Write a skill of your own: when to use it and what to do"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg>Write it yourself</button>
+      </div>
       <div id="skAdd" class="sk-add">
-        <h2 class="label">Add a skill</h2>
         <div class="askbox"><input id="skillInput" placeholder="A GitHub link, a skills page, or paste a SKILL.md…" maxlength="200000" /><button id="skillAddBtn" class="send" title="Add the skill" aria-label="Add the skill">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button></div>
         <small id="skillAddHint">Kept on this computer with your own skills: Layerwright updates never remove them. Also from the chat box: <code>/skill &lt;link&gt;</code></small>
@@ -703,7 +779,7 @@
         <h2 class="label">Canvas</h2>
         <div class="set"><div class="row">
           <span class="ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M5 3v16.5l4.7-4.5 7.9-.4z"/></svg></span>
-          <div class="txt"><b>AI cursor</b><small>While a session changes the canvas, its cursor and name show where it works.</small></div>
+          <div class="txt"><b>AI cursor</b><small>While a session works here, its cursor shows where, with its name and what it's doing, until it's done.</small></div>
           <button id="cursorToggle" class="switch" role="switch" data-on="1" aria-label="AI cursor"></button>
         </div><div class="row">
           <span class="ico" style="--a:#0d99ff"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2M11 8.5v5M8.5 11h5"/></svg></span>
@@ -741,8 +817,8 @@
       <h4>The tabs</h4>
       <div class="guide-item"><span class="gi" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"></path><path d="M5 9.5V21h14V9.5"></path></svg></span><div><b>Home</b><span>Your selection and who gets it. Select layers in Figma, pick a session under <i>Send to</i>, then press an action, or write your own request in the box. <i>Build in code</i> implements it with your components, <i>Polish design</i> critiques and fixes it, <i>Make component</i> turns it into a component, <i>Mobile version</i> builds a phone layout next to it. Click the picture to zoom to the layer.</span></div></div>
       <div class="guide-item"><span class="gi" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"></path></svg></span><div><b>Activity</b><span>Your requests: progress, the session’s answer, and Stop. Below, <i>In Figma</i> lists what sessions built or changed, with a way to show each result.</span></div></div>
-      <div class="guide-item"><span class="gi" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L4.8 8.3l5-.7z"></path></svg></span><div><b>Skills</b><span>Guidance a session reads before a job: design critique, UX copy, accessibility, layout and more. Turn each one on or off, or add your own from a link or pasted text.</span></div></div>
-      <div class="guide-item"><span class="gi" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"></path><circle cx="16" cy="7" r="2"></circle><circle cx="10" cy="17" r="2"></circle></svg></span><div><b>Settings</b><span>The AI cursor (a session’s cursor while it changes the canvas), zooming to the result, starting Claude Code on its own, pairing with this computer, and the port.</span></div></div>
+      <div class="guide-item"><span class="gi" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L4.8 8.3l5-.7z"></path></svg></span><div><b>Skills</b><span>Guidance a session reads before a job: design critique, UX copy, accessibility, layout and more. Turn each one on or off. <i>Create a skill with Claude</i> opens Claude with <code>/layer:skills new</code> filled in (or asks a connected session), and Claude writes it with you; you can also add one from a link or write it yourself.</span></div></div>
+      <div class="guide-item"><span class="gi" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"></path><circle cx="16" cy="7" r="2"></circle><circle cx="10" cy="17" r="2"></circle></svg></span><div><b>Settings</b><span>The AI cursor (a session’s cursor while it works here), zooming to the result, starting Claude Code on its own, pairing with this computer, and the port.</span></div></div>
       <div class="guide-item"><span class="gi" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 20a5.5 5.5 0 0 1 11 0"></path><path d="M16 4.6a3.2 3.2 0 0 1 0 6.3M20.5 20a5.5 5.5 0 0 0-3.4-5.1"></path></svg></span><div><b>Sessions</b><span>The sessions connected now, what each is doing, and how many requests it is on. Remove one with ✕ (it asks once more).</span></div></div>
       <h4>More ways in</h4>
       <div class="guide-item"><span class="gi" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3"></path><path d="M9 20h6"></path><path d="M12 4v16"></path></svg></span><div><b>Notes on the canvas</b><span>Type a text layer that starts with <code>@</code> and a session’s name on the frame it’s about, for example <code>@Checkout make this responsive</code>, or <code>@claude</code> when one session is connected. It goes once you stop typing, and the answer appears under it.</span></div></div>
@@ -758,9 +834,26 @@
       <div class="t"><b id="spTitle"></b><div id="spMeta" class="sp-meta"></div></div>
     </div>
     <div class="sp-bar"><button id="spToggle" class="switch" role="switch" aria-label="Skill on"></button><small id="spState"></small>
+      <button id="spEdit" class="mini" title="Change this skill of yours" style="display:none">Edit</button>
       <button id="spUse" class="mini use" title="Pick it for your next request"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3 10 14M21 3l-7 18-4-7-7-4z"/></svg>Use in chat</button></div>
     <div id="spFiles" class="sp-files"></div>
     <div id="spBody" class="sp-body md"></div>
+  </section>
+
+  <!-- Writing (or editing) a skill of the user's own -->
+  <section id="skillForm" class="skpage" role="dialog" aria-label="Write a skill">
+    <div class="sp-head">
+      <button id="sfBack" class="back" title="Back to the skills" aria-label="Back"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <div class="t"><b id="sfTitle">Write a skill</b><div class="sp-meta"><span>Saved on this computer with your own skills</span></div></div>
+    </div>
+    <div class="sf-body">
+      <label>Name<input id="sfName" maxlength="60" placeholder="e.g. Our button rules" /></label>
+      <label>When to use it<small>One line: sessions read the skill when their job fits it</small><input id="sfWhen" maxlength="400" placeholder="e.g. Building or reviewing buttons in Figma or in code" /></label>
+      <label>Instructions<small>What a session should do or check, in Markdown</small><textarea id="sfBody" maxlength="50000" dir="auto" placeholder="- Buttons use 8 px corners and the Primary/Secondary components&#10;- Labels are verbs, two words at most&#10;- …"></textarea></label>
+      <label>Category<select id="sfCat"></select></label>
+      <div class="sf-claude"><small class="muted">Rather have Claude write it with you?</small><button id="sfClaude" class="mini">Create it with Claude</button></div>
+    </div>
+    <div class="sf-actions"><button id="sfCancel">Cancel</button><button id="sfSave" class="primary">Save skill</button></div>
   </section>
 
   <div id="toast" role="status"></div>
@@ -784,6 +877,8 @@
   let removed = [];            // from the hub: sessions removed here that haven't joined again { id, name, color, client, workdir, at }
   let holdList = false;        // a press on the session list: don't redraw it under the pointer, or the click is lost
   let skills = null, skillCats = [], skillBusy = false, skillRmArmed = null; // the Skills tab, from the hub
+  let skillVia = "app", skillTo = null; // where "Create a skill with Claude" writes it (remembered by the plugin), and which session for "session"
+  let newSkills = new Set();     // skills that just arrived from a session: they light up once
   let picked = [];             // skills picked for the next request (@name in the chat box); the agent reads them first
   let skMenu = null;           // the @ menu: { which: "ask" | "m", q, items, i }
   let page = null;             // a skill's page: { id, file, files, skill, text, loading, error }
@@ -834,7 +929,7 @@
     { kind: "component", label: "Make component", short: "Component", color: "#0d99ff", icon: '<path d="M12 2.8l3.6 3.6L12 10 8.4 6.4zM12 14l3.6 3.6L12 21.2l-3.6-3.6zM6.4 8.4 10 12l-3.6 3.6L2.8 12zM17.6 8.4 21.2 12l-3.6 3.6L14 12z"/>' },
     { kind: "mobile", label: "Mobile version", short: "Mobile", color: "#14ae5c", icon: '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/>' },
   ];
-  const ACTION_LABEL = { code: "Build this in code", polish: "Polish this design", component: "Turn this into a component", mobile: "Make a mobile version", ask: "Help with this" };
+  const ACTION_LABEL = { code: "Build this in code", polish: "Polish this design", component: "Turn this into a component", mobile: "Make a mobile version", ask: "Help with this", update: "Update Layerwright", skill: "Create a skill" };
   const count = (n, one, many) => n + " " + (n === 1 ? one : many);
   function summary(method, r) {
     if (!r) return LABEL[method] || method;
@@ -953,12 +1048,14 @@
     $("help").style.display = !open && failures >= 3 && !rejected && !replaced ? "block" : "none";
     $("resume").hidden = !replaced;
     if (state !== "running") $("progress").style.display = "none";
-    setHTML($("avatars"), sessions.slice(0, 4).map((s) => '<span class="avatar" style="--c:' + col(s.color) + '" title="' + esc(s.name) + '">' + esc(initials(s.name)) + '</span>').join(""));
+    // The sessions in use first; a ring on the ones working now. A click opens the Sessions tab.
+    setHTML($("avatars"), ordered().slice(0, 4).map((s) => '<span class="avatar" data-live="' + (rank(s) <= 1 ? 1 : 0) + '" style="--c:' + col(s.color) + '" title="' + esc(s.name + " · " + since(s)) + '">' + esc(initials(s.name)) + '</span>').join(""));
     $("activityBadge").textContent = unseen > 9 ? "9+" : String(unseen);
     $("activityBadge").dataset.show = unseen && tab !== "activity" ? "1" : "";
     renderSessions();
     renderRequests();
     renderSettings();
+    renderCreate();
     renderMini(state);
   }
 
@@ -993,6 +1090,19 @@
   const CHEV = '<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
   const isBusy = (s) => [...running.values()].some((x) => x.session && x.session.id === s.id && !QUIET[x.method]) || requests.some((x) => x.session === s.id && (x.status === "working" || x.status === "seen"));
   const stateText = (s) => asking.has(s.id) ? "asks you in the chat" : desk.asks.some((a) => a.session === s.id) ? "waiting for you" : openFor(s) > 1 ? "on " + openFor(s) + " requests" : isBusy(s) ? "working" : thinking(s) ? "thinking" : "idle";
+  /** Finding a session: the ones that need the user or work now first, then the ones used most recently, and when
+   *  each last did something (its last step here, or its last Figma call in any file, from the hub). */
+  const IDLE_MS = 30 * 60_000;
+  const activeAt = (s) => Math.max(s.activeAt || 0, s.connectedAt || 0, lastStep.get(s.id) || 0, ...[...running.values()].filter((x) => x.session && x.session.id === s.id).map((x) => x.started));
+  /** Doing anything in Figma now (reading too; not a status check or a link). */
+  const atWork = (s) => isBusy(s) || openFor(s) > 0 || [...running.values()].some((x) => x.session && x.session.id === s.id && x.method !== "ping" && x.method !== "refs");
+  const rank = (s) => asking.has(s.id) || desk.asks.some((a) => a.session === s.id) ? 0 : atWork(s) ? 1 : thinking(s) ? 2 : !activeAt(s) || Date.now() - activeAt(s) < IDLE_MS ? 3 : 4;
+  const ordered = () => sessions.slice().sort((a, b) => rank(a) - rank(b) || activeAt(b) - activeAt(a));
+  const minutes = (t) => { const m = Math.max(1, Math.round((Date.now() - t) / 60_000)); return m < 60 ? m + " min" : Math.round(m / 60) + " h"; };
+  const since = (s) => rank(s) <= 1 ? "working now" : rank(s) === 2 ? "thinking" : !activeAt(s) ? "" : rank(s) === 3 ? "active " + minutes(activeAt(s)) + " ago" : "idle " + minutes(activeAt(s));
+  /** A session the find box matches: its name, folder, file or app. */
+  const matches = (s, q) => !q || [s.name, s.workdir, s.file, clientName(s.client)].some((x) => String(x || "").toLowerCase().includes(q));
+  let idleOpen = false; // the Sessions tab: sessions idle for a while, folded away
   // Remove a session from the shared Figma connection: press once to arm, again to remove.
   const kickBtn = (s) => '<button type="button" class="kick" data-act="kick" data-session="' + esc(s.id) + '"' + (kickArmed === s.id
     ? ' data-confirm="1" title="Press again to remove ' + esc(s.name) + ' from Figma" aria-label="Confirm: remove ' + esc(s.name) + '">Remove</button>'
@@ -1006,8 +1116,18 @@
     $("noSessions").style.display = sessions.length || removed.length ? "none" : "block";
     $("sessionCount").textContent = String(sessions.length);
     $("sessionCount").dataset.show = many ? "1" : "";
-    if (!holdList) setHTML($("sessions"), sessions.map((s, i) => '<li class="' + fresh("s:" + s.id).trim() + '" style="--i:' + i + '"' + (kickArmed === s.id ? ' data-confirm="1"' : "") + '>' +
-      whoHTML(s, [clientName(s.client), s.file && hello && s.file !== hello.fileName ? "in " + s.file : short(s.workdir)].filter(Boolean).join(" · ")) + sessionState(s) + kickBtn(s) + '</li>').join("") +
+    $("sessionFilter").style.display = sessions.length > 4 ? "block" : "none";
+    const q = String($("sessionFilter").value || "").trim().toLowerCase();
+    const shown = ordered().filter((s) => matches(s, q));
+    const busyOnes = shown.filter((s) => rank(s) < 4), idleOnes = shown.filter((s) => rank(s) === 4);
+    const folder = (s) => { const f = short(s.workdir).split("/").pop(); return f && f !== s.name ? f : ""; };
+    const row = (s, i, idle) => '<li class="' + (fresh("s:" + s.id) + (idle ? " idle" : "")).trim() + '" style="--i:' + i + '"' + (kickArmed === s.id ? ' data-confirm="1"' : "") + '>' +
+      whoHTML(s, [s.file && hello && s.file !== hello.fileName ? "in " + s.file : folder(s), clientName(s.client), since(s)].filter(Boolean).join(" · ")) + sessionState(s) + kickBtn(s) + '</li>';
+    if (!holdList) setHTML($("sessions"), busyOnes.map((s, i) => row(s, i, false)).join("") +
+      // Idle for a while (another project's old session, say): folded away, unless the find box is used.
+      (idleOnes.length ? (q ? "" : '<li class="idle-head" data-act="idle-toggle" title="Sessions that haven\'t used Figma for a while">' + (idleOpen ? "▾" : "▸") + " Idle · " + idleOnes.length + "</li>") +
+        (q || idleOpen ? idleOnes.map((s, i) => row(s, busyOnes.length + i, true)).join("") : "") : "") +
+      (q && !shown.length ? '<li class="idle-head">No session matches “' + esc(q) + '”.</li>' : "") +
       // Removed here, not gone from its chat: it comes back when its agent next uses Figma (figma_status).
       removed.map((s) => '<li class="gone" title="Removed from Figma. It joins again the next time you ask it for Figma work in its chat.">' +
         whoHTML(s, "Rejoins when you ask it for Figma") + '<span class="pill off">Removed</span></li>').join(""));
@@ -1062,9 +1182,12 @@
       ? '<span class="avatar ring" data-live="' + (isBusy(to) ? 1 : 0) + '" style="--c:' + col(to.color) + '">' + esc(initials(to.name)) + '</span><span class="meta"><b>' + esc(to.name) + '</b><small>' + esc(sub2(to)) + '</small></span>' + CHEV
       : '<span class="avatar" style="--c:#8b5cf6">?</span><span class="meta"><b>Choose a session</b><small>' + count(sessions.length, "session", "sessions") + ' connected</small></span>' + CHEV);
     $("pickerBtn").style.setProperty && to && $("pickerBtn").style.setProperty("--c", col(to.color));
-    setHTML($("selChips"), sessions.map((s) => { const on = to === s; return '<button class="opt" role="option" style="--c:' + col(s.color) + '" data-act="assign" data-session="' + esc(s.id) + '" aria-pressed="' + on + '" title="Give the selection to ' + esc(s.name) + '">' +
-      '<span class="avatar" style="--c:' + col(s.color) + ';width:24px;height:24px;border-radius:7px;font-size:9.5px">' + esc(initials(s.name)) + '</span><span class="meta"><b>' + esc(s.name) + '</b><small>' + esc([sub2(s), short(s.workdir)].filter(Boolean).join(" · ")) + '</small></span>' +
-      (on ? '<span class="check">✓</span>' : "") + '</button>'; }).join("")); // Remove lives on the Sessions tab: here a second click would remove the session
+    $("pickFilter").style.display = sessions.length > 4 ? "block" : "none";
+    const pq = String($("pickFilter").value || "").trim().toLowerCase();
+    const picks = ordered().filter((s) => matches(s, pq));
+    setHTML($("selList"), picks.map((s) => { const on = to === s; return '<button class="opt" role="option" style="--c:' + col(s.color) + '" data-act="assign" data-session="' + esc(s.id) + '" aria-pressed="' + on + '" title="Give the selection to ' + esc(s.name) + (s.workdir ? " (" + esc(s.workdir) + ")" : "") + '">' +
+      '<span class="avatar" style="--c:' + col(s.color) + ';width:24px;height:24px;border-radius:7px;font-size:9.5px">' + esc(initials(s.name)) + '</span><span class="meta"><b>' + esc(s.name) + '</b><small>' + esc([clientName(s.client), since(s), short(s.workdir)].filter(Boolean).join(" · ")) + '</small></span>' +
+      (on ? '<span class="check">✓</span>' : "") + '</button>'; }).join("") || '<div class="muted" style="padding:6px 8px">No session matches “' + esc(pq) + '”.</div>'); // Remove lives on the Sessions tab: here a second click would remove the session
     const who = (s) => '<b class="who" style="--c:' + col(s.color) + '">' + esc(s.name) + '</b>';
     // One line, about the session Send to names: who gets it and why. Other sessions ask the user first (the asks
     // show above when they do).
@@ -1229,6 +1352,7 @@
       toast("Stopped. " + (s ? s.name : "The session") + " stops working on it; what's already done stays (undo it in Figma if needed)", "ok");
       render(); return;
     }
+    if (d.act === "idle-toggle") { idleOpen = !idleOpen; render(); return; }
     if (d.act === "del-req") { const i = requests.findIndex((x) => x.id === d.id); if (i >= 0) requests.splice(i, 1); render(); return; }
     if (d.act === "del-ev") { events.splice(Number(d.i), 1); renderActivity(); render(); return; }
     if (d.act === "kick") {
@@ -1267,9 +1391,17 @@
   $("mMenu").onclick = act;
   $("mAsks").onclick = act;
   $("mActs").onclick = act;
-  $("pickerBtn").onclick = () => { $("picker").dataset.open = $("picker").dataset.open === "1" ? "" : "1"; };
+  $("pickerBtn").onclick = () => {
+    const open = $("picker").dataset.open !== "1";
+    $("picker").dataset.open = open ? "1" : "";
+    if (open && sessions.length > 4) { $("pickFilter").value = ""; render(); try { $("pickFilter").focus(); } catch (e) {} }
+  };
+  $("pickFilter").oninput = () => render();
+  $("sessionFilter").oninput = () => render();
+  $("avatars").onclick = () => { if (sessions.length) setTab("sessions"); };
   if (window.addEventListener) window.addEventListener("click", (ev) => {
     const p = $("picker"); if (p.contains && !p.contains(ev.target)) p.dataset.open = "";
+    const g = $("skGo"); if (g.dataset.open && g.contains && !g.contains(ev.target)) closeWhere();
     const m = $("mMenu"), b = $("mTo"); if (m.dataset.open && m.contains && !m.contains(ev.target) && !b.contains(ev.target)) { m.dataset.open = ""; fitMini(); }
   }, true);
 
@@ -1344,10 +1476,24 @@
     toast("Adding the skill…");
   }
   function onSkills(m) {
+    const before = skills ? new Set(skills.map((s) => s.id)) : null;
     skills = Array.isArray(m.skills) ? m.skills : [];
+    // One a session just wrote or added (/layer:skills, Create a skill with Claude): say so, and light it up.
+    const arrived = before && !m.added && !m.written ? skills.filter((s) => !before.has(s.id)) : [];
+    if (arrived.length) {
+      toast((arrived.length === 1 ? "New skill: " + arrived[0].name : arrived.length + " new skills") + ". Sessions use it from their next step", "ok");
+      newSkills = new Set(arrived.map((s) => s.id));
+      setTimeout(() => { newSkills = new Set(); }, 3000);
+    }
     skillCats = Array.isArray(m.categories) ? m.categories : [];
     skillBusy = false;
+    if (form && (m.error || m.written)) { clearTimeout(form.waiting); $("skillForm").dataset.busy = ""; }
     if (m.error) toast(m.error, "bad");
+    if (m.written) {
+      toast((m.written.edited ? "Saved: " : "Skill written: ") + m.written.name + ". Sessions use it from their next step", "ok");
+      closeForm();
+      if (page && page.id === m.written.id) openSkill(m.written.id);
+    }
     if (m.added) { toast("Skill added: " + m.added.name + ". Sessions use it from their next step", "ok"); $("skillInput").value = ""; $("skillFilter").value = ""; }
     if (m.removed) toast("Skill removed");
     renderSkills();
@@ -1365,9 +1511,9 @@
     const groups = cats.map((c) => ({ c, items: shown.filter((s) => (known.has(s.category) ? s.category : "yours") === c.id) })).filter((g) => g.items.length);
     setHTML($("skillList"), groups.map((g) => '<div class="sk-group"><h2 class="label">' + esc(g.c.name) + ' <span class="badge">' + g.items.length + '</span></h2><div class="set">' +
       g.items.map((s) => {
-        const by = s.origin === "yours" ? '<span class="pill">Yours</span>' + (s.source && s.source !== "pasted" ? '<span>' + esc(String(s.source).replace(/^https:\/\/(www\.)?/, "").slice(0, 48)) + '</span>' : "<span>pasted</span>")
+        const by = s.origin === "yours" ? '<span class="pill">Yours</span>' + (s.source === "written" ? "<span>written by you</span>" : s.source && s.source !== "pasted" ? '<span>' + esc(String(s.source).replace(/^https:\/\/(www\.)?/, "").slice(0, 48)) + '</span>' : "<span>pasted</span>")
           : '<span>' + esc(s.author || "") + '</span>' + (s.license ? '<span class="pill">' + esc(s.license) + '</span>' : "");
-        return '<div class="row" data-on="' + (s.enabled ? "1" : "") + '"><div class="txt" data-open="' + esc(s.id) + '" title="Open the skill"><b>' + esc(s.name) + '<span class="go">›</span></b><small class="when" title="' + esc(s.description || s.when) + '">' + esc(s.when) + '</small><div class="by">' + by + '</div></div>' +
+        return '<div class="row" data-on="' + (s.enabled ? "1" : "") + '"' + (newSkills.has(s.id) ? ' data-fresh="1"' : "") + '><div class="txt" data-open="' + esc(s.id) + '" title="Open the skill"><b>' + esc(s.name) + '<span class="go">›</span></b><small class="when" title="' + esc(s.description || s.when) + '">' + esc(s.when) + '</small><div class="by">' + by + '</div></div>' +
           '<div class="side"><button class="switch" role="switch" data-on="' + (s.enabled ? "1" : "") + '" data-skill="' + esc(s.id) + '" aria-checked="' + (s.enabled ? "true" : "false") + '" aria-label="' + esc(s.name) + '"></button>' +
           (s.origin === "yours" ? '<button class="rm" data-skill-rm="' + esc(s.id) + '"' + (skillRmArmed === s.id ? ' data-armed="1">Remove?' : '>Remove') + '</button>' : "") + '</div></div>';
       }).join("") + '</div></div>').join("") || (skills && skills.length ? '<div class="empty">No skill matches “' + esc(q) + '”.</div>' : ""));
@@ -1393,6 +1539,149 @@
   $("skillAddBtn").onclick = () => { const v = String($("skillInput").value || "").trim(); if (!v) { toast("Paste a link to a skill, or its SKILL.md", "bad"); return; } addSkill(v); };
   $("skillInput").onkeydown = (ev) => { if (ev && ev.key === "Enter" && !ev.shiftKey) $("skillAddBtn").onclick(); };
   $("skillFilter").oninput = () => renderSkills();
+  $("skLinkBtn").onclick = () => {
+    const open = $("skAdd").dataset.open !== "1";
+    $("skAdd").dataset.open = open ? "1" : "";
+    $("skLinkBtn").ariaExpanded = String(open);
+    if (open) try { $("skillInput").focus(); } catch (e) {}
+  };
+
+  // ---------- creating a skill with Claude ----------
+  // Claude writes it with the user: in a new Claude Code session with /layer:skills new filled in (the Claude app, a
+  // terminal or VS Code; the user presses Enter there), in a connected session (it asks in its chat), or from the
+  // command on the clipboard. The skill lands in this tab either way (the hub tells the window).
+  const SKILL_CMD = "/layer:skills new";
+  const VIA_ICON = {
+    app: '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5c.5 4.6 2.9 7 7.5 7.5-4.6.5-7 2.9-7.5 7.5-.5-4.6-2.9-7-7.5-7.5 4.6-.5 7-2.9 7.5-7.5z"/></svg>',
+    terminal: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 7 5 5-5 5M12 19h7"/></svg>',
+    vscode: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 7-5 5 5 5M16 7l5 5-5 5"/></svg>',
+    session: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>',
+    copy: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
+  };
+  const VIA_OPEN = { app: "the Claude app", terminal: "Claude Code in a terminal", vscode: "Claude Code in VS Code" };
+  /** The session "Ask a session" writes it in: the one picked in the menu, else the one requests go to, else the most active. */
+  const skillSession = () => (skillTo && byId(skillTo)) || target() || ordered()[0] || null;
+  function renderCreate() {
+    const to = skillSession(), via = skillVia === "session" && !sessions.length ? "session-none" : skillVia;
+    const CMD = "<code>" + SKILL_CMD + "</code>";
+    const [label, how] = {
+      app: ["Open in Claude", "Opens a new session in the Claude app with " + CMD + " filled in. Press Enter there and Claude writes it with you."],
+      terminal: ["Open in Terminal", "Opens Claude Code in a new terminal window with " + CMD + " filled in. Press Enter there. Works once you've used <code>claude</code> in a terminal on this computer."],
+      vscode: ["Open in VS Code", "Opens Claude Code in VS Code with " + CMD + " filled in. Press Enter there."],
+      session: ["Ask " + (to ? to.name : "a session"), "Sends it to <b>" + esc(to ? to.name : "") + "</b>: it asks you in its chat, then saves the skill here."],
+      "session-none": ["Ask a session", "No session is connected. Pick another way with the arrow."],
+      copy: ["Copy the command", "Copies " + CMD + " with what you wrote, to paste into Claude Code or Codex."],
+    }[via] || [];
+    $("skVia").textContent = label || "Open in Claude";
+    setHTML($("skHow"), how || "");
+  }
+  function renderWhere() {
+    const item = (via, name, hint, on, to) => '<button role="menuitemradio" data-via="' + via + '"' + (to ? ' data-to="' + esc(to) + '"' : "") + ' data-on="' + (on ? "1" : "") + '" aria-checked="' + (on ? "true" : "false") + '">' +
+      '<span class="wi">' + VIA_ICON[via] + '</span><span class="wt"><b>' + esc(name) + '</b><small>' + esc(hint) + '</small></span>' +
+      '<svg class="ck" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></button>';
+    const cur = skillVia === "session" ? skillSession() : null;
+    setHTML($("skWhereMenu"),
+      item("app", "Claude app", "A new session in its Code tab", skillVia === "app") +
+      item("terminal", "Terminal", "Claude Code in a new terminal window", skillVia === "terminal") +
+      item("vscode", "VS Code", "Claude Code in a new VS Code tab", skillVia === "vscode") +
+      (sessions.length ? '<div class="sep"></div>' + ordered().slice(0, 4).map((s) => item("session", "Ask " + s.name, "Connected now: it asks you in its chat", !!cur && cur.id === s.id, s.id)).join("") : "") +
+      '<div class="sep"></div>' + item("copy", "Copy the command", SKILL_CMD + ", to paste anywhere", skillVia === "copy"));
+  }
+  function closeWhere() { $("skGo").dataset.open = ""; $("skWhere").ariaExpanded = "false"; }
+  $("skWhere").onclick = () => {
+    const open = $("skGo").dataset.open !== "1";
+    if (!open) { closeWhere(); return; }
+    renderWhere();
+    $("skGo").dataset.open = "1"; $("skWhere").ariaExpanded = "true";
+  };
+  $("skWhereMenu").onclick = (ev) => {
+    let el = ev && ev.target;
+    while (el && el.id !== "skWhereMenu" && !(el.dataset && el.dataset.via)) el = el.parentElement;
+    if (!el || !el.dataset || !el.dataset.via) return;
+    skillVia = el.dataset.via;
+    if (el.dataset.to) skillTo = el.dataset.to;
+    post({ type: "set-skill-via", via: skillVia });
+    closeWhere(); renderCreate();
+  };
+  $("skClaude").onclick = () => {
+    const idea = String($("skIdea").value || "").trim();
+    const cmd = SKILL_CMD + " " + idea;
+    if (skillVia === "copy") { copy(cmd.trim() + (idea ? "" : " ")); toast("Copied: paste it into Claude Code or Codex", "ok"); return; }
+    if (skillVia === "session") {
+      const to = skillSession();
+      if (!to) { toast("No session is connected: pick another way with the arrow", "bad"); return; }
+      post({ type: "compose-action", session: to.id, kind: "skill", text: idea });
+      $("skIdea").value = "";
+      return;
+    }
+    // A link opens a new session with the command filled in (never sent): the user presses Enter there. Figma opens
+    // only https links, so Layerwright on this computer (the hub) opens it. The command is on the clipboard too.
+    copy(cmd.trim() + (idea ? "" : " "));
+    if (!isOpen()) { toast("Not connected to Layerwright. The command is on your clipboard: paste it into Claude Code", "bad"); return; }
+    const s = skillSession(), via = skillVia;
+    ws.send(JSON.stringify({ type: "skills-open", via, idea, ...(via === "terminal" && s && s.workdir ? { cwd: s.workdir } : {}) }));
+    toast("Opening " + VIA_OPEN[via] + "…");
+    // A hub older than this window doesn't know it and never answers.
+    clearTimeout(opening);
+    opening = setTimeout(() => toast("Layerwright on this computer is older than this window and can't open Claude yet. The command is on your clipboard: paste it into Claude Code", "bad"), 5000);
+  };
+  let opening = 0;
+  function onOpened(m) {
+    clearTimeout(opening);
+    const where = VIA_OPEN[m.via] || "Claude";
+    if (m.ok) toast("Opened " + where + ": press Enter there, and Claude writes the skill with you", "ok");
+    else toast("Couldn't open " + where + (m.error ? " (" + m.error + ")" : "") + ". The command is on your clipboard: paste it into Claude Code, or pick another way with the arrow", "bad");
+  }
+  $("skIdea").onkeydown = (ev) => { if (sendKey(ev) && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault && ev.preventDefault(); $("skClaude").onclick(); } };
+  $("sfClaude").onclick = () => {
+    // From the form: what's written so far becomes what the skill should do.
+    const idea = [$("sfName").value, $("sfWhen").value, $("sfBody").value].map((v) => String(v || "").trim()).filter(Boolean).join(": ").slice(0, 1000);
+    closeForm();
+    $("skIdea").value = idea;
+    try { $("skIdea").focus(); } catch (e) {}
+  };
+
+  // ---------- writing a skill of your own ----------
+  let form = null; // the skill being written: { id (when editing one), waiting (for the hub's answer) }
+  function openForm(edit) {
+    if (!isOpen()) { toast("Connect first: skills are kept by Layerwright on this computer", "bad"); return; }
+    if (paired === false) { toast("This window isn't paired: run npx layerwright init, then reopen the plugin", "bad"); return; }
+    form = { id: edit ? edit.id : null, waiting: 0 };
+    $("sfTitle").textContent = edit ? "Edit " + edit.name : "Write a skill";
+    $("sfName").value = edit ? edit.name : "";
+    $("sfWhen").value = edit ? edit.description || "" : "";
+    $("sfBody").value = edit ? edit.body : "";
+    const cats = skillCats.length ? skillCats : [{ id: "yours", name: "Yours" }];
+    const cat = (edit && edit.category) || "yours";
+    setHTML($("sfCat"), cats.map((c) => '<option value="' + esc(c.id) + '"' + (c.id === cat ? " selected" : "") + '>' + esc(c.name) + '</option>').join(""));
+    $("skillForm").dataset.busy = "";
+    $("skillForm").dataset.open = "1";
+    try { $("sfName").focus(); } catch (e) {}
+  }
+  function closeForm() { if (form) clearTimeout(form.waiting); form = null; $("skillForm").dataset.open = ""; }
+  /** A skill's text without its front matter and its own "# Name" title: what the form edits. */
+  function bodyOf(text, name) {
+    let t = String(text || "").replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "").replace(/^\s+/, "");
+    const h = /^#\s+(.+)\r?\n+/.exec(t);
+    if (h && h[1].trim() === String(name || "").trim()) t = t.slice(h[0].length);
+    return t.trim();
+  }
+  $("skWrite").onclick = () => openForm(null);
+  $("sfBack").onclick = closeForm;
+  $("sfCancel").onclick = closeForm;
+  $("sfSave").onclick = () => {
+    if (!form) return;
+    const name = String($("sfName").value || "").trim(), description = String($("sfWhen").value || "").trim(), body = String($("sfBody").value || "").trim();
+    if (name.length < 2) { toast("Give the skill a name", "bad"); return; }
+    if (description.length < 3) { toast("Say in one line when sessions should use it", "bad"); return; }
+    if (!body) { toast("Write its instructions: what a session should do or check", "bad"); return; }
+    if (!isOpen()) { toast("Not connected to Layerwright", "bad"); return; }
+    $("skillForm").dataset.busy = "1";
+    ws.send(JSON.stringify({ type: "skills-write", ...(form.id ? { id: form.id } : {}), name, description, body, category: $("sfCat").value || "yours" }));
+    // A hub older than this window doesn't know skills-write and never answers.
+    const f = form;
+    f.waiting = setTimeout(() => { if (form !== f) return; $("skillForm").dataset.busy = ""; toast("Layerwright on this computer is older than this window and can't save skills yet. Update it: npx -y layerwright@latest update", "bad"); }, 6000);
+  };
 
   // ---------- @skill in the chat box ----------
   const STAR = '<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3l2.2 4.6 5 .7-3.6 3.5.9 5L12 14.4 7.5 16.8l.9-5L4.8 8.3l5-.7z"/></svg>';
@@ -1496,13 +1785,19 @@
     const on = live ? live.enabled : s.enabled !== false;
     $("spTitle").textContent = s.name || page.id;
     setHTML($("spMeta"), (s.origin === "yours" ? '<span class="pill">Yours</span>' : s.author ? '<span>' + esc(s.author) + '</span>' : "") + (s.license ? '<span class="pill">' + esc(s.license) + '</span>' : "") +
-      (s.source && /^https:\/\//.test(s.source) ? '<a data-url="' + esc(String(s.source).split(" ")[0]) + '">Source ↗</a>' : s.source === "pasted" ? "<span>pasted</span>" : ""));
+      (s.source && /^https:\/\//.test(s.source) ? '<a data-url="' + esc(String(s.source).split(" ")[0]) + '">Source ↗</a>' : s.source === "pasted" ? "<span>pasted</span>" : s.source === "written" ? "<span>written by you</span>" : ""));
+    $("spEdit").style.display = s.origin === "yours" && page.file === "SKILL.md" && page.text ? "" : "none";
     $("spToggle").dataset.on = on ? "1" : "";
     $("spState").textContent = on ? "Sessions read it when it fits" : "Off: sessions don't read it";
     setHTML($("spFiles"), page.files && page.files.length > 1 ? page.files.map((f) => '<button data-file="' + esc(f) + '" data-on="' + (f === page.file ? "1" : "") + '">' + esc(f.replace(/\.md$/, "")) + '</button>').join("") : "");
     $("spBody").innerHTML = page.loading && !page.text ? '<p class="muted">Loading…</p>' : page.error ? '<p class="muted">' + esc(page.error) + '</p>' : md(page.text || "");
   }
   $("spBack").onclick = closeSkill;
+  $("spEdit").onclick = () => {
+    if (!page || !page.text) return;
+    const s = page.skill || (skills || []).find((x) => x.id === page.id) || { name: page.id };
+    openForm({ id: page.id, name: s.name || page.id, description: s.description || "", category: s.category, body: bodyOf(page.text, s.name) });
+  };
   $("spToggle").onclick = () => {
     if (!page || !isOpen()) return;
     const live = (skills || []).find((x) => x.id === page.id);
@@ -1612,6 +1907,8 @@
       if (req.type === "pairing") { rejected = null; paired = !!req.paired; render(); askSkills(); return; }
       if (req.type === "skills") { onSkills(req); return; }
       if (req.type === "skills-busy") { skillBusy = true; renderSkills(); return; }
+      if (req.type === "skills-changed") { askSkills(); return; } // a session added, wrote or removed one
+      if (req.type === "skills-opened") { onOpened(req); return; }
       if (req.type === "skill-text") { onSkillText(req); return; }
       if (req.type === "sessions") {
         sessions = (Array.isArray(req.sessions) ? req.sessions : []).slice().sort((a, b) => (b.connectedAt || 0) - (a.connectedAt || 0)); // newest first
@@ -1669,10 +1966,15 @@
     $("version").textContent = "Layerwright " + (server && server.version ? server.version : "");
     const u = server && server.update;
     if (u && u.updateAvailable) {
+      // Update: a session does it (the session the window sends requests to, else the one that reported it), in its
+      // terminal; without a session, the command to copy.
+      const by = target() || byId(server.session);
       $("update").style.display = "block";
       $("update").innerHTML = "<b>Layerwright " + esc(u.latest) + " is available</b> <span class='muted'>(you have " + esc(u.current) + ")</span><ol>" +
-        (u.steps || []).map((s) => "<li>" + esc(s) + "</li>").join("") + "</ol><button id='copy'>Copy update command</button>";
+        (u.steps || []).map((s) => "<li>" + esc(s) + "</li>").join("") + "</ol>" +
+        (by ? "<button id='updateNow' class='primary'>Update with " + esc(by.name) + "</button> " : "") + "<button id='copy'>Copy update command</button>";
       const b = $("copy"); if (b) b.onclick = () => { copy(u.command); b.textContent = "Copied"; };
+      const n = $("updateNow"); if (n && by) n.onclick = () => { post({ type: "compose-action", session: by.id, kind: "update", text: "" }); n.textContent = "Sent to " + by.name; n.disabled = true; toast(by.name + " is updating Layerwright: it may ask you in its chat", "ok"); };
     } else $("update").style.display = "none";
   }
   function copy(text) {
@@ -1714,6 +2016,7 @@
     if (msg.type === "desk") { desk = { count: msg.count || 0, names: msg.names || [], owner: msg.owner || null, to: msg.to || null, why: msg.why || null, asks: msg.asks || [] }; render(); }
     if (msg.type === "settings") {
       settings.cursor = msg.cursor !== false; settings.zoom = msg.zoom !== false; renderSettings();
+      if (["app", "terminal", "vscode", "session", "copy"].includes(msg.skillVia)) { skillVia = msg.skillVia; renderCreate(); }
       if (!!msg.mini !== settings.mini) setMini(!!msg.mini, false);
       settings.guideSeen = msg.guideSeen !== false;
       if (!settings.guideSeen && !settings.mini) setGuide(true); // the first time: what this window can do
@@ -1732,10 +2035,10 @@
       const a = msg.action, s = byId(msg.session), ok = isOpen();
       requests.unshift({ id: a.id, session: msg.session, sessionName: s && s.name, kind: a.kind, text: a.text, skills: a.skills, layers: (a.nodes || []).map((n) => n.name), more: a.more, status: ok ? "sending" : "failed", message: ok ? "" : "Not connected to Layerwright.", at: Date.now() });
       if (ok) { ws.send(JSON.stringify({ type: "action", session: msg.session, action: a })); post({ type: "session-activity", id: a.id, session: msg.session, status: "sent", kind: a.kind, nodes: (a.nodes || []).map((n) => n.id) }); }
-      toast(ok ? "Sent to " + (s ? s.name : "the session") : "Not connected", ok ? "ok" : "bad");
+      toast(!ok ? "Not connected" : a.kind === "skill" ? "Sent to " + (s ? s.name : "the session") + ": it asks you in its chat" : "Sent to " + (s ? s.name : "the session"), ok ? "ok" : "bad");
       if (tab !== "activity") unseen++;
       render();
-      setTimeout(showActivity, 700); // after the toast: follow it in Activity
+      if (a.kind !== "skill") setTimeout(showActivity, 700); // after the toast: follow it in Activity (a new skill lands in this tab)
     }
     if (msg.type === "progress") {
       // The server extends its deadline while progress arrives: long work isn't a timeout.

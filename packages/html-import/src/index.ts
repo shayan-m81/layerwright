@@ -11,7 +11,8 @@ export { importHtml, type ImportTarget, type ImportSwap, type ImportAction, type
 export { toPlan, type ComponentMapping, type Hint, type ConvertResult, type SourceBoxes } from "./convert.ts";
 export { applyDesignSystem } from "./design-system.ts";
 export { readDom, readPage, type DomNode } from "./dom.ts";
-export { launch, resolveEntry, withPage } from "./browser.ts";
+export { decodeToPng, sniff, svgText, MAX_ASSET_BYTES } from "./assets.ts";
+export { chromiumInstallCommand, launch, resolveEntry, withPage } from "./browser.ts";
 export { screenshotHtml, diffImages, type ImageDiff } from "./compare.ts";
 
 export interface RenderOptions { viewports?: number[]; selector?: string; root?: string; ds?: DesignSystem; name?: string; mappings?: ComponentMapping[]; fontMap?: Record<string, string>;
@@ -28,6 +29,7 @@ export async function renderToPlan(path: string, opts: RenderOptions = {}): Prom
   const screens: { name: string; width: number; dom: import("./dom.ts").DomNode }[] = [];
   let title = "";
   let webFonts: Record<string, string[]> = {};
+  const pictures: string[] = []; // what couldn't be imported as it looks (once per page, not per viewport)
   const marks = (opts.mappings ?? []).map((m) => m.selector);
   const targets = opts.targets?.length ? opts.targets : [{ selector: opts.selector ?? "body", name: undefined as string | undefined }];
   for (const width of viewports) {
@@ -39,6 +41,7 @@ export async function renderToPlan(path: string, opts: RenderOptions = {}): Prom
     title ||= t;
     reads.forEach((read, i) => {
       webFonts = { ...webFonts, ...read.webFonts };
+      for (const w of read.warnings) if (!pictures.includes(w)) pictures.push(w);
       const base = targets[i].name ?? (opts.targets?.length ? targets[i].selector : title || "Page");
       // An element keeps its own rendered width; the page takes the viewport's.
       screens.push({ name: viewports.length > 1 || !targets[i].name ? `${base} – ${width}` : base, width: opts.targets?.length ? Math.round(read.root.box.w) : width, dom: read.root });
@@ -47,7 +50,7 @@ export async function renderToPlan(path: string, opts: RenderOptions = {}): Prom
   const converted = toPlan(screens, { name: opts.name ?? (title || "HTML import"), mappings: opts.mappings, fontMap: opts.fontMap });
   let plan = converted.plan;
   let mapped: Record<string, number> = {};
-  const warnings = [...converted.warnings];
+  const warnings = [...pictures, ...converted.warnings];
   if (opts.ds) {
     const a = applyDesignSystem(plan, converted.hints, opts.ds);
     ({ plan, mapped } = a);

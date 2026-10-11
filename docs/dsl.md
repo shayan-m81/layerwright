@@ -33,7 +33,7 @@ to it. A nested `section` is a vertical stack.
 | `minWidth`, `maxWidth` | number | Auto Layout frames and their children only |
 | `layout` | `{ direction, gap, padding, align, crossAlign, wrap, counterGap }` | `direction`: vertical \| horizontal \| none. `padding`: n \| `{x,y}` \| `{top,right,bottom,left}`. `align`: start \| center \| end \| space-between. `crossAlign`: start \| center \| end \| baseline. `wrap`: a horizontal layout flows onto more rows. `counterGap` (number \| token): the gap between those rows; it needs `direction: "horizontal"` and `wrap: true`, and is ignored with a warning otherwise |
 | `fill` | color | Variable name, paint style name or hex (`#RRGGBB[AA]`) |
-| `image` | `{ hash, fit }` | An image already in this Figma file, by its hash (as `figma_inspect` exports it), painted over `fill` and under `gradient`. `fit`: fill (default) \| fit \| crop \| tile. Nothing is uploaded; a hash the file doesn't have is left out with a warning |
+| `image` | `{ hash, fit }` or `{ src, fit }` | A picture painted over `fill` and under `gradient` (a CSS background). `hash`: an image already in this Figma file (as `figma_inspect` exports it); nothing is uploaded, and a hash the file doesn't have is left out with a warning. `src`: new bytes, a `data:image/png\|jpeg\|gif;base64,…` URL or an https URL the server fetches. `fit`: fill (default) \| fit \| crop \| tile |
 | `gradient` | `{ angle, stops: [{ color, position }] }` | Linear. CSS angles (180 = top to bottom) |
 | `stroke`, `strokeWeight` | color, number | |
 | `strokeSides` | `["top" \| "right" \| "bottom" \| "left"]` | Draw only these sides |
