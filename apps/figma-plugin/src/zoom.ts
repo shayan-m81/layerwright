@@ -118,7 +118,8 @@ export async function zoomAfter(session: string | undefined, method: string, r: 
   if (!ids.length) return { shown: false };
   const mine = task && working.has(task) ? [working.get(task)!] : [...working.values()].filter((w) => w.session === session);
   for (const w of mine) for (const id of ids) w.ids.add(id);
-  if (!enabled) return { shown: false };
+  // The user turned zooming off: a new build is still offered ("Show the result"), since nothing else shows it.
+  if (!enabled) return BUILDS.has(method) ? { shown: false, held: ids } : { shown: false };
   const bs = await boxes(ids);
   if (!bs.length) return { shown: false };
   const seen = bs.some((b) => overlaps(b, figma.viewport.bounds));

@@ -6,7 +6,7 @@ import { editNodes, cleanup } from "./edit.ts";
 import { importTree, ensurePages, foundations } from "./import.ts";
 import { progress } from "./progress.ts";
 import { DeskError, MUTATING, SessionDesk, targets } from "./sessions.ts";
-import { cursorAsk, cursorBegin, cursorBusy, cursorEnabled, cursorEnd, cursorGone, cursorWorkEnd, cursorsClear, cursorsYield, isOverlayId, removeLeftovers, setCursorEnabled, shade, type Who } from "./cursor.ts";
+import { cursorAsk, cursorBegin, cursorBusy, cursorEnabled, cursorEnd, cursorGone, cursorReports, cursorWorkEnd, cursorsClear, cursorsFollowPage, cursorsInfo, isOverlayId, removeLeftovers, setCursorEnabled, shade, type Who } from "./cursor.ts";
 import { resultIds, setZoomEnabled, showResult, zoomAfter, zoomEnabled, zoomRequest, type Shown } from "./zoom.ts";
 import { NoteWatch, isNote, type NoteItem } from "./notes.ts";
 import { commitUndo, holdUndo, ownStep, releaseUndo } from "./undo.ts";
@@ -51,6 +51,18 @@ function whoFor(session: Partial<SessionInfo> & { id: string } | undefined, task
 // The user comes first: what Layerwright did itself (the selection it set, the page it opened, the changes a request
 // made) is known (own.ts); anything else is the user working in Figma, and the view stays where they have it (zoom.ts).
 /** A result the view didn't glide to because the user was busy: the window offers "Show the result". */
+/** Sessions whose hooks said when their turn ends (session-state): their cursor waits for that, also after this window
+ *  is reopened or reloaded (an update), since a session keeps its id when it reconnects. Kept a day. */
+const TURNS = "turnReports", TURNS_MS = 24 * 60 * 60_000;
+async function turnReports(): Promise<Record<string, number>> {
+  const v = await figma.clientStorage.getAsync(TURNS).catch(() => undefined);
+  const now = Date.now(), out: Record<string, number> = {};
+  if (v && typeof v === "object") for (const [id, at] of Object.entries(v as Record<string, unknown>)) if (typeof at === "number" && now - at < TURNS_MS) out[id] = at;
+  return out;
+}
+async function rememberTurns(session: string) {
+  try { const m = await turnReports(); m[session] = Date.now(); await figma.clientStorage.setAsync(TURNS, m); } catch { /* the cursor then waits a shorter while */ }
+}
 function offer(r: Shown, session?: string) { if (r.held?.length) figma.ui.postMessage({ type: "result-ready", ids: r.held.slice(0, 200), session }); }
 
 async function resolveTarget(target?: string, session?: SessionInfo): Promise<BaseNode[]> {
@@ -68,6 +80,8 @@ async function handle(req: BridgeRequest): Promise<unknown> {
       return { fileName: figma.root.name, page: figma.currentPage.name, pluginBuild: BUILD,
         // Changes seen since this plugin window opened; a scan older than that can't be vouched for.
         dsChangedSinceScan: dsChanged || (typeof p.scannedAt === "string" && p.scannedAt < watchingSince) || undefined, watchingSince,
+        // The AI cursors on the canvas now (a status check draws none), or that the user turned them off (Settings).
+        ...((cs) => (!cursorEnabled() ? { aiCursor: "off" } : cs.length ? { cursors: cs } : {}))(cursorsInfo()),
         ...desk.pingInfo(req.session, figma.currentPage.selection.map((n) => ({ id: n.id, name: n.name, type: n.type }))) };
     case "scanDesignSystem":
       dsChanged = false;
@@ -163,6 +177,7 @@ figma.ui.onmessage = async (msg: any) => {
     const zoom = await figma.clientStorage.getAsync("zoomResult").catch(() => undefined);
     if (typeof zoom === "boolean") setZoomEnabled(zoom);
     const guideSeen = (await figma.clientStorage.getAsync("guideSeen").catch(() => undefined)) === true;
+    cursorReports(Object.keys(await turnReports()));
     const skillVia = await figma.clientStorage.getAsync("skillVia").catch(() => undefined);
     figma.ui.postMessage({ type: "settings", cursor: cursorEnabled(), zoom: zoomEnabled(), mini, guideSeen, ...(typeof skillVia === "string" ? { skillVia } : {}) });
     void sendThumb();
@@ -195,6 +210,7 @@ figma.ui.onmessage = async (msg: any) => {
   if (msg?.type === "session-state" && typeof msg.session === "string") {
     // The session asks the user something in its chat: Figma says so (the window shows it too, until it's answered),
     // and so does its cursor. Its turn ended ("done"): its cursor and the toast say so, and the cursor goes.
+    void rememberTurns(msg.session);
     const who = desk.sessions.find((x) => x.id === msg.session);
     const kind = typeof msg.kind === "string" ? msg.kind : undefined;
     void cursorAsk(whoFor(who ?? { id: msg.session }), !!msg.waiting, kind);
@@ -437,19 +453,20 @@ setInterval(() => { try { if (!inRun()) takeLater(); notes.check(); } catch { /*
 
 figma.on("currentpagechange", () => {
   figma.ui.postMessage({ type: "hello", hello: hello() });
-  // The user changed page: they work in this file (the window tells the hub), and the cursors step aside. A page
-  // Layerwright opened isn't that.
-  if (!pageIsOwn()) { userActed(); cursorsYield(); figma.ui.postMessage({ type: "selection", count: figma.currentPage.selection.length, user: true }); }
+  // The user changed page: they work in this file (the window tells the hub). A page Layerwright opened isn't that.
+  // (The cursors stay where their sessions work.)
+  if (pageIsOwn()) cursorsFollowPage(); // a request opened it: its cursor goes along
+  else { userActed(); figma.ui.postMessage({ type: "selection", count: figma.currentPage.selection.length, user: true }); }
 });
 figma.on("close", () => { cursorsClear(); workingClear(); });
 figma.on("selectionchange", () => {
-  // A selection Layerwright didn't make is the user's, also while a request runs: the view stays where they work, it
-  // isn't credited to a session (sessions.ts), and the cursors step aside.
+  // A selection Layerwright didn't make is the user's, also while a request runs: the view stays where they work, and
+  // it isn't credited to a session (sessions.ts). The cursors stay on: the user works beside them.
   const own = selectionIsOwn();
   figma.ui.postMessage({ type: "selection", count: figma.currentPage.selection.length, user: !own }); // user: the window tells the hub this file is in use
   desk.onSelectionChange(own);
   queueThumb();
-  if (!own) { userActed(); cursorsYield(); }
+  if (!own) userActed();
 });
 
 // A small picture of the selection for the window, so the user sees what they are about to give a session.
@@ -487,7 +504,7 @@ figma.loadAllPagesAsync().then(() => {
     // selection (selectionchange) and, for texts that may be notes, when it ends (takeLater).
     const busy = inRun();
     const local = changes.filter((c) => c.origin === "LOCAL");
-    if (!busy && local.length) { userActed(); cursorsYield(); } // the user is editing: the cursors step aside
+    if (!busy && local.length) userActed(); // the user is editing (the cursors stay on)
     desk.onDocumentChange(changes);
     for (const c of local) {
       if (c.type !== "CREATE" && !(c.type === "PROPERTY_CHANGE" && c.properties.includes("characters"))) continue;

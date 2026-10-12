@@ -7,7 +7,7 @@ import { blurEffects, gradientPaint } from "./paints.ts";
 import { annotate } from "./annotate.ts";
 import { commitUndo } from "./undo.ts";
 import { isOverlay } from "./cursor.ts";
-import { openPage, select, show } from "./own.ts";
+import { openPage } from "./own.ts";
 
 export class ExecError extends Error {
   constructor(public detail: StructuredError) { super(detail.message); }
@@ -714,7 +714,8 @@ export async function executePlan(plan: ResolvedPlan, meta?: { session?: string;
     throw new ExecError({ ...d, message: `${d.message} (execution rolled back; nothing was left on the canvas)` });
   }
   tag(created, meta);
-  if (onPage || parent.type === "SECTION") { select(created); show(created); }
+  // The selection and the view stay the user's: zoom.ts brings the result into view (or offers to), and only when the
+  // user isn't busy in Figma.
   commitUndo(); // one undo step for the whole plan
   return { createdRootIds: created.map((n) => n.id), page: { id: figma.currentPage.id, name: figma.currentPage.name }, nodeIds: ctx.nodeIds, warnings: ctx.warnings };
 }

@@ -5,6 +5,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- The AI cursor stays on for a session's whole task while you keep working: selecting, editing or changing page in Figma no longer takes it away until the session's next step, it no longer stays off for a while after you touched something, and it no longer moves to whatever page you open (it stays where its session works; a page a request opens takes it along). It goes when the session's turn ends in Claude Code or the request from the window is finished; a session that never says so keeps it two minutes after its last step (was 45 seconds), and the safety limits for a lost "done" are 20 minutes (was 3). A ⌘Z right after a step may still take the cursor away (Figma counts what a plugin drew last as the newest change); it comes back with the session's next step.
+- You can work on your own while sessions do: a cursor keeps working on its frame through the whole task without drawing clicks, so the layers panel doesn't change under you (its tag no longer renames a layer as its words change); while the session waits for your answer in Claude it waits just above the frame, still, and it goes when the session is done. A build or a pixel-exact import no longer selects what it made or jumps the view to it: your selection stays yours, and the result is brought into view only when you aren't busy in Figma (else "Show the result" in the window; also when Zoom to the result is off).
+- A session that asks you something while one of its Figma calls still runs: its cursor goes above the frame too once the call ends. A step on a layer of another page draws the cursor on that page instead of over nothing on yours. After the plugin window is reopened or updated, a Claude Code session's cursor still waits for the end of its turn (the window remembers which sessions report it) instead of leaving after two quiet minutes.
+- During a session's task, ⌘Z may first take the cursor away instead of your own last edit (Figma counts a plugin's latest drawing as the newest change): press it once more. Noted in the README and troubleshooting.
+
 ## [1.4.0] - 2026-10-11
 
 ### Changed

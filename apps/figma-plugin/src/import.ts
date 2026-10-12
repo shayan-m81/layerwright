@@ -5,7 +5,7 @@ import { progress } from "./progress.ts";
 import { blurEffects, gradientPaint } from "./paints.ts";
 import { commitUndo } from "./undo.ts";
 import { isOverlay } from "./cursor.ts";
-import { openPage, select, show } from "./own.ts";
+import { openPage } from "./own.ts";
 
 const rgb = (hex: string) => ({ r: parseInt(hex.slice(1, 3), 16) / 255, g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255 });
 const solid = (p: ImportPaint): SolidPaint => ({ type: "SOLID", color: rgb(p.hex), opacity: p.a });
@@ -327,9 +327,7 @@ export async function importTree(p: { page?: string; section?: string; gap?: num
   old?.remove();
   tag(section ? [section] : created, p.meta);
   commitUndo();
-  const shown = section ? [section] : created;
-  select(shown);
-  show(shown);
+  // The selection and the view stay the user's (zoom.ts shows the result when they aren't busy in Figma).
   return { page: page.name, sectionId: section?.id, screens: created.map((c) => ({ id: c.id, name: c.name, width: c.width, height: c.height })), warnings: fonts.warnings };
 }
 
