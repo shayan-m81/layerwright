@@ -136,9 +136,15 @@ export class T extends N {
   set fontSize(v: number) { for (const f of this.getRangeAllFontNames()) if (f !== MIXED && !loaded.has(`${f.family}::${f.style}`)) throw new Error(`in set_fontSize: Cannot write to node with unloaded font "${f.family} ${f.style}"`); this._s = v; }
   lineHeight: any = { unit: "AUTO" }; letterSpacing: any = { unit: "PERCENT", value: 0 }; textAutoResize = "NONE"; textAlignHorizontal = "LEFT"; textStyleId = ""; hyperlink: any = null;
   private _c = "";
-  constructor(id?: string) { super("TEXT", id); }
+  // Like Figma: a text layer's name follows its characters (autoRename) until the name is set by hand.
+  autoRename = true;
+  private _name = "";
+  constructor(id?: string) {
+    super("TEXT", id);
+    Object.defineProperty(this, "name", { get: () => this._name, set: (v: string) => { this._name = v; this.autoRename = false; }, configurable: true, enumerable: true });
+  }
   get characters() { return this._c; }
-  set characters(v: string) { if (!loaded.has(`${this.fontName.family}::${this.fontName.style}`)) throw new Error(`Cannot write to node with unloaded font "${this.fontName.family} ${this.fontName.style}"`); this._c = v; }
+  set characters(v: string) { if (!loaded.has(`${this.fontName.family}::${this.fontName.style}`)) throw new Error(`Cannot write to node with unloaded font "${this.fontName.family} ${this.fontName.style}"`); this._c = v; if (this.autoRename) this._name = v; }
   // Like Figma: inserting text needs the fonts of the text loaded, and the position must be inside it.
   insertCharacters(start: number, chars: string) {
     for (const f of this.getRangeAllFontNames()) if (!loaded.has(`${f.family}::${f.style}`)) throw new Error(`in insertCharacters: Cannot write to node with unloaded font "${f.family} ${f.style}"`);

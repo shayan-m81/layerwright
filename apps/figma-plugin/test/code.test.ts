@@ -54,7 +54,7 @@ function settle() { poll(); skew += 2500; poll(); }
 const sentNotes = () => host.posted.filter((m) => m.type === "send-action" && m.action.via === "note");
 const plan = (p: object) => { const v = validatePlan(p); assert.ok(v.success); return compilePlan(emptyDesignSystem(), v.plan).plan!; };
 
-/** The session's turn ended (Claude Code's hooks, through the window): its cursor goes (also one that stepped aside:
+/** The session's turn ended (Claude Code's hooks, through the window): its cursor goes (also one an undo took away:
  *  then it isn't drawn). */
 async function turnEnds() {
   await F().ui.onmessage({ type: "session-state", session: "s1", waiting: false, kind: "done" });
@@ -80,7 +80,7 @@ test("reads write nothing but the session's cursor: a status check brings none; 
   assert.equal(overlays().length, 0, "the session's turn ended: its cursor went");
 });
 
-test("links: refs reads the file and each layer's page without drawing anything; a link to a page opens that page; the user's page change sends the cursor away", async () => {
+test("links: refs reads the file and each layer's page without drawing anything; a link to a page opens that page; the user's page change leaves the cursor on", async () => {
   const other = F().createPage(); other.name = "Checkout flow";
   frame("8:8", "Pay", 0, 0, 100, 100, other);
   const empty = F().createPage(); empty.name = "Empty";
@@ -109,7 +109,7 @@ test("links: refs reads the file and each layer's page without drawing anything;
   emit("currentpagechange");
   assert.ok(own.userActiveAt() > quiet, "the user's page change counts as them working");
   assert.ok(host.posted.slice(from).some((m) => m.type === "selection" && m.user), "and the window hears it");
-  assert.equal(overlays().length, 0, "and the cursor the pictures brought steps aside");
+  assert.equal(overlays().length, 1, "and the cursor the pictures brought stays on: the user works beside it");
   assert.deepEqual(commits, [], "no undo step");
   other.remove(); empty.remove();
 });
@@ -131,6 +131,34 @@ test("a change is one undo step: the cursors come off for the commit and back ri
   assert.ok(drawn.length > 0 && drawn.every((n) => n.removed), "every part of it is gone");
   await sleep(80);
   assert.deepEqual(pendingTimers(), baseline, "no timer of the request's is left running");
+});
+
+test("the user works beside a session: selecting, editing and changing page leave its cursor on, until its turn ends", async () => {
+  await turnEnds();
+  skew += 5000;
+  const r = await request("inspect", { target: "5:5" });
+  assert.ok(r.ok, JSON.stringify(r.error));
+  await sleep(120);
+  const cursorNow = () => overlays().filter((n: any) => n.name.endsWith("(Layerwright cursor)"));
+  assert.equal(cursorNow().length, 1, "the session's cursor, thinking between steps");
+  skew += 1000; // the request is well over: what follows is the user
+  F().currentPage.selection = [nodes.get("6:6")];
+  emit("selectionchange", {});
+  emit("documentchange", { documentChanges: [{ id: "6:6", origin: "LOCAL", type: "PROPERTY_CHANGE", node: nodes.get("6:6"), properties: ["name"] }] });
+  await sleep(120);
+  assert.equal(cursorNow().length, 1, "still there: the user's selection and edit don't take it away");
+  assert.ok(!cursorNow()[0].removed);
+  F().currentPage.selection = [];
+  emit("selectionchange", {});
+  await turnEnds();
+  assert.equal(cursorNow().length, 0, "it goes when the session's turn ends");
+});
+
+test("a session's hooks say when its turn ends: the window remembers it (a reloaded window keeps waiting for 'done')", async () => {
+  await F().ui.onmessage({ type: "session-state", session: "s1", waiting: false, kind: "done" });
+  await sleep(20);
+  const kept = host.storage.get("turnReports") as Record<string, number>;
+  assert.ok(kept && typeof kept.s1 === "number" && Date.now() - kept.s1 < 5000, "kept in the plugin's storage, for this session");
 });
 
 test("two changes back to back (new pages, then a build on them) are two undo steps", async () => {

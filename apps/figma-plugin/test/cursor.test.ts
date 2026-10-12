@@ -1,7 +1,7 @@
 // The AI cursor, on the strict mock: it shows a session's whole task. It comes with the session's first step (a read
 // too), goes where each step works (the work doesn't wait for it), stays near between steps, and goes once the session
 // is done or quiet, leaving nothing behind (no layers, no timers). Every undo step is closed with no cursor in it, it
-// steps aside while the user works, an undo that takes it away doesn't bring it back on a redo, and its tag says
+// stays on while the user works, an undo that takes it away doesn't bring it back on a redo, and its tag says
 // briefly who it is and what it's doing.
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
@@ -102,7 +102,7 @@ test("a change: the cursor drag-selects the layer while the work runs; the step 
   assert.equal(overlays().length, 1, "the outline went with the change");
   assert.equal(labelOf(), "Checkout  ·  1 change done ✓", "saying what it did");
   await sleep(150);
-  assert.match(labelOf()!, /^Checkout {2}· {2}thinking\.{0,3}$/, "then thinking until the session's next step");
+  assert.equal(labelOf(), "Checkout  ·  thinking…", "then thinking until the session's next step");
   await gone();
   assert.equal(overlays().length, 0, "a quiet session's cursor goes");
   assert.deepEqual(pendingTimers(), [], "and nothing keeps running");
@@ -115,7 +115,7 @@ test("a whole task: reads, the change and the time between them are one cursor, 
   assert.equal(labelOf(), "Checkout  ·  reading “Header”");
   assert.deepEqual(commits, [], "a read is no undo step");
   await sleep(100);
-  assert.match(labelOf()!, /^Checkout {2}· {2}thinking\.{0,3}$/, "between steps it thinks");
+  assert.equal(labelOf(), "Checkout  ·  thinking…", "between steps it thinks");
   await read(A, "scanDesignSystem", {});
   assert.equal(at("Checkout"), first, "the same cursor, not a new one");
   await change(A, "editNodes", RENAME, async () => { await sleep(40); undo.commitUndo(); });
@@ -202,34 +202,25 @@ test("a failed change commits nothing of its own, and its cursor says so", async
   assert.deepEqual(commits, [], "no step: the handler asked for none");
 });
 
-test("the user works in Figma: the cursors step aside, and come back with the session's next step once the user leaves Figma alone", async () => {
+test("whatever the user does meanwhile, every commit draws the cursors again at once: between steps and through a change, it stays on", async () => {
   await read(A, "inspect", { target: "5:5" });
   assert.equal(cursors().length, 1);
-  cursor.cursorsYield();
-  assert.equal(overlays().length, 0, "off the canvas at once");
-  await read(A, "inspect", { target: "6:6" }, 30);
-  assert.equal(overlays().length, 0, "a read right after doesn't bring it back while the user is busy");
-  await sleep(cursor.timing.quiet);
-  await read(A, "inspect", { target: "6:6" });
-  assert.equal(cursors().length, 1, "the user left Figma alone: the next step brings it back");
-});
-
-test("while a change runs, the user working doesn't take its cursor away; the step then closes without drawing it again", async () => {
   undo.holdUndo();
   cursor.cursorBegin(A, "editNodes", RENAME);
   await sleep(80);
-  cursor.cursorsYield();
-  assert.equal(cursors().length, 1, "the change finishes with its cursor");
-  undo.commitUndo();
+  undo.commitUndo(); // asked for midway: the step's one commit, when it closes
+  assert.equal(cursors().length, 1);
   await cursor.cursorEnd(A, true, "editNodes", {}, RENAME);
   cursor.cursorWorkEnd();
   undo.releaseUndo();
-  assert.deepEqual(commits, [0]);
-  assert.equal(overlays().length, 0, "not drawn again while the user is busy");
+  assert.deepEqual(commits, [0], "one step, holding no cursor");
+  assert.equal(cursors().length, 1, "drawn again right after it: thinking, on, until its session is done");
+  undo.commitUndo(); // a commit between steps (a note reply)
+  assert.deepEqual(commits, [0, 0]);
+  assert.equal(cursors().length, 1, "drawn again at once");
 });
 
-test("an undo that takes the cursor away: it stays away until the session's next step, and a redo doesn't bring it back", async () => {
-  await sleep(cursor.timing.quiet); // the user's work in the test before
+test("an undo that takes the cursor away: it comes back with the session's next step, and a redo doesn't bring the old one back", async () => {
   await read(A, "inspect", { target: "5:5" });
   const was = at("Checkout");
   const pg = was.parent;
@@ -240,7 +231,6 @@ test("an undo that takes the cursor away: it stays away until the session's next
   await sleep(80);
   assert.equal(was.removed, true, "taken away again");
   assert.equal(overlays().length, 0);
-  await sleep(cursor.timing.quiet);
   await read(A, "inspect", { target: "5:5" });
   assert.equal(cursors().length, 1, "the session's next step brings it back");
 });
@@ -328,34 +318,111 @@ test("lively: a working cursor keeps moving over its layer instead of standing s
   cursor.cursorWorkEnd(); undo.releaseUndo();
 });
 
-test("the request opens another page: the cursor goes along", async () => {
+test("the request opens another page: the cursor goes along; between steps it stays on the page its session works on", async () => {
   undo.holdUndo();
   cursor.cursorBegin(A, "editNodes", RENAME);
   await sleep(60);
-  const other = F().root.children[1];
+  const home = F().currentPage, other = F().root.children[1];
   await own.openPage(other);
+  cursor.cursorsFollowPage(); // code.ts, on a page change Layerwright made
   await sleep(60);
   assert.equal(at("Checkout")?.parent, other);
+  await cursor.cursorEnd(A, true, "editNodes", {}, RENAME);
   cursor.cursorWorkEnd(); undo.releaseUndo();
+  assert.equal(at("Checkout")?.parent, other, "drawn again on its page after the commit");
+  await F().setCurrentPageAsync(home); // the user goes elsewhere
+  await sleep(60);
+  undo.commitUndo();
+  assert.equal(at("Checkout")?.parent, other, "it stays where its session works, also through a commit");
+  await read(A, "inspect", { target: "5:5" });
+  assert.equal(at("Checkout")?.parent, home, "the session's next step brings it to the page it works on");
 });
 
-test("a request from the window: once the session has it, its cursor goes to the request's layers and says what it's on, until it's finished", async () => {
+test("a request from the window: once the session has it, its cursor goes to the request's layers and works there, saying what it's on, until it's finished", async () => {
   await cursor.cursorBusy(A, true, ["6:6"], "polish");
   await sleep(80);
   const c = at("Checkout");
   assert.ok(c, "it comes for the request");
-  assert.match(labelOf()!, /^Checkout {2}· {2}on it: polishing this\.{0,3}$/);
+  assert.equal(labelOf(), "Checkout  ·  on it: polishing this");
   assert.ok(c.x >= 100 && c.x <= 400 && c.y >= 600 && c.y <= 680, `on the request's layer (${c.x}, ${c.y})`);
   await read(A, "inspect", { target: "6:6" });
   await sleep(40);
-  assert.match(labelOf()!, /^Checkout {2}· {2}on it: polishing this\.{0,3}$/, "between steps, it's still on the request (thinking dots and all)");
+  assert.equal(labelOf(), "Checkout  ·  on it: polishing this", "between steps, it's still on the request");
   await cursor.cursorBusy(A, false);
   assert.equal(labelOf(), "Checkout  ·  finished your request ✓");
   await gone();
   assert.equal(overlays().length, 0);
 });
 
-test("the session asks the user in its chat: its cursor says so and waves until the answer, then gets back to work", async () => {
+test("between steps it keeps working on its layer, drawing no clicks; while the session waits for the user's answer it waits just above it, still", async () => {
+  const stays = { think: cursor.timing.think, turn: cursor.timing.turn, ask: cursor.timing.ask, life: cursor.timing.life };
+  Object.assign(cursor.timing, { think: 5000, turn: 5000, ask: 5000, life: 4 }); // long enough to watch; lively, to see it work
+  await read(A, "inspect", { target: "6:6" });
+  await sleep(250);
+  const c = at("Checkout");
+  const on = () => c.x >= 100 && c.x <= 400 && c.y >= 600 && c.y <= 680;
+  const spots = new Set<string>();
+  const nodes0 = overlays().length;
+  for (let i = 0; i < 12; i++) { await sleep(60); assert.ok(on(), `on the layer it worked on, between steps (${c.x}, ${c.y})`); spots.add(`${Math.round(c.x)},${Math.round(c.y)}`); }
+  assert.ok(spots.size > 1, "it keeps working there (it moves)");
+  assert.equal(overlays().length, nodes0, "without drawing clicks: nothing new in the layers panel");
+  assert.equal(c.findAll((k: any) => k.type === "TEXT")[0].name, "Tag", "its tag keeps its name as its words change");
+  await cursor.cursorAsk(A, true, "question");
+  await sleep(250);
+  assert.ok(c.y < 600 && c.y > 560 && c.x >= 100 && c.x <= 140, `waiting for the answer: just above its layer, off it (${c.x}, ${c.y})`);
+  const still = `${c.x},${c.y},${c.rotation}`;
+  await sleep(400);
+  assert.equal(`${c.x},${c.y},${c.rotation}`, still, "and still: no waving, no moves");
+  assert.equal(overlays().length, nodes0, "no pulses");
+  await cursor.cursorAsk(A, false);
+  await sleep(300);
+  assert.ok(on(), `the answer came: back to work on its layer (${c.x}, ${c.y})`);
+  Object.assign(cursor.timing, stays);
+  cursor.cursorGone("s1");
+});
+
+test("asked while one of its calls still runs: once the call ends, the cursor goes above its layer and waits there", async () => {
+  const stays = { turn: cursor.timing.turn, ask: cursor.timing.ask };
+  Object.assign(cursor.timing, { turn: 5000, ask: 5000 });
+  cursor.cursorBegin(A, "inspect", { target: "6:6" });
+  await sleep(80);
+  await cursor.cursorAsk(A, true, "permission"); // a permission prompt while the read runs
+  await cursor.cursorEnd(A, true, "inspect", {}, { target: "6:6" });
+  await sleep(250);
+  const c = at("Checkout");
+  assert.ok(c.y < 600 && c.y > 560, `above its layer once the call ended (${c.y})`);
+  assert.equal(labelOf(), "Checkout  ·  needs your OK in Claude Code");
+  Object.assign(cursor.timing, stays);
+  cursor.cursorGone("s1");
+});
+
+test("a step on a layer of another page: the cursor works on that page, not over nothing on the page in view", async () => {
+  const other = F().root.children[1];
+  const far = new N("FRAME", "9:9"); Object.assign(far, { name: "Elsewhere", x: 50, y: 50, width: 200, height: 100 }); other.appendChild(far);
+  await read(A, "inspect", { target: "9:9" });
+  const c = at("Checkout");
+  assert.equal(c?.parent, other, "drawn on the page of the layer it reads");
+  assert.ok(c.x >= 0 && c.x <= 260 && c.y >= 0 && c.y <= 160, `at that layer (${c.x}, ${c.y})`);
+  await read(A, "inspect", { target: "5:5" });
+  assert.equal(at("Checkout")?.parent, F().currentPage, "back on the page in view for a layer there");
+  cursor.cursorGone("s1");
+  far.remove();
+});
+
+test("a session known to say when its turn ends (remembered across a reloaded window) keeps its cursor until then", async () => {
+  cursor.cursorReports(["s1"]);
+  const think = cursor.timing.think;
+  cursor.timing.think = 150; // a quiet session's short stay
+  await read(A, "inspect", { target: "5:5" });
+  await sleep(400);
+  assert.equal(cursors().length, 1, "still there past the quiet time: it waits for the session's turn to end");
+  cursor.timing.think = think;
+  await cursor.cursorAsk(A, false, "done");
+  await gone();
+  assert.equal(cursors().length, 0, "and goes when it does");
+});
+
+test("the session asks the user in its chat: its cursor says so until the answer, then gets back to work", async () => {
   await read(A, "inspect", { target: "5:5" });
   await cursor.cursorAsk(A, true, "question");
   assert.equal(labelOf(), "Checkout  ·  asks you in Claude Code");
@@ -422,8 +489,10 @@ test("zoom to the result: a build always, an edit only off screen, and everythin
   assert.deepEqual(v.center, { x: 350, y: 490 }, "the request from the window is done: everything it changed, together");
   zoom.setZoomEnabled(false);
   reset();
-  await zoom.zoomAfter("s1", "executePlan", { createdRootIds: ["7:7"] });
+  const off = await zoom.zoomAfter("s1", "executePlan", { createdRootIds: ["7:7"] });
   assert.deepEqual(v.center, { x: 500, y: 400 }, "switched off: the view is left alone");
+  assert.deepEqual(off.held, ["7:7"], "but a new build is offered (Show the result): nothing else brings it into view");
+  assert.equal((await zoom.zoomAfter("s1", "editNodes", { applied: [{ nodeId: "5:5", kind: "rename" }] })).held, undefined, "an edit isn't");
   zoom.setZoomEnabled(true);
 });
 

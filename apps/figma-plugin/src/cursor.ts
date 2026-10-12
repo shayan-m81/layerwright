@@ -1,8 +1,11 @@
 // The AI cursor: while a session works in Figma, a pointer in its colour with its name shows it, the way a
 // collaborator's does, from the first step of its task to the end of it. It moves like a hand on a mouse: it goes
 // where the session looks and skims the layer it reads, drag-selects the layer it changes and keeps busy over it
-// (small moves, clicks), follows the work op by op, clicks where the work landed, and between steps stays near,
-// "thinking", until the session is done (its turn ends, the request from the window is finished) or goes quiet. Its
+// (small moves), follows the work op by op, clicks where the work landed, and between steps keeps working on that
+// frame, "thinking", while its session is on the task. When the session waits for the user's answer in its chat, it
+// waits just above the frame, still. It goes once the session is done (its turn ends, the request from the window is
+// finished) or goes quiet. It never draws clicks while it keeps busy, so the layers panel doesn't change under the
+// user. Its
 // tag says who it is and, briefly, what is really happening (the layer it reads, the text it types, the frame it
 // builds and how far along it is).
 //
@@ -15,11 +18,12 @@
 // - every undo step is closed with the cursors taken off the canvas and drawn again right after, in the same moment
 //   (undo.ts), so no step holds any of them and every request stays exactly one step. (Figma takes what a plugin drew
 //   since its last commit as the newest undo step, so the user's first ⌘Z after a step may take a cursor away: it then
-//   stays away until its session's next step, and a redo that brings it back has it taken away again);
-// - they step aside while the user works in Figma (selects, edits, changes page: cursorsYield) and come back with
-//   their session's next step;
-// - they go once their session is done or quiet, when it leaves, when the switch is turned off or the window closes,
-//   and nothing of them (no layer, no timer) is left after that;
+//   comes back with its session's next step, and a redo that brings the old one back has it taken away again);
+// - they stay on while the user works in Figma: selecting, editing and changing page don't move them or take them
+//   away, so the user always sees which sessions are at work, and where; and they never touch the user's selection;
+// - they go once their session is done (its turn ends, the request from the window is finished; a session that never
+//   says so: once it has been quiet a while), when it leaves, when the switch is turned off or the window closes, and
+//   nothing of them (no layer, no timer) is left after that;
 // - layouts (where new frames go), inspects and scans skip them (isOverlay), and their own changes don't count as
 //   changes to the design (isOverlayId);
 // - they keep the same size on screen at any zoom, also when the user zooms while they work;
@@ -34,7 +38,7 @@ const KEY = "layerwrightCursor";
 type Mode = "look" | "work" | "think" | "ask";
 /** Who a cursor is: a session, or one of its requests from the window. */
 export interface Who { id?: string; name?: string; color?: string }
-interface Spot { id: string; point: { x: number; y: number }; box: Rect }
+interface Spot { id: string; point: { x: number; y: number }; box: Rect; page?: PageNode }
 interface Cur {
   key: string; name: string; color: string;
   x: number; y: number; z: number; mode: Mode;
@@ -63,6 +67,9 @@ interface Cur {
   leaving?: number;
   /** The request from the window it works on ("polishing this"), while that is open. */
   busy?: string;
+  /** The layer it last worked on or read: between steps it keeps working on it, and while its session waits for the
+   *  user it waits just above it. When it goes up there (once), and whether it has. */
+  park?: Rect; restAt: number; rested: boolean;
 }
 
 let enabled = true;
@@ -81,16 +88,14 @@ let change: { c: Cur; ready: Promise<void>; progressAt: number; shownAt?: number
 const last = new Map<string, { x: number; y: number }>();
 /** Sessions that say when they wait for the user or end their turn (Claude Code's hooks): their cursor stays until then. */
 const reports = new Set<string>();
-/** The user's last selection, edit or page change while cursors were around: they stay off the canvas a moment. */
-let awayAt = 0;
 /** How long moves, the drag-select and the typing of its tag take; how lively it is between moves (0: still); how
  *  many helpers at most; how long a change's ending lasts; how long a cursor stays on screen at least in a change (a
  *  quick change is still seen being made); how long a change's ending waits at most for a cursor still being set up;
- *  how long it stays after its session's last step (quiet; one that says when its turn ends; one on a request from
- *  the window; one waiting for the user's answer; once it's done); how long the user must leave Figma alone before a
- *  cursor that stepped aside comes back; how long it takes to fade away. */
+ *  how long it stays after its session's last step: one that never says when its turn ends (quiet), one that does
+ *  (Claude Code's hooks: it goes with "done", this only guards a lost signal), one on a request from the window, one
+ *  waiting for the user's answer, and once it's done; how long it takes to fade away. */
 export const timing = { glide: 520, select: 240, type: 320, life: 1, crew: 3, end: 240, min: 700, drawWait: 1500,
-  think: 45_000, turn: 180_000, busy: 180_000, ask: 120_000, done: 2_500, quiet: 3_000, fade: 380 };
+  think: 120_000, turn: 20 * 60_000, busy: 20 * 60_000, ask: 30 * 60_000, done: 2_500, fade: 380 };
 /** Frames: moves at ~60 fps, the life between moves at ~25 fps (every frame is a tiny canvas update). */
 const FRAME = 16, LIFE_FRAME = 40;
 /** An overlay older than this is a leftover, whoever drew it (a live cursor is drawn again at every undo step). */
@@ -285,8 +290,6 @@ const zoomNow = () => Math.min(8, Math.max(0.02, figma.viewport.zoom || 1));
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 const live = (c: Cur) => curs.get(c.key) === c;
 const crewOf = (c: Cur) => [...curs.values()].filter((h) => h.lead === c.key);
-/** The user selected, edited or changed page a moment ago: cursors stay off the canvas. */
-const away = () => Date.now() - awayAt < timing.quiet;
 
 // ---------- what the cursors draw ----------
 /** Every node the cursors draw (and their parts): their own changes are not changes to the design. */
@@ -360,6 +363,7 @@ function draw(c: Cur, appear: boolean) {
   pill.fills = [{ type: "SOLID", color: rgb(c.color) }];
   pill.effects = [SHADOW(0.12, 1, 3)];
   const label = own(figma.createText());
+  label.name = "Tag"; // a fixed name: its words changing don't rename a layer in the layers panel
   label.fontName = font;
   label.fontSize = 12;
   label.fills = [WHITE()];
@@ -406,16 +410,16 @@ function say(c: Cur, text: string, dots = "") {
     let k = 0;
     while (k < c.shown && k < text.length && text[k] === c.text[k]) k++;
     c.text = text;
-    c.shown = timing.type > 0 ? k : text.length;
+    c.shown = timing.type > 0 && c.calls ? k : text.length; // typed out while it works; between steps, at once
   }
   c.dots = dots;
   paint(c);
 }
 
 /** The pointer leans into the move and its tag trails behind, by the cursor's speed on screen. Tiny changes aren't
- *  written: every write is a change on the canvas. `wave`: an extra turn of the pointer (asking the user). */
-function pose(c: Cur, force = false, wave = 0) {
-  const rot = clamp(-c.vx * 7, -11, 11) + clamp(c.vy * 3, -4, 4) + wave;
+ *  written: every write is a change on the canvas. */
+function pose(c: Cur, force = false) {
+  const rot = clamp(-c.vx * 7, -11, 11) + clamp(c.vy * 3, -4, 4);
   const lag = { x: clamp(c.vx * 9, -14, 14), y: clamp(c.vy * 6, -9, 9) };
   if (c.arrow && !c.arrow.removed && (force || Math.abs(rot - c.rot) > 0.3)) { try { (c.arrow as FrameNode).rotation = rot; c.rot = rot; } catch { /* decoration */ } }
   if (c.pill && !c.pill.removed && c.pillAt && (force || Math.abs(lag.x - c.lag.x) > 0.3 || Math.abs(lag.y - c.lag.y) > 0.3)) {
@@ -490,16 +494,17 @@ async function glide(c: Cur, to: { x: number; y: number }, ms: number, ease = ea
 }
 
 /** A layer on the current page: a point a little inside its top-left, and its box. */
-async function spot(id: string | undefined, z: number): Promise<Spot | undefined> {
+/** Where a layer is (on the current page; with `anyPage`, also on another page, with that page). */
+async function spot(id: string | undefined, z: number, anyPage = false): Promise<Spot | undefined> {
   if (!id) return undefined;
   const n = await figma.getNodeByIdAsync(id).catch(() => null);
   if (!n || !("absoluteBoundingBox" in n)) return undefined;
   let p: BaseNode | null = n;
   while (p && p.type !== "PAGE") p = p.parent;
-  if (!p || p.id !== figma.currentPage.id) return undefined;
+  if (!p || (p.id !== figma.currentPage.id && !anyPage)) return undefined;
   const b = (n as SceneNode).absoluteBoundingBox;
   if (!b) return undefined;
-  return { id, point: { x: b.x + Math.min(28 / z, b.width * 0.2), y: b.y + Math.min(28 / z, b.height * 0.2) }, box: b };
+  return { id, point: { x: b.x + Math.min(28 / z, b.width * 0.2), y: b.y + Math.min(28 / z, b.height * 0.2) }, box: b, page: p as PageNode };
 }
 
 async function spotsOf(ids: string[], z: number, max = 4): Promise<Spot[]> {
@@ -669,45 +674,40 @@ function animate() {
   // A redo brought back a cursor an undo took away: it goes again.
   for (const g of ghosts) { if (g.removed) continue; ghosts.delete(g); try { g.remove(); } catch { /* gone */ } }
   for (const c of [...curs.values()]) {
-    // Taken off the canvas by someone else (an undo, a delete): it stays off until its session's next step.
-    if (c.root?.removed) { ghosts.add(c.root); c.root = c.arrow = c.pill = c.label = undefined; awayAt = now; }
+    // Taken off the canvas by someone else (an undo, a delete): it comes back with its session's next step. (Drawn again
+    // now, it would be a new change on top of the user's undo, and Figma would drop what they could redo.)
+    if (c.root?.removed) { ghosts.add(c.root); c.root = c.arrow = c.pill = c.label = undefined; }
     if (!c.lead && c.leaving === undefined && (c.calls ? now - c.lastAt > STUCK_MS : now >= c.leaveAt)) { void retire(c); continue; }
     if (!c.root) continue;
-    // Its session opened another page: the cursor goes along.
-    if (c.root.parent && c.root.parent.id !== figma.currentPage.id) { try { figma.currentPage.appendChild(c.root); } catch { /* decoration */ } }
     if (c.leaving === undefined && c.root.opacity < 0.99) c.root.opacity = Math.min(1, c.root.opacity + 0.1);
     if (c.shown < c.text.length) {
       const step = Math.max(1, Math.ceil(c.text.length / Math.max(1, timing.type / LIFE_FRAME)));
       c.shown = Math.min(c.text.length, c.shown + step);
       paint(c);
     }
-    if (c.mode === "think" && now >= c.thinkAt) { c.thinkAt = Infinity; say(c, c.busy ? `on it: ${c.busy}` : "thinking"); }
+    if (c.mode === "think" && now >= c.thinkAt) { c.thinkAt = Infinity; say(c, c.busy ? `on it: ${c.busy}` : "thinking…"); }
     if (c.motion !== c.idleFrom) continue; // a move is running: leave the position to it
-    if (c.mode === "ask") { askLife(c, now); continue; }
+    // Waiting for the user's answer in the chat: it goes just above the layer it worked on, once, and stays still
+    // there until the session is back at work.
+    if (!c.calls && c.mode === "ask") {
+      if (c.vx || c.vy) { c.vx = c.vy = 0; pose(c, true); }
+      if (!c.rested && now >= c.restAt) { c.rested = true; const p = parkAt(c); if (p && Math.hypot(p.x - c.x, p.y - c.y) * c.z > 2) void glide(c, p, timing.glide, minJerk); }
+      continue;
+    }
     if (Math.abs(c.vx) > 0.01 || Math.abs(c.vy) > 0.01) { c.vx *= 0.6; c.vy *= 0.6; pose(c); } // settle the lean
     else if (c.vx || c.vy) { c.vx = c.vy = 0; pose(c, true); }
     const lively = timing.life > 0;
-    if (lively && c.box && (c.mode === "work" || c.mode === "look") && now >= c.hopAt) {
+    // Between steps, still on its task: it keeps working on the layer it worked on, a little calmer.
+    const box = c.box ?? (c.mode === "think" ? c.park : undefined);
+    if (lively && box && c.mode !== "ask" && now >= c.hopAt) {
       const look = c.mode === "look";
-      const to = look ? skim(c, c.box) : poke(c, c.box);
-      c.hopAt = now + (look ? rand(380, 620) : rand(340, 900)) / timing.life;
-      void glide(c, to, look ? 260 : rand(170, 260), look ? minJerk : easeHand).then(() => { if (!look && c.mode === "work" && Math.random() < 0.5) void tap(c, to); });
+      const to = look ? skim(c, box) : poke(c, box);
+      c.hopAt = now + (look ? rand(380, 620) : c.mode === "think" ? rand(700, 1500) : rand(340, 900)) / timing.life;
+      void glide(c, to, look ? 260 : rand(170, 260), look ? minJerk : easeHand);
       continue;
     }
     if (tick % 2) continue; // the drift needs only half the frames
-    if (c.mode === "think") {
-      if (tick % 10 === 0 && c.shown >= c.text.length) { c.dots = c.thinkAt === Infinity ? ".".repeat((tick / 10) % 4) : ""; paint(c); } // the dots, every 0.4 s
-      if (lively && now >= c.hopAt) { // now and then, a glance a little way off and back
-        c.hopAt = now + rand(2600, 4800) / timing.life;
-        const home = { x: c.x, y: c.y };
-        void glide(c, { x: c.x + rand(-40, 40) / c.z, y: c.y + rand(-26, 26) / c.z }, 380, minJerk).then(() => sleep(rand(300, 700))).then(() => { if (c.mode === "think" && c.motion === c.idleFrom) void glide(c, home, 420, minJerk); });
-        continue;
-      }
-      if (!lively) continue;
-      // A slow figure-eight, the way a hand rests on a mouse while its owner thinks.
-      c.root.x = c.x + Math.sin(t * 1.4 + c.key.length) * (4 / c.z);
-      c.root.y = c.y + Math.sin(t * 2.8 + c.key.length) * (1.8 / c.z);
-    } else if (c.mode === "look") {
+    if (c.mode === "look") {
       c.root.x = c.x + (Math.sin(t * 2.1) + 0.4 * Math.sin(t * 5.3)) * (1.4 / c.z);
       c.root.y = c.y + Math.cos(t * 1.7) * (1 / c.z);
     } else {
@@ -717,13 +717,11 @@ function animate() {
   }
 }
 
-/** Waiting for the user's answer in the chat: it waves (a quick back-and-forth every two seconds), and a ring pulses
- *  from it now and then, so it's seen without being in the way. */
-function askLife(c: Cur, now: number) {
-  const phase = (now % 2200) / 2200;
-  const wave = phase < 0.3 ? Math.sin((phase / 0.3) * Math.PI * 4) * 14 * (1 - phase / 0.3) : 0;
-  pose(c, false, wave);
-  if (now >= c.hopAt) { c.hopAt = now + 1600; void ring(c, { x: c.x + 2 / c.z, y: c.y + 2 / c.z }, 30, 2, 14); }
+/** Where a cursor waits for the user's answer: just above the layer it worked on, near its left edge (in view of what it
+ *  did, off the layer itself). */
+function parkAt(c: Cur): { x: number; y: number } | undefined {
+  const b = c.park;
+  return b ? { x: b.x + 10 / c.z, y: b.y - 44 / c.z } : undefined;
 }
 
 function ensureTicker() { if (curs.size && !ticker) ticker = setInterval(animate, LIFE_FRAME); }
@@ -734,7 +732,7 @@ function make(key: string, name: string, color: string, lead?: string): Cur {
   const now = Date.now();
   const c: Cur = { key, name, color, x: was?.x ?? NaN, y: was?.y ?? NaN, z: zoomNow(), mode: "think", calls: 0, lastAt: now,
     leaveAt: now + timing.think, thinkAt: Infinity, text: "", shown: 0, dots: "", vx: 0, vy: 0,
-    motion: 0, idleFrom: 0, hopAt: now + 900, scan: 0, lead, s: 1, rot: 0, lag: { x: 0, y: 0 } };
+    motion: 0, idleFrom: 0, hopAt: now + 900, scan: 0, lead, s: 1, rot: 0, lag: { x: 0, y: 0 }, restAt: Infinity, rested: true };
   curs.set(key, c);
   ensureTicker();
   return c;
@@ -754,17 +752,21 @@ function cur(s: Who | undefined): Cur {
   return c;
 }
 
-/** Draw the cursor if it isn't on the canvas: where it was, near where the work is, or in the middle of the view.
- *  A cursor stays off while the user is busy in Figma, unless a change brings it (`force`). */
-function show(c: Cur, near: { x: number; y: number } | undefined, force: boolean) {
-  if (c.root || !live(c) || (!force && away())) return;
+/** Draw the cursor if it isn't on the canvas: where it was, near where the work is, or in the middle of the view, on
+ *  the page the work is on (Figma's current page, unless the step works on a layer of another page). One drawn on
+ *  another page goes to that page. */
+function show(c: Cur, near: { x: number; y: number } | undefined, page: PageNode = figma.currentPage) {
+  if (c.root && !c.root.removed && c.root.parent && c.root.parent.id !== page.id) {
+    try { page.appendChild(c.root); if (near) place(c, near.x - 90 / c.z, near.y - 70 / c.z); } catch { /* decoration */ }
+  }
+  if (c.root || !live(c)) return;
   const z = zoomNow(), v = figma.viewport.bounds;
-  if (!Number.isFinite(c.x) || !Number.isFinite(c.y)) {
+  if (!Number.isFinite(c.x) || !Number.isFinite(c.y) || page.id !== figma.currentPage.id) {
     const start = near ? { x: near.x - 90 / z, y: near.y - 70 / z } : { x: v.x + v.width * 0.5, y: v.y + v.height * 0.45 };
     c.x = start.x; c.y = start.y;
   }
   c.z = z;
-  try { draw(c, true); } catch { /* decoration */ }
+  try { draw(c, true); if (c.root && page.id !== figma.currentPage.id) page.appendChild(c.root); } catch { /* decoration */ }
 }
 
 /** How long a cursor stays after its session's last step. */
@@ -851,7 +853,19 @@ export function cursorBegin(s: Who | undefined, method: string, params: unknown)
     const [spots, names] = await Promise.all([targetsOf(method, params, z), namesFor(method, params).catch(() => undefined), ensureFont()]);
     if ((run && change !== run) || !live(c)) return; // the change was over first, or the cursor went
     const t = spots[0];
-    show(c, t?.point, works);
+    // Work on a layer of another page than the one in view: the cursor works there (not on this page, over nothing).
+    const away = t ? undefined : await spot(cursorTargets(method, params)[0], z, true);
+    if (away?.page && away.page.id !== figma.currentPage.id) {
+      show(c, away.point, away.page);
+      if (run && c.root) run.shownAt ??= Date.now();
+      ready?.();
+      c.scan = 0; c.thinkAt = Infinity;
+      say(c, describeRequest(method, params, names ?? ((id) => (typeof id === "string" ? "a layer" : "it"))));
+      c.box = away.box; c.park = away.box; c.hopAt = Date.now() + 250;
+      void glide(c, away.point, timing.glide);
+      return;
+    }
+    show(c, t?.point);
     if (run && c.root) run.shownAt ??= Date.now();
     ready?.();
     const nm: Names = names ?? ((id) => (typeof id === "string" ? "a layer" : "it"));
@@ -868,6 +882,7 @@ export function cursorBegin(s: Who | undefined, method: string, params: unknown)
     // One part per cursor: the session's own takes the first, helpers the rest, each saying what it does there.
     if (works && spots.length > 1 && c.root) dispatch(c, spots.slice(1).map((sp) => ({ spot: sp, text: c.plan?.find((p) => p.id === sp.id)?.text ?? "helping" })));
     c.box = t.box;
+    c.park = t.box;
     c.hopAt = Date.now() + 250;
     if (works) await dragSelect(c, t.box);
     else void glide(c, t.point, timing.glide);
@@ -938,8 +953,9 @@ export async function cursorEnd(s: Who | undefined, ok: boolean, method: string,
   c.lastAt = Date.now();
   if (c.calls) return;
   if (c.mode !== "ask") c.mode = "think";
+  else { c.restAt = Date.now(); c.rested = false; } // it asked while a call ran: now it goes above its layer and waits
   c.box = undefined;
-  c.hopAt = Date.now() + 1500;
+  c.hopAt = Date.now() + timing.end * 2.5; // then it keeps working on its layer
   c.thinkAt = Date.now() + (run ? timing.done : 0); // what a change did stays a moment on its tag
   c.leaveAt = Date.now() + stay(c);
 }
@@ -976,9 +992,10 @@ export async function cursorBusy(s: Who | undefined, busy: boolean, nodeIds: str
   await ensureFont();
   for (const id of nodeIds.slice(0, 8)) if ((t = await spot(id, z))) break;
   if (!live(c)) return;
-  show(c, t?.point, false);
+  if (t) c.park = t.box; // it works on the request's layers between steps
+  show(c, t?.point);
   if (!c.calls && c.mode !== "ask") { c.thinkAt = Infinity; say(c, `on it: ${c.busy}`); }
-  if (t && !c.calls) void glide(c, t.point, timing.glide);
+  if (t && !c.calls && c.mode !== "ask") void glide(c, t.point, timing.glide);
 }
 
 /** The session asked the user something in its chat (a question, a permission), got the answer, or ended its turn
@@ -1011,43 +1028,57 @@ export async function cursorAsk(s: Who | undefined, waiting: boolean, kind?: str
   c.leaving = undefined;
   c.mode = "ask";
   c.box = undefined;
-  c.hopAt = Date.now(); // the first pulse at once
   c.thinkAt = Infinity;
   c.leaveAt = Date.now() + timing.ask;
+  c.restAt = Date.now(); c.rested = false; // it waits just above its layer, still (once its calls end): the window and the toast say so too
   for (const h of crewOf(c)) leave(h);
   await ensureFont();
   if (!live(c)) return;
-  show(c, undefined, false);
+  show(c, undefined);
   say(c, kind === "permission" ? "needs your OK in Claude Code" : kind === "turn" ? "waiting for you in Claude Code" : "asks you in Claude Code");
-  // Come into view to say it: from off screen to a clear spot in the view.
-  const v = figma.viewport.bounds;
-  const inView = c.x > v.x && c.x < v.x + v.width * 0.9 && c.y > v.y && c.y < v.y + v.height * 0.9;
-  if (!inView && c.root) await glide(c, { x: v.x + v.width * 0.6, y: v.y + v.height * 0.3 }, timing.glide * 1.3);
 }
 
-/** The user selected, edited or changed page: the cursors step off the canvas, and come back with their session's
- *  next step once the user leaves Figma alone a moment. While a change runs, its cursor finishes it first (the undo
- *  step then closes without drawing them again). */
-export function cursorsYield() {
-  awayAt = Date.now();
-  if (change) return;
-  for (const n of transient) { try { if (!n.removed) n.remove(); } catch { /* already gone */ } }
-  transient.clear();
-  for (const c of curs.values()) { c.motion++; erase(c); }
+/** A request opened another page (Layerwright did, not the user): the cursors at work go along with it. */
+export function cursorsFollowPage() {
+  for (const c of curs.values()) {
+    if (!c.calls || !c.root || c.root.removed || c.root.parent?.id === figma.currentPage.id) continue;
+    try { figma.currentPage.appendChild(c.root); } catch { /* decoration */ }
+  }
 }
 
 /** Before an undo step closes (undo.ts): every cursor and outline comes off the canvas, so the step holds none of
  *  them. Call what it returns right after the commit: the cursors are drawn again where they were, in the same moment,
- *  so nothing flickers (unless the user is busy in Figma: then they stay off until their session's next step). */
+ *  so nothing flickers, whatever the user is doing in Figma meanwhile. */
 export function cursorsStash(): () => void {
   for (const n of transient) { try { if (!n.removed) n.remove(); } catch { /* already gone */ } }
   transient.clear();
-  const drawn = [...curs.values()].filter((c) => c.root);
+  const drawn = [...curs.values()].filter((c) => c.root && !c.root.removed);
+  const pages = new Map(drawn.map((c) => [c, c.root!.parent]));
   for (const c of drawn) erase(c);
   return () => {
-    if (away()) return;
-    for (const c of drawn) { try { draw(c, false); } catch { /* decoration */ } }
+    for (const c of drawn) {
+      try {
+        draw(c, false);
+        // Back on the page it was on (draw() puts it on the current one, which may be the user's now).
+        const page = pages.get(c);
+        if (c.root && page && page.type === "PAGE" && page.id !== figma.currentPage.id && !page.removed) page.appendChild(c.root);
+      } catch { /* decoration */ }
+    }
   };
+}
+
+/** Sessions whose hooks say when their turn ends (remembered by code.ts across a reloaded window): their cursor waits
+ *  for that instead of a short quiet time. */
+export function cursorReports(ids: string[]) { for (const id of ids) reports.add(id); }
+
+/** The cursors this window has (figma_status: which are on the canvas, where, and what their tags say). Reads only. */
+export function cursorsInfo() {
+  return [...curs.values()].map((c) => {
+    const on = !!c.root && !c.root.removed;
+    let tag: string | undefined, page: string | undefined, at: { x: number; y: number } | undefined;
+    try { tag = on ? c.label?.characters : undefined; page = on ? c.root!.parent?.name : undefined; at = on ? { x: Math.round(c.root!.x), y: Math.round(c.root!.y) } : undefined; } catch { /* gone meanwhile */ }
+    return { name: c.name, onCanvas: on, ...(page ? { page } : {}), ...(at ? { at } : {}), mode: c.mode, ...(tag ? { tag } : {}), leavesIn: c.calls ? undefined : Math.max(0, Math.round((c.leaveAt - Date.now()) / 1000)) };
+  });
 }
 
 /** A session left: its cursors go (and its helpers, and the cursors of its requests), and where they were is forgotten. */
