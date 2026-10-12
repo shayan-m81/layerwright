@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-10-12
+
 ### Fixed
 - The AI cursor stays on for a session's whole task while you keep working: selecting, editing or changing page in Figma no longer takes it away until the session's next step, it no longer stays off for a while after you touched something, and it no longer moves to whatever page you open (it stays where its session works; a page a request opens takes it along). It goes when the session's turn ends in Claude Code or the request from the window is finished; a session that never says so keeps it two minutes after its last step (was 45 seconds), and the safety limits for a lost "done" are 20 minutes (was 3). A ⌘Z right after a step may still take the cursor away (Figma counts what a plugin drew last as the newest change); it comes back with the session's next step.
 - You can work on your own while sessions do: a cursor keeps working on its frame through the whole task without drawing clicks, so the layers panel doesn't change under you (its tag no longer renames a layer as its words change); while the session waits for your answer in Claude it waits just above the frame, still, and it goes when the session is done. A build or a pixel-exact import no longer selects what it made or jumps the view to it: your selection stays yours, and the result is brought into view only when you aren't busy in Figma (else "Show the result" in the window; also when Zoom to the result is off).
@@ -270,7 +272,8 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 - The plugin no longer opens a duplicate connection after the port is changed.
 
-[Unreleased]: https://github.com/shayan-m81/layerwright/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/shayan-m81/layerwright/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/shayan-m81/layerwright/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/shayan-m81/layerwright/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/shayan-m81/layerwright/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/shayan-m81/layerwright/compare/v1.1.0...v1.2.0
